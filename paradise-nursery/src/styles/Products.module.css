@@ -1,0 +1,150 @@
+/* src/styles/Products.module.css */
+.productsContainer {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .header {
+    background-color: white;
+    padding: 15px 20px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  
+  .logoContainer {
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .logoContainer a {
+    display: flex;
+    align-items: center;
+  }
+  
+  .logo {
+    height: 40px;
+    margin-right: 10px;
+  }
+  
+  .companyName {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #2e7d32;
+  }
+  
+  .tagline {
+    font-size: 0.9rem;
+    color: #666;
+  }
+  
+  .cartIcon {
+    position: relative;
+    color: #333;
+  }
+  
+  .cartCounter {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    background-color: #f44336;
+    color: white;
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+  }
+  
+  .productsMain {
+    padding: 30px 20px;
+    max-width: 1200px;
+    margin: 0 auto;
+    width: 100%;
+  }
+  
+  .pageTitle {
+    text-align: center;
+    margin-bottom: 10px;
+    color: #2e7d32;
+  }
+  
+  .pageDescription {
+    text-align: center;
+    margin-bottom: 30px;
+    max-width: 600px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  
+  .plantListContainer {
+    display: flex;
+    flex-direction: column;
+    gap: 40px;
+  }
+  
+  .plantGroup {
+    margin-bottom: 30px;
+  }
+  
+  .categoryTitle {
+    margin-bottom: 15px;
+    padding-bottom: 5px;
+    border-bottom: 2px solid #4caf50;
+    color: #333;
+  }
+  
+  .plantsGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 20px;
+  }
+  
+  .plantCard {
+    background-color: white;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    transition: transform 0.3s;
+  }
+  
+  .plantCard:hover {
+    transform: translateY(-5px);
+  }
+  
+  .plantImage {
+    width: 100%;
+    height: 200px;
+    object-fit: cover;
+  }
+  
+  .plantInfo {
+    padding: 15px;
+  }
+  
+  .plantName {
+    margin-bottom: 5px;
+    color: #333;
+  }
+  
+  .plantPrice {
+    color: #4caf50;
+    font-weight: bold;
+    margin-bottom: 8px;
+  }
+  
+  .plantDescription {
+    margin-bottom: 15px;
+    font-size: 0.9rem;
+    color: #666;
+  }
+  
+  @media (max-width: 768px) {
+    .plantsGrid {
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    }
+  }
