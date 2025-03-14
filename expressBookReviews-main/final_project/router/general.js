@@ -1,9 +1,9 @@
 const express = require('express');
 let books = require("./booksdb.js");
-let isValid = require("./auth_users.js").isValid;
 let users = require("./auth_users.js").users;
 const public_users = express.Router();
 
+// Update the registration route to include the following change
 
 public_users.post("/register", (req, res) => {
   const { username, password } = req.body;
@@ -12,11 +12,24 @@ public_users.post("/register", (req, res) => {
     return res.status(400).json({ message: "Username and password are required" });
   }
   
-  if (users[username]) {
+  // Check if user already exists
+  const userExists = users.some(user => user.username === username);
+  if (userExists) {
     return res.status(409).json({ message: "Username already exists" });
   }
   
-  users[username] = { username, password };
+  // Add user to users array
+  const newUser = { username, password };
+  users.push(newUser);
+  
+  // Save users to JSON file
+  const saveUsers = require("./auth_users.js").saveUsers;
+  const saved = saveUsers();
+  
+  if (!saved) {
+    return res.status(500).json({ message: "Error saving user data" });
+  }
+  
   return res.status(201).json({ message: "Registration successful" });
 });
 
@@ -99,5 +112,7 @@ public_users.get('/review/:isbn', function (req, res) {
     return res.status(500).json({ message: error.message });
   }
 });
+
+
 
 module.exports.general = public_users;
