@@ -1,10 +1,13 @@
-from google import genai
+import google.generativeai as genai
 import os
 import PIL.Image
 from PIL import ImageEnhance, ImageFilter
 import cv2
 import numpy as np
 import re
+from pdf2image import convert_from_path
+import tempfile
+import json
 
 
 def preprocess_image(image_path):
@@ -29,8 +32,7 @@ def preprocess_image(image_path):
     dilated = cv2.dilate(thresh, kernel, iterations=1)
 
     # Find contours to identify potential handwritten regions
-    contours, _ = cv2.findContours(
-        dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     # Create a mask for handwritten-like regions
     mask = np.zeros_like(gray)
@@ -55,99 +57,135 @@ def preprocess_image(image_path):
     return processed_path
 
 
-def configure_enhanced_prompt():
+def configure_enhanced_prompt(invoice_type):
     """
-    Configure an enhanced prompt specifically for Chinese handwriting recognition.
+    Configure an enhanced prompt based on the invoice type.
+
+    Args:
+        invoice_type: The type of invoice (printing or invoice)
+
+    Returns:
+        The prompt text to use for OCR
     """
-    prompt = """
-Objective: Perform ultra-precise OCR focusing on Chinese handwritten text in receipt images.
-
-1. Chinese Handwriting Analysis Strategy:
-   * Apply multiple recognition passes specifically for handwritten Chinese content
-   * Analyze character components (radicals) independently before full character recognition
-   * Use contextual positioning of handwriting within receipt structure
-   * Consider common receipt annotation patterns (totals, discounts, notes)
-
-2. Chinese Character Recognition Enhancement:
-   * For each detected handwritten Chinese character:
-     - Analyze stroke count, order, and direction based on visible patterns
-     - Consider possible character completion for partially visible strokes
-     - Apply knowledge of common handwriting simplifications used in practice
-     * Pay special attention to numerals and related characters
-
-3. Confidence and Ambiguity Handling:
-   * Present multiple character possibilities for ambiguous handwriting
-   * Use knowledge of receipt context to disambiguate characters
-   * When uncertain between similar characters, consider semantic meaning within receipt context
-   * For numbers, verify against printed totals if possible
-
-4. Output Format Requirements:
-   * Present detected handwritten Chinese content at the beginning of your response
-   * For each handwritten section detected, provide:
-     - The exact characters detected
-     - The likely meaning/purpose in the receipt context
-     - Confidence level (High/Medium/Low)
-   * Then include the complete OCR results for the entire receipt with spatial relationships
-
-5. Special Context Awareness:
-   * Recognize that handwritten annotations likely relate to:
-     - Payment information
-     - Discount calculations
-     - Verification marks
-     - Quantity modifications
-     - Personal notes
-   * Use this context to improve character recognition accuracy
-"""
-    return prompt
+    try:
+        prompt_file = f"GeminiOCR/prompt/{invoice_type}_invoice"
+        with open(prompt_file, "r", encoding="utf-8") as file:
+            prompt = file.read()
+        return prompt
+    except Exception as e:
+        print(f"Error reading prompt file for {invoice_type}: {e}")
+        # Fallback to printing_invoice if available
+        try:
+            with open(
+                "GeminiOCR/prompt/printing_invoice", "r", encoding="utf-8"
+            ) as file:
+                prompt = file.read()
+            return prompt
+        except Exception:
+            print("Could not read any prompt files!")
+            return ""
 
 
+def get_response_schema(json_path):
+    """
+    Read and parse a JSON schema file.
 
-def extract_text_from_image(image_path, api_key):
+    Args:
+        json_path: Path to the JSON schema file
+
+    Returns:
+        A dictionary containing the parsed JSON schema
+    """
+    try:
+        with open(json_path, "r", encoding="utf-8") as file:
+            schema = json.load(file)
+        return schema
+    except FileNotFoundError:
+        print(f"Schema file not found: {json_path}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"Invalid JSON in schema file {json_path}: {e}")
+        return None
+    except Exception as e:
+        print(f"Error reading schema file {json_path}: {e}")
+        return None
+
+def extract_text_from_image(image_path, enhanced_prompt, api_key):
     """
     Extract text from image using the enhanced pipeline.
     """
     # Preprocess the image to enhance handwritten text
     processed_image_path = preprocess_image(image_path)
-    processed_image = PIL.Image.open(processed_image_path)
+    #processed_image = PIL.Image.open(processed_image_path)
+    processed_image= PIL.Image.open(image_path)
 
     # Configure Gemini API
-    client = genai.Client(api_key=api_key)
-    generate_content_config = {
-        "temperature": 2,  # Lower temperature for more deterministic results
-        "top_p": 0.95,
-        "top_k": 40,
-        "max_output_tokens": 8192,
-        "response_mime_type": "application/json",
-        # "response_mime_type": "text/plain"
-    }
-
-    # Use enhanced prompt focused on Chinese handwriting
-    enhanced_prompt = configure_enhanced_prompt()
-
-    # Make API request
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=[enhanced_prompt, processed_image],
-        config=generate_content_config
+    genai.configure(api_key=api_key)
+    
+    # Get the schema from file
+    response_schema = get_response_schema("GeminiOCR/schema/printing_invoice.json")
+    
+    # Configure the model
+    model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash-preview-04-17",
+        generation_config={
+            "temperature": 0.3,  # Lower temperature for more deterministic OCR results
+            "top_p": 0.95,
+            "top_k": 40,
+            "max_output_tokens": 8192,
+        },
     )
 
-    return response.text
+    # Make API request with proper structure for response schema
+    try:
+        response = model.generate_content(
+            contents=[enhanced_prompt, processed_image],
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=response_schema,
+            ),
+        )
 
+        # Return the formatted JSON response
+        return response.text
+    except Exception as e:
+        print(f"Error generating content: {e}")
+        # Try a fallback approach without the schema if there's an error
+        try:
+            fallback_response = model.generate_content(
+                contents=[enhanced_prompt, processed_image],
+                generation_config=genai.GenerationConfig(
+                    response_mime_type="application/json",
+                ),
+            )
+            return fallback_response.text
+        except Exception as f_e:
+            print(f"Fallback also failed: {f_e}")
+            return f"Error: {e}"
 
 def main():
-    API_KEY = "AIzaSyBm9JxHKs72YAL5zl4eaEVIqj_CijDObFE"
+    # Get API key from environment variable
+    API_KEY = "AIzaSyDnUHmWDSsrh3X6wImAH4UOgRV1kLUA41E"  ##os.getenv("GEMINI_API_KEY")
     if not API_KEY:
         print("Please set your GEMINI_API_KEY environment variable")
         return
 
     try:
-        # Get image path
-        image_path = "GeminiOCR/img/02.jpg"
+        invoice_type = input("Enter invoice type (printing/invoice): ").lower()
+        if invoice_type == "printing":
+            image_path = "GeminiOCR/finance_invoice/printing_invoice.jpg"
+            enhanced_prompt = configure_enhanced_prompt(invoice_type)
+            extracted_text = extract_text_from_image(
+                image_path, enhanced_prompt, API_KEY
+            )
+        elif invoice_type == "invoice":
+            img_number = input("Enter image number: ")
+            image_path = f"GeminiOCR/shop_invoice/{img_number}.jpg"
+            enhanced_prompt = configure_enhanced_prompt(invoice_type)
+            extracted_text = extract_text_from_image(
+                image_path, enhanced_prompt, API_KEY
+            )
 
-        # Extract text from the image using enhanced pipeline
-        extracted_text = extract_text_from_image(image_path, API_KEY)
-
-        # Print the extracted text
         print("\nExtracted Text:")
         print("------------------------")
         print(extracted_text)
