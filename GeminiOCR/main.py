@@ -86,7 +86,7 @@ def configure_enhanced_prompt(invoice_type):
             return ""
 
 
-def get_response_schema(json_path):
+def get_response_schema(invoice_type):
     """
     Read and parse a JSON schema file.
 
@@ -97,6 +97,7 @@ def get_response_schema(json_path):
         A dictionary containing the parsed JSON schema
     """
     try:
+        json_path = f"GeminiOCR/schema/{invoice_type}_invoice.json"
         with open(json_path, "r", encoding="utf-8") as file:
             schema = json.load(file)
         return schema
@@ -110,20 +111,17 @@ def get_response_schema(json_path):
         print(f"Error reading schema file {json_path}: {e}")
         return None
 
-def extract_text_from_image(image_path, enhanced_prompt, api_key):
+def extract_text_from_image(image_path, enhanced_prompt,response_schema, api_key):
     """
     Extract text from image using the enhanced pipeline.
     """
     # Preprocess the image to enhance handwritten text
-    processed_image_path = preprocess_image(image_path)
+    # processed_image_path = preprocess_image(image_path)
     #processed_image = PIL.Image.open(processed_image_path)
     processed_image= PIL.Image.open(image_path)
 
     # Configure Gemini API
     genai.configure(api_key=api_key)
-    
-    # Get the schema from file
-    response_schema = get_response_schema("GeminiOCR/schema/printing_invoice.json")
     
     # Configure the model
     model = genai.GenerativeModel(
@@ -171,19 +169,21 @@ def main():
         return
 
     try:
-        invoice_type = input("Enter invoice type (printing/invoice): ").lower()
+        invoice_type = input("Enter invoice type (printing/shop): ").lower()
         if invoice_type == "printing":
             image_path = "GeminiOCR/finance_invoice/printing_invoice.jpg"
             enhanced_prompt = configure_enhanced_prompt(invoice_type)
+            response_schema = get_response_schema(invoice_type)
             extracted_text = extract_text_from_image(
-                image_path, enhanced_prompt, API_KEY
+                image_path, enhanced_prompt, response_schema,API_KEY
             )
-        elif invoice_type == "invoice":
+        elif invoice_type == "shop":
             img_number = input("Enter image number: ")
-            image_path = f"GeminiOCR/shop_invoice/{img_number}.jpg"
+            image_path = f"GeminiOCR/shop_invoice/{img_number}.jpeg"
             enhanced_prompt = configure_enhanced_prompt(invoice_type)
+            response_schema = get_response_schema(invoice_type)
             extracted_text = extract_text_from_image(
-                image_path, enhanced_prompt, API_KEY
+                image_path, enhanced_prompt,response_schema,API_KEY
             )
 
         print("\nExtracted Text:")
