@@ -6,6 +6,8 @@ import json
 from datetime import datetime
 import sys
 import pandas as pd
+from openpyxl.styles import Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 # Import functions from main.py
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -13,15 +15,20 @@ from main import extract_text_from_image, configure_enhanced_prompt, get_respons
 
 app = Flask(__name__)
 CORS(app)
-UPLOAD_FOLDER = 'GeminiOCR/uploads'
-OUTPUT_FOLDER = 'GeminiOCR/output/json'
+
+# Update these lines near the top of app.py
+UPLOAD_FOLDER = 'uploads'
+JSON_OUTPUT_FOLDER = 'output/json'
+EXCEL_OUTPUT_FOLDER = 'output/excel'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
 
+# Create all necessary directories
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+os.makedirs(JSON_OUTPUT_FOLDER, exist_ok=True)
+os.makedirs(EXCEL_OUTPUT_FOLDER, exist_ok=True)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -60,7 +67,7 @@ def process_image():
             
             # Save results
             output_filename = f"{invoice_type}_{timestamp}.json"
-            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            output_path = os.path.join(JSON_OUTPUT_FOLDER, output_filename)
             
             try:
                 json_data = json.loads(extracted_text)
@@ -83,28 +90,99 @@ def process_image():
 
 @app.route('/download/<filename>')
 def download_file(filename):
-    return send_file(os.path.join(OUTPUT_FOLDER, filename), as_attachment=True)
+    return send_file(os.path.join(JSON_OUTPUT_FOLDER, filename), as_attachment=True)
+
 
 
 @app.route('/download-excel/<filename>')
 def download_excel(filename):
-    json_path = os.path.join(OUTPUT_FOLDER, filename)
+    json_path = os.path.join(JSON_OUTPUT_FOLDER, filename)
     try:
         # Read the JSON file
         with open(json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        # Convert to DataFrame
-        df = pd.json_normalize(data)
+        # Define headers
+        headers = ["No", "Item Name", "Quantity", "Unit Price", "Amount",
+                  "Shop Address", "Shop Code", "Shop Telephone", "Shop Name",
+                  "Issue DateTime", "Pos Terminal", "Issue Number",
+                  "Brand", "Payment", "Remark", "Subtotal", "Total Amount", "Discount"]
         
+        # Prepare data rows (without headers)
+        data_rows = []
+        
+        for index, row in enumerate(data):
+            issue_info = row['issue_info']
+            shop_address = issue_info.get('shop_address', 'N/A')
+            shop_code = issue_info.get('shop_code', 'N/A')
+            shop_telephone = issue_info.get('shop_telephone', 'N/A')
+            shop_name = issue_info.get('brand', 'N/A')
+            issue_datetime = issue_info.get('issue_datetime', 'N/A')
+            pos_terminal = issue_info.get('pos_terminal', 'N/A')
+            issue_number = issue_info.get('issue_number', 'N/A')
+            brand = issue_info.get('brand', 'N/A')
+            payment = row.get('payment', 'N/A')
+            remark = row.get('remark', 'N/A')
+            subtotal = row.get('subtotal', 'N/A')
+            total_amount = row.get('total_amount', 'N/A')
+            discount = row.get('discount', 'N/A')
+            details = row.get('details', 'N/A')
+            for detail in details:
+                item_name = detail.get('item_name', 'N/A')
+                quantity = detail.get('quantity', 'N/A')
+                unit_price = detail.get('unit_price', 'N/A')
+                amount = detail.get('amount', 'N/A')
+                data_row = [index+1, item_name, quantity, unit_price, amount, 
+                           shop_address, shop_code, shop_telephone, shop_name, 
+                           issue_datetime, pos_terminal, issue_number, 
+                           brand, payment, remark, subtotal, total_amount, discount]
+                data_rows.append(data_row)
+        
+        # Create DataFrame with proper headers
+        df = pd.DataFrame(data_rows, columns=headers)
+
         # Create Excel file
         excel_filename = filename.replace('.json', '.xlsx')
-        excel_path = os.path.join(OUTPUT_FOLDER, excel_filename)
-        df.to_excel(excel_path, index=False)
+        excel_path = os.path.join(EXCEL_OUTPUT_FOLDER, excel_filename)
+        
+        # Export with formatting
+        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Invoice Details', index=False)
+            
+            # Format the Excel file
+            workbook = writer.book
+            worksheet = writer.sheets['Invoice Details']
+            
+            # Format headers
+            header_font = Font(bold=True)
+            header_alignment = Alignment(horizontal='center')
+            
+            # Add headers styling
+            for col_num, column in enumerate(df.columns, 1):
+                cell = worksheet.cell(row=1, column=col_num)
+                cell.font = header_font
+                cell.alignment = header_alignment
+                
+            # Auto-adjust column width
+            for column in worksheet.columns:
+                max_length = 0
+                column_letter = get_column_letter(column[0].column)
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = (max_length + 2)
+                worksheet.column_dimensions[column_letter].width = adjusted_width
         
         return send_file(excel_path, as_attachment=True, download_name=excel_filename)
     except Exception as e:
+        import traceback
+        print(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
-        
+
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, ssl_context='adhoc', debug=True)

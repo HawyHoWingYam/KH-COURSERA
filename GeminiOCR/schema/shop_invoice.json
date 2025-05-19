@@ -25,12 +25,16 @@
                         "description": "A string of the shop telephone",
                         "type": "string"
                     },
+                    "issue_number": {
+                        "description": "A string of issue number (賬單號碼)",
+                        "type": "string"
+                    },
                     "issue_datetime": {
-                        "description": "A string of issue_datetime (賬單號碼)",
+                        "description": "A string of issue datetime (結賬時間)",
                         "type": "string"
                     },
                     "pos_terminal": {
-                        "description": "A string of the pos_terminal",
+                        "description": "A string of the pos terminal (POS編號)",
                         "type": "string"
                     }
                 }

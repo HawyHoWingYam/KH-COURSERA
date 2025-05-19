@@ -9,6 +9,7 @@ from pdf2image import convert_from_path
 import tempfile
 import json
 from datetime import datetime
+import pandas as pd
 
 def preprocess_image(image_path):
     """
@@ -68,7 +69,7 @@ def configure_enhanced_prompt(invoice_type):
         The prompt text to use for OCR
     """
     try:
-        prompt_file = f"GeminiOCR/prompt/{invoice_type}_invoice"
+        prompt_file = f"prompt/{invoice_type}_invoice"
         with open(prompt_file, "r", encoding="utf-8") as file:
             prompt = file.read()
         return prompt
@@ -77,7 +78,7 @@ def configure_enhanced_prompt(invoice_type):
         # Fallback to printing_invoice if available
         try:
             with open(
-                "GeminiOCR/prompt/printing_invoice", "r", encoding="utf-8"
+                "prompt/printing_invoice", "r", encoding="utf-8"
             ) as file:
                 prompt = file.read()
             return prompt
@@ -97,7 +98,7 @@ def get_response_schema(invoice_type):
         A dictionary containing the parsed JSON schema
     """
     try:
-        json_path = f"GeminiOCR/schema/{invoice_type}_invoice.json"
+        json_path = f"schema/{invoice_type}_invoice.json"
         with open(json_path, "r", encoding="utf-8") as file:
             schema = json.load(file)
         return schema
@@ -126,6 +127,7 @@ def extract_text_from_image(image_path, enhanced_prompt,response_schema, api_key
     # Configure the model
     model = genai.GenerativeModel(
         model_name="gemini-2.5-flash-preview-04-17",
+        ##model_name="gemini-2.5-flash",
         generation_config={
             "temperature": 0.3,  # Lower temperature for more deterministic OCR results
             "top_p": 0.95,
@@ -171,43 +173,101 @@ def main():
         return
 
     try:
-        # Create output directory if it doesn't exist
-        os.makedirs("GeminiOCR/output/json", exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        shop_json = json.loads(open("output/json/shop_20250519_082646.json", "r", encoding="utf-8").read())
+       
 
-        invoice_type = input("Enter invoice type (printing/shop): ").lower()
-        if invoice_type == "printing":
-            image_path = "GeminiOCR/finance_invoice/printing_invoice.jpg"
-            enhanced_prompt = configure_enhanced_prompt(invoice_type)
-            response_schema = get_response_schema(invoice_type)
-            extracted_text = extract_text_from_image(
-                image_path, enhanced_prompt, response_schema,API_KEY
-            )
-            # Generate output filename
-            output_filename = f"GeminiOCR/output/json/printing_invoice_result_{timestamp}.json"
-        elif invoice_type == "shop":
-            img_number = input("Enter image number: ")
-            image_path = f"GeminiOCR/shop_invoice/{img_number}.jpeg"
-            enhanced_prompt = configure_enhanced_prompt(invoice_type)
-            response_schema = get_response_schema(invoice_type)
-            extracted_text = extract_text_from_image(
-                image_path, enhanced_prompt,response_schema,API_KEY
-            )
-            # Generate output filename
-            output_filename = f"GeminiOCR/output/json/shop_invoice_{img_number}_result_{timestamp}.json"
+        #loop through shop_json
+        rows=[]
+        for index, row in enumerate(shop_json):
+            issue_info = row['issue_info']
+            shop_address = issue_info.get('shop_address', 'N/A')
+            shop_code = issue_info.get('shop_code', 'N/A')
+            shop_telephone = issue_info.get('shop_telephone', 'N/A')
+            shop_name = issue_info.get('brand', 'N/A')
+            issue_datetime = issue_info.get('issue_datetime', 'N/A')
+            pos_terminal = issue_info.get('pos_terminal', 'N/A')
+            issue_number = issue_info.get('issue_number', 'N/A')
+            brand = issue_info.get('brand', 'N/A')
+            payment = row.get('payment', 'N/A')
+            remark = row.get('remark', 'N/A')
+            subtotal = row.get('subtotal', 'N/A')
+            total_amount = row.get('total_amount', 'N/A')
+            discount = row.get('discount', 'N/A')
+            details = row.get('details', 'N/A')
+            for detail in details:
+                item_name = detail.get('item_name', 'N/A')
+                quantity = detail.get('quantity', 'N/A')
+                unit_price = detail.get('unit_price', 'N/A')
+                amount = detail.get('amount', 'N/A')
+                row=[item_name, quantity, unit_price, amount, shop_address, shop_code, shop_telephone, shop_name, issue_datetime, pos_terminal, issue_number, brand, payment, remark, subtotal, total_amount, discount]
+                rows.append(row)
+    
+        # for every line in details, get the item_name, quantity, unit_price, amount
+        for line in df['details']:
+            item_name=line['item_name']
+            quantity=line['quantity']
+            unit_price=line['unit_price']
+            amount=line['amount']
+            
+            df_line = pd.DataFrame({
+                'item_name': [item_name], 
+                'quantity': [quantity],
+             'unit_price': [unit_price],
+              'amount': [amount], 
+              'shop_address': [shop_address], 
+              'shop_code': [shop_code], 
+              'shop_telephone': [shop_telephone], 
+              'shop_name': [shop_name], 
+              'issue_datetime': [issue_datetime], 
+              'pos_terminal': [pos_terminal], 
+              'issue_number': [issue_number], 
+              'brand': [brand],
+              'payment': [payment],
+              'remark': [remark],
+              'subtotal': [subtotal], 
+              'total_amount': [total_amount],
+              'discount': [discount]
+              })
+            
         
-        # Save extracted text to JSON file
-        try:
-            # Parse the extracted text as JSON
-            json_data = json.loads(extracted_text)
-            with open(output_filename, 'w', encoding='utf-8') as json_file:
-                json.dump(json_data, json_file, indent=2, ensure_ascii=False)
-            print(f"Results saved to {output_filename}")
-        except json.JSONDecodeError:
-            # If the extracted text is not valid JSON, save it as a plain text value
-            with open(output_filename, 'w', encoding='utf-8') as json_file:
-                json.dump({"raw_text": extracted_text}, json_file, indent=2, ensure_ascii=False)
-            print(f"Results saved to {output_filename} as raw text")
+        
+        # # Create output directory if it doesn't exist
+        # os.makedirs("GeminiOCR/output/json", exist_ok=True)
+        # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # invoice_type = input("Enter invoice type (printing/shop): ").lower()
+        # if invoice_type == "printing":
+        #     image_path = "GeminiOCR/finance_invoice/printing_invoice.jpg"
+        #     enhanced_prompt = configure_enhanced_prompt(invoice_type)
+        #     response_schema = get_response_schema(invoice_type)
+        #     extracted_text = extract_text_from_image(
+        #         image_path, enhanced_prompt, response_schema,API_KEY
+        #     )
+        #     # Generate output filename
+        #     output_filename = f"GeminiOCR/output/json/printing_invoice_result_{timestamp}.json"
+        # elif invoice_type == "shop":
+        #     img_number = input("Enter image number: ")
+        #     image_path = f"GeminiOCR/shop_invoice/{img_number}.jpeg"
+        #     enhanced_prompt = configure_enhanced_prompt(invoice_type)
+        #     response_schema = get_response_schema(invoice_type)
+        #     extracted_text = extract_text_from_image(
+        #         image_path, enhanced_prompt,response_schema,API_KEY
+        #     )
+        #     # Generate output filename
+        #     output_filename = f"GeminiOCR/output/json/shop_invoice_{img_number}_result_{timestamp}.json"
+        
+        # # Save extracted text to JSON file
+        # try:
+        #     # Parse the extracted text as JSON
+        #     json_data = json.loads(extracted_text)
+        #     with open(output_filename, 'w', encoding='utf-8') as json_file:
+        #         json.dump(json_data, json_file, indent=2, ensure_ascii=False)
+        #     print(f"Results saved to {output_filename}")
+        # except json.JSONDecodeError:
+        #     # If the extracted text is not valid JSON, save it as a plain text value
+        #     with open(output_filename, 'w', encoding='utf-8') as json_file:
+        #         json.dump({"raw_text": extracted_text}, json_file, indent=2, ensure_ascii=False)
+        #     print(f"Results saved to {output_filename} as raw text")
 
     except Exception as e:
         print(f"Error: {e}")

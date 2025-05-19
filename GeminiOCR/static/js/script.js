@@ -216,6 +216,12 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 });
 
+downloadBtn.addEventListener('click', () => {
+    if (resultFilename) {
+        window.location.href = `/download/${resultFilename}`;
+    }
+});
+
 downloadExcelBtn.addEventListener('click', () => {
     if (resultFilename) {
         window.location.href = `/download-excel/${resultFilename}`;
