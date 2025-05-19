@@ -8,7 +8,7 @@ import re
 from pdf2image import convert_from_path
 import tempfile
 import json
-
+from datetime import datetime
 
 def preprocess_image(image_path):
     """
@@ -161,6 +161,8 @@ def extract_text_from_image(image_path, enhanced_prompt,response_schema, api_key
             print(f"Fallback also failed: {f_e}")
             return f"Error: {e}"
 
+
+
 def main():
     # Get API key from environment variable
     API_KEY = "AIzaSyDnUHmWDSsrh3X6wImAH4UOgRV1kLUA41E"  ##os.getenv("GEMINI_API_KEY")
@@ -169,6 +171,10 @@ def main():
         return
 
     try:
+        # Create output directory if it doesn't exist
+        os.makedirs("GeminiOCR/output/json", exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
         invoice_type = input("Enter invoice type (printing/shop): ").lower()
         if invoice_type == "printing":
             image_path = "GeminiOCR/finance_invoice/printing_invoice.jpg"
@@ -177,6 +183,8 @@ def main():
             extracted_text = extract_text_from_image(
                 image_path, enhanced_prompt, response_schema,API_KEY
             )
+            # Generate output filename
+            output_filename = f"GeminiOCR/output/json/printing_invoice_result_{timestamp}.json"
         elif invoice_type == "shop":
             img_number = input("Enter image number: ")
             image_path = f"GeminiOCR/shop_invoice/{img_number}.jpeg"
@@ -185,14 +193,26 @@ def main():
             extracted_text = extract_text_from_image(
                 image_path, enhanced_prompt,response_schema,API_KEY
             )
-
-        print("\nExtracted Text:")
-        print("------------------------")
-        print(extracted_text)
-        print("------------------------")
+            # Generate output filename
+            output_filename = f"GeminiOCR/output/json/shop_invoice_{img_number}_result_{timestamp}.json"
+        
+        # Save extracted text to JSON file
+        try:
+            # Parse the extracted text as JSON
+            json_data = json.loads(extracted_text)
+            with open(output_filename, 'w', encoding='utf-8') as json_file:
+                json.dump(json_data, json_file, indent=2, ensure_ascii=False)
+            print(f"Results saved to {output_filename}")
+        except json.JSONDecodeError:
+            # If the extracted text is not valid JSON, save it as a plain text value
+            with open(output_filename, 'w', encoding='utf-8') as json_file:
+                json.dump({"raw_text": extracted_text}, json_file, indent=2, ensure_ascii=False)
+            print(f"Results saved to {output_filename} as raw text")
 
     except Exception as e:
         print(f"Error: {e}")
+
+
 
 
 if __name__ == "__main__":

@@ -1,0 +1,41 @@
+{
+  "store_name": "華御結 hana-musubi",
+  "address": "荃灣 楊屋道1號荃新天地UG樓19號舖",
+  "phone_number": "9845 6369",
+  "transaction_id": "CTW190320251221310",
+  "datetime": "19/03/2025 12:21:31",
+  "items": [
+    {
+      "name": "[御結]濃香蛋黃醬",
+      "quantity": 1,
+      "unit_price": "18.00",
+      "total": "18.00"
+    },
+    {
+      "name": "[御結]明太子沙律",
+      "quantity": 1,
+      "unit_price": "19.00",
+      "total": "19.00"
+    },
+    {
+      "name": "和風輕食盒 (北海道薯仔沙律)",
+      "quantity": 1,
+      "unit_price": "22.00",
+      "total": "22.00"
+    }
+  ],
+  "subtotal": "59.00",
+  "discount": "-11.00",
+  "total_amount": "48.00",
+  "payment_method": "八達通付款",
+  "amount_paid": "48.00",
+  "change": "0.00",
+  "payment_details": {
+    "octopus_machine_no": "530C3B",
+    "octopus_card_no": "182219360",
+    "amount_deducted": "48.0",
+    "balance": "68.7"
+  },
+  "previous_transaction": "上一次於 2025-03-18 現金增值",
+  "pos_id": "POS-1"
+}

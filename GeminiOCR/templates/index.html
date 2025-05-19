@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Gemini OCR</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+    <div class="container">
+        <h1>Gemini OCR</h1>
+
+        <div class="upload-container">
+            <div id="drop-area">
+                <form class="my-form" enctype="multipart/form-data">
+                    <p>Drag and drop image files here or</p>
+                    <input type="file" id="fileElem" accept="image/*">
+                    <label class="button" for="fileElem">Select an image</label>
+                </form>
+                <div id="preview"></div>
+            </div>
+
+            <div class="options">
+                <h3>Options</h3>
+                <div class="option-group">
+                    <label for="invoice-type">Invoice Type:</label>
+                    <select id="invoice-type">
+                        <option value="printing">Printing Invoice</option>
+                        <option value="shop">Shop Invoice</option>
+                    </select>
+                </div>
+
+                <button id="process-btn" disabled>Process Image</button>
+            </div>
+        </div>
+
+        <div id="results" class="hidden">
+            <h2>Results</h2>
+            <div id="results-content"></div>
+            <div class="actions">
+                <button id="download-btn">Download JSON</button>
+                <button id="download-excel-btn">Download Excel</button>
+            </div>
+        </div>
+
+        <div id="loading" class="hidden">
+            <div class="spinner"></div>
+            <p>Processing...</p>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+
+</html>
