@@ -76,6 +76,10 @@
             "payment": {
                 "description": "A string of the payment (付款方法) in this invoice",
                 "type": "string"
+            },
+            "remark": {
+                "description": "A string parse json of the handwritten information in this invoice",
+                "type": "string"
             }
         },
         "required": [
@@ -84,7 +88,8 @@
             "subtotal",
             "discount",
             "total_amount",
-            "payment"
+            "payment",
+            "remark"
         ]
     }
 }
