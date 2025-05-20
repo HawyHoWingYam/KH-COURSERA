@@ -46,7 +46,21 @@
                                 "type": "string"
                             },
                             "source": {
-                                "description": "A string to describe the source of Issuer or Supplier company contact phone  (Hong Kong Printing Centre) is handwritten or not, , it should be 'handwritten' or 'non-handwritten'",
+                                "description": "A string to describe the source of Issuer or Supplier company contact phone  (Hong Kong Printing Centre) is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "statement_date": {
+                        "description": "An object that contains the statement date (Hong Kong Printing Centre)",
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "description": "A string of the statement date (Hong Kong Printing Centre)",
+                                "type": "string"
+                            },
+                            "source": {
+                                "description": "A string to describe the statement date (Hong Kong Printing Centre) is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
                                 "type": "string"
                             }
                         }

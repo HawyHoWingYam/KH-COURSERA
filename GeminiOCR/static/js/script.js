@@ -91,7 +91,7 @@ function processImage() {
         loading.classList.add('hidden');
         loading.style.display = 'none';
         alert("Request timed out. Please try again.");
-    }, 30000);
+    }, 60000);
 
     fetch('/process', {
         method: 'POST',
