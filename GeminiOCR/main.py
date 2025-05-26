@@ -167,69 +167,46 @@ def extract_text_from_image(image_path, enhanced_prompt,response_schema, api_key
 
 def main():
     # Get API key from environment variable
-    API_KEY = "AIzaSyDnUHmWDSsrh3X6wImAH4UOgRV1kLUA41E"  ##os.getenv("GEMINI_API_KEY")
+    API_KEY = "AIzaSyCMLtFuRivMXbWVNF6X5an63B5-y5_ADCU"  ##os.getenv("GEMINI_API_KEY")
     if not API_KEY:
         print("Please set your GEMINI_API_KEY environment variable")
         return
 
     try:
-        shop_json = json.loads(open("output/json/shop_20250519_082646.json", "r", encoding="utf-8").read())
+    #     shop_json = json.loads(open("output/json/shop_20250519_082646.json", "r", encoding="utf-8").read())
        
 
-        #loop through shop_json
-        rows=[]
-        for index, row in enumerate(shop_json):
-            issue_info = row['issue_info']
-            shop_address = issue_info.get('shop_address', 'N/A')
-            shop_code = issue_info.get('shop_code', 'N/A')
-            shop_telephone = issue_info.get('shop_telephone', 'N/A')
-            shop_name = issue_info.get('brand', 'N/A')
-            issue_datetime = issue_info.get('issue_datetime', 'N/A')
-            pos_terminal = issue_info.get('pos_terminal', 'N/A')
-            issue_number = issue_info.get('issue_number', 'N/A')
-            brand = issue_info.get('brand', 'N/A')
-            payment = row.get('payment', 'N/A')
-            remark = row.get('remark', 'N/A')
-            subtotal = row.get('subtotal', 'N/A')
-            total_amount = row.get('total_amount', 'N/A')
-            discount = row.get('discount', 'N/A')
-            details = row.get('details', 'N/A')
-            for detail in details:
-                item_name = detail.get('item_name', 'N/A')
-                quantity = detail.get('quantity', 'N/A')
-                unit_price = detail.get('unit_price', 'N/A')
-                amount = detail.get('amount', 'N/A')
-                row=[item_name, quantity, unit_price, amount, shop_address, shop_code, shop_telephone, shop_name, issue_datetime, pos_terminal, issue_number, brand, payment, remark, subtotal, total_amount, discount]
-                rows.append(row)
+    #     #loop through shop_json
+    #     rows=[]
+    #     for index, row in enumerate(shop_json):
+    #         issue_info = row['issue_info']
+    #         shop_address = issue_info.get('shop_address', 'N/A')
+    #         shop_code = issue_info.get('shop_code', 'N/A')
+    #         shop_telephone = issue_info.get('shop_telephone', 'N/A')
+    #         shop_name = issue_info.get('brand', 'N/A')
+    #         issue_datetime = issue_info.get('issue_datetime', 'N/A')
+    #         pos_terminal = issue_info.get('pos_terminal', 'N/A')
+    #         issue_number = issue_info.get('issue_number', 'N/A')
+    #         brand = issue_info.get('brand', 'N/A')
+    #         payment = row.get('payment', 'N/A')
+    #         remark = row.get('remark', 'N/A')
+    #         subtotal = row.get('subtotal', 'N/A')
+    #         total_amount = row.get('total_amount', 'N/A')
+    #         discount = row.get('discount', 'N/A')
+    #         details = row.get('details', 'N/A')
+    #         for detail in details:
+    #             item_name = detail.get('item_name', 'N/A')
+    #             quantity = detail.get('quantity', 'N/A')
+    #             unit_price = detail.get('unit_price', 'N/A')
+    #             amount = detail.get('amount', 'N/A')
+    #             row_data=[item_name, quantity, unit_price, amount, shop_address, shop_code, shop_telephone, shop_name, issue_datetime, pos_terminal, issue_number, brand, payment, remark, subtotal, total_amount, discount]
+    #             rows.append(row_data)
     
-        # for every line in details, get the item_name, quantity, unit_price, amount
-        for line in df['details']:
-            item_name=line['item_name']
-            quantity=line['quantity']
-            unit_price=line['unit_price']
-            amount=line['amount']
-            
-            df_line = pd.DataFrame({
-                'item_name': [item_name], 
-                'quantity': [quantity],
-             'unit_price': [unit_price],
-              'amount': [amount], 
-              'shop_address': [shop_address], 
-              'shop_code': [shop_code], 
-              'shop_telephone': [shop_telephone], 
-              'shop_name': [shop_name], 
-              'issue_datetime': [issue_datetime], 
-              'pos_terminal': [pos_terminal], 
-              'issue_number': [issue_number], 
-              'brand': [brand],
-              'payment': [payment],
-              'remark': [remark],
-              'subtotal': [subtotal], 
-              'total_amount': [total_amount],
-              'discount': [discount]
-              })
-            
-        
+    #     # Convert rows to DataFrame
+    #     columns = ['item_name', 'quantity', 'unit_price', 'amount', 'shop_address', 'shop_code', 'shop_telephone', 
+    #               'shop_name', 'issue_datetime', 'pos_terminal', 'issue_number', 'brand', 'payment', 'remark',
+    #               'subtotal', 'total_amount', 'discount']
+    #     df = pd.DataFrame(rows, columns=columns)
         
         # # Create output directory if it doesn't exist
         # os.makedirs("GeminiOCR/output/json", exist_ok=True)
