@@ -3,15 +3,15 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { fetchJobStatus, fetchJobFiles, getFileDownloadUrl } from '@/lib/api';
-import type { Job, File as ApiFile } from '@/lib/api';
+import { fetchJobStatus, fetchJobFiles, getFileDownloadUrl, FileInfo } from '@/lib/api';
+import type { Job } from '@/lib/api';
 
 export default function JobDetails() {
   const params = useParams();
   const jobId = parseInt(params.id as string);
 
   const [job, setJob] = useState<Job | null>(null);
-  const [files, setFiles] = useState<ApiFile[]>([]);
+  const [files, setFiles] = useState<FileInfo[]>([]);
   const [wsMessages, setWsMessages] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
@@ -67,7 +67,7 @@ export default function JobDetails() {
         setWsMessages(prev => [...prev, 'WebSocket connection established']);
       };
 
-      wsRef.current.wsRef.current.onmessage = (event) => {
+      wsRef.current.onmessage = (event: MessageEvent) => {
         try {
           const data = JSON.parse(event.data);
           setWsMessages(prev => [...prev, `${data.message} (${data.status})`]);
@@ -182,7 +182,8 @@ export default function JobDetails() {
           <div>
             <p className="text-gray-500 text-sm">Status</p>
             <p className="font-medium">
-              <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${job.status === 'success' || job.status === 'complete'
+              <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full 
+              ${job.status === 'success' || job.status === 'complete'
                   ? 'bg-green-100 text-green-800'
                   : job.status === 'processing'
                     ? 'bg-blue-100 text-blue-800'
