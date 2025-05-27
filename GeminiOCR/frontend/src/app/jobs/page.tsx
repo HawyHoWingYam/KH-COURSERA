@@ -2,50 +2,63 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-
-interface Job {
-  job_id: string;
-  document_type: string;
-  provider: string;
-  status: string;
-  timestamp: string;
-}
+import { fetchJobStatus } from '@/lib/api';
+import type { Job } from '@/lib/api';
 
 export default function Jobs() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
 
-  // In a real implementation, you would fetch jobs from your backend
-  // This is a mock implementation since our API doesn't have a list jobs endpoint yet
+  // In a real app, you would have an API endpoint to list all jobs
+  // For now, we'll mock this with some sample data
   useEffect(() => {
-    // This would typically be a real API call
-    // fetch('http://localhost:8000/jobs')
-    //   .then(res => res.json())
-    //   .then(data => setJobs(data))
-    //   .catch(err => setError('Failed to load jobs'))
-    //   .finally(() => setIsLoading(false));
+    // Mock function to simulate API call
+    const fetchJobs = async () => {
+      try {
+        // In a real app, this would be an API call like:
+        const response = await fetch('http://localhost:8000/jobs');
+        const data = await response.json();
+        
+        // Mock data for demonstration
+        // const mockJobs: Job[] = [
+        //   {
+        //     job_id: 1,
+        //     original_filename: 'invoice_sample.pdf',
+        //     status: 'complete',
+        //     company_id: 1,
+        //     doc_type_id: 1,
+        //     created_at: new Date(Date.now() - 3600000).toISOString() // 1 hour ago
+        //   },
+        //   {
+        //     job_id: 2,
+        //     original_filename: 'receipt.jpg',
+        //     status: 'processing',
+        //     company_id: 2,
+        //     doc_type_id: 1,
+        //     created_at: new Date(Date.now() - 1800000).toISOString() // 30 min ago
+        //   },
+        //   {
+        //     job_id: 3,
+        //     original_filename: 'document.pdf',
+        //     status: 'failed',
+        //     error_message: 'Document format not recognized',
+        //     company_id: 1,
+        //     doc_type_id: 2,
+        //     created_at: new Date(Date.now() - 7200000).toISOString() // 2 hours ago
+        //   }
+        // ];
+        
+        // setJobs(mockJobs);
+        setJobs(data);
+        setIsLoading(false);
+      } catch (err) {
+        setError('Failed to load jobs');
+        setIsLoading(false);
+      }
+    };
 
-    // Mocking jobs data for now
-    setTimeout(() => {
-      setJobs([
-        { 
-          job_id: '123e4567-e89b-12d3-a456-426614174000', 
-          document_type: 'invoice',
-          provider: 'hanamusubi',
-          status: 'complete',
-          timestamp: '2023-10-15 14:32:12'
-        },
-        { 
-          job_id: '223e4567-e89b-12d3-a456-426614174001', 
-          document_type: 'invoice',
-          provider: 'archers',
-          status: 'processing',
-          timestamp: '2023-10-15 14:35:22' 
-        }
-      ]);
-      setIsLoading(false);
-    }, 1000);
+    fetchJobs();
   }, []);
 
   return (
@@ -81,16 +94,13 @@ export default function Jobs() {
                   Job ID
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Document Type
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Provider
+                  Filename
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Status
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Timestamp
+                  Date
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Actions
@@ -101,17 +111,14 @@ export default function Jobs() {
               {jobs.map((job) => (
                 <tr key={job.job_id}>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                    {job.job_id.substring(0, 8)}...
+                    {job.job_id}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {job.document_type}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {job.provider}
+                    {job.original_filename}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                      job.status === 'complete' 
+                      job.status === 'success' || job.status === 'complete' 
                         ? 'bg-green-100 text-green-800' 
                         : job.status === 'processing' 
                         ? 'bg-blue-100 text-blue-800'
@@ -121,7 +128,7 @@ export default function Jobs() {
                     </span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {job.timestamp}
+                    {new Date(job.created_at).toLocaleString()}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                     <Link 

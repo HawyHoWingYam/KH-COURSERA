@@ -2,37 +2,64 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { fetchDocumentTypes, fetchCompaniesForDocType, processDocument } from '@/lib/api';
+import type { DocumentType, Company } from '@/lib/api';
 
 export default function Upload() {
   const router = useRouter();
-  const [documentTypes, setDocumentTypes] = useState<string[]>([]);
-  const [selectedType, setSelectedType] = useState('');
-  const [providers, setProviders] = useState<string[]>([]);
-  const [selectedProvider, setSelectedProvider] = useState('');
+  const [documentTypes, setDocumentTypes] = useState<DocumentType[]>([]);
+  const [selectedType, setSelectedType] = useState<number | null>(null);
+  const [companies, setCompanies] = useState<Company[]>([]);
+  const [selectedCompany, setSelectedCompany] = useState<number | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Fetch document types on mount
   useEffect(() => {
-    // Fetch document types when component mounts
-    fetch('http://localhost:8000/document-types')
-      .then(response => response.json())
-      .then(data => setDocumentTypes(data.document_types))
-      .catch(err => setError('Failed to load document types'));
+    const loadDocumentTypes = async () => {
+      try {
+        const types = await fetchDocumentTypes();
+        setDocumentTypes(types);
+      } catch (err) {
+        setError('Failed to load document types');
+        console.error(err);
+      }
+    };
+    
+    loadDocumentTypes();
   }, []);
 
+  // Fetch companies when document type changes
   useEffect(() => {
-    // Fetch providers when document type changes
-    if (selectedType) {
-      fetch(`http://localhost:8000/document-types/${selectedType}/providers`)
-        .then(response => response.json())
-        .then(data => setProviders(data.providers))
-        .catch(err => setError('Failed to load providers'));
-    } else {
-      setProviders([]);
-    }
-    setSelectedProvider('');
+    const loadCompanies = async () => {
+      if (!selectedType) {
+        setCompanies([]);
+        return;
+      }
+      
+      try {
+        const companiesData = await fetchCompaniesForDocType(selectedType);
+        setCompanies(companiesData);
+      } catch (err) {
+        setError('Failed to load companies for the selected document type');
+        console.error(err);
+      }
+    };
+    
+    loadCompanies();
+    setSelectedCompany(null);
   }, [selectedType]);
+
+  const handleDocTypeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const value = parseInt(e.target.value);
+    setSelectedType(isNaN(value) ? null : value);
+  };
+
+  const handleCompanyChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const value = parseInt(e.target.value);
+    setSelectedCompany(isNaN(value) ? null : value);
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -42,31 +69,18 @@ export default function Upload() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedType || !selectedProvider || !file) {
-      setError('Please select document type, provider, and file');
+    
+    if (!selectedType || !selectedCompany || !file) {
+      setError('Please select document type, company, and file');
       return;
     }
 
     setIsLoading(true);
     setError('');
 
-    const formData = new FormData();
-    formData.append('document_type', selectedType);
-    formData.append('provider', selectedProvider);
-    formData.append('file', file);
-
     try {
-      const response = await fetch('http://localhost:8000/process', {
-        method: 'POST',
-        body: formData,
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Error: ${response.status}`);
-      }
-      
-      const result = await response.json();
-      router.push(`/jobs/${result.job_id}`);
+      const job = await processDocument(selectedType, selectedCompany, file);
+      router.push(`/jobs/${job.job_id}`);
     } catch (err) {
       setError('Failed to upload document. Please try again.');
       console.error(err);
@@ -90,32 +104,32 @@ export default function Upload() {
           <label className="block text-gray-700 mb-2">Document Type</label>
           <select
             className="w-full border border-gray-300 rounded px-3 py-2"
-            value={selectedType}
-            onChange={(e) => setSelectedType(e.target.value)}
+            value={selectedType || ''}
+            onChange={handleDocTypeChange}
             required
           >
             <option value="">Select Document Type</option>
             {documentTypes.map((type) => (
-              <option key={type} value={type}>
-                {type}
+              <option key={type.doc_type_id} value={type.doc_type_id}>
+                {type.type_name}
               </option>
             ))}
           </select>
         </div>
         
         <div>
-          <label className="block text-gray-700 mb-2">Provider</label>
+          <label className="block text-gray-700 mb-2">Company</label>
           <select
             className="w-full border border-gray-300 rounded px-3 py-2"
-            value={selectedProvider}
-            onChange={(e) => setSelectedProvider(e.target.value)}
-            disabled={!selectedType}
+            value={selectedCompany || ''}
+            onChange={handleCompanyChange}
+            disabled={!selectedType || companies.length === 0}
             required
           >
-            <option value="">Select Provider</option>
-            {providers.map((provider) => (
-              <option key={provider} value={provider}>
-                {provider}
+            <option value="">Select Company</option>
+            {companies.map((company) => (
+              <option key={company.company_id} value={company.company_id}>
+                {company.company_name}
               </option>
             ))}
           </select>
