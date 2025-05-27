@@ -1,0 +1,649 @@
+---
+description: Phase 1 Development Plan: Foundation & Core Backend Engine
+globs: 
+alwaysApply: false
+---
+# **Phase 1 Development Plan: Foundation & Core Backend Engine**
+
+## **Introduction**
+
+Phase 1 of this project is dedicated to establishing the critical backend infrastructure and core processing capabilities of the platform. This foundational stage involves the meticulous setup of the AWS cloud environment, deployment and configuration of the Amazon Aurora PostgreSQL database, implementation of robust user authentication via AWS Cognito, and the development of the core Python FastAPI application. A central element of this phase is the creation of the AI-driven document processing engine, which will leverage the Google Gemini API for data extraction.1
+
+The successful completion of Phase 1 is paramount, as it lays the essential groundwork upon which all subsequent development phases will be built. This includes the development of the Admin and User Portal frontends using Next.js, and future enhancements such as Single Sign-On (SSO) integration with Microsoft Entra ID.1
+
+This document outlines the specific tasks, configurations, and architectural considerations for Phase 1\. It focuses on the "what" and "how" of the setup and development process, rather than providing specific code implementations. Key deliverables for this phase include a fully functional backend API, a configured and operational database, secure user authentication mechanisms, and a working end-to-end document processing workflow, encompassing both automated and immediate processing modes.1
+
+## **Section 1: AWS Foundational Infrastructure Setup**
+
+The initial focus of Phase 1 is the provisioning and configuration of the necessary AWS services. These services will host and support the entire application, and a robust, secure network foundation is critical for the platform's stability and security.
+
+### **1.1. Virtual Private Cloud (VPC) and Network Configuration**
+
+A dedicated Amazon Virtual Private Cloud (VPC) will be designed and implemented to provide a logically isolated section of the AWS Cloud.
+
+* **VPC Design and Implementation:**  
+  * An appropriate IPv4 CIDR block for the VPC must be defined, ensuring sufficient IP address space for current needs and future expansion.  
+  * To achieve high availability and fault tolerance, the VPC will span multiple Availability Zones (AZs) within the selected AWS Region. AWS best practices recommend using at least two, preferably three, AZs for production workloads.2 This involves creating subnets in each of these AZs.  
+  * **Public Subnets:** One public subnet will be created in each selected AZ. These subnets will host resources that require direct internet connectivity, such as NAT Gateways.  
+  * **Private Subnets:** One private subnet will be created in each selected AZ. These subnets will house internal resources, including the Amazon Aurora database cluster and the compute resources running the FastAPI application (e.g., Amazon EC2 instances, AWS Fargate tasks, or AWS Lambda functions). Placing backend systems in private subnets is a fundamental security best practice to protect them from direct internet exposure.3  
+  * **Route Tables Configuration:**  
+    * *Public Route Tables:* These will be associated with the public subnets and will include a route to an Internet Gateway (IGW) to allow resources in these subnets to send and receive traffic directly from the internet.  
+    * *Private Route Tables:* These will be associated with the private subnets. They will include routes to NAT Gateways, enabling resources in the private subnets to initiate outbound connections to the internet (e.g., for the FastAPI backend to call the external Google Gemini API or for AWS Lambda to access AWS services that do not yet have VPC interface endpoints) while preventing unsolicited inbound connections from the internet.5  
+  * **Internet Gateway (IGW):** An IGW will be created and attached to the VPC. The IGW is a horizontally scaled, redundant, and highly available VPC component that allows communication between resources in the public subnets and the internet.5  
+  * **NAT Gateways:** NAT Gateways will be provisioned in the public subnets. For high availability, it is recommended to deploy one NAT Gateway in each AZ, although a single NAT Gateway can be shared if budget constraints are a concern. NAT Gateways allow instances in private subnets to connect to the internet or other AWS services but prevent the internet from initiating a connection with those instances.5 The use of managed NAT Gateways is preferred over self-managed NAT instances due to significant advantages in deployment, availability, and maintenance.3
+
+The project's reliance on AWS managed services like Aurora, S3, and Cognito extends to networking components such as NAT Gateways. This indicates a strategic choice to offload infrastructure management, thereby reducing operational overhead and leveraging AWS's inherent scalability and resilience. By opting for NAT Gateways, the development team can concentrate on application-level features rather than the undifferentiated heavy lifting associated with managing network infrastructure. This decision impacts the total cost of ownership (TCO) and the skillset required for ongoing operations, favoring AWS-specific knowledge over traditional network engineering expertise.
+
+### **1.2. Security Layer Configuration**
+
+Robust network security controls are essential to protect the application and its data. A layered security approach will be implemented.
+
+* **Security Groups (SGs):** SGs will act as stateful virtual firewalls at the instance/resource level (e.g., for the Aurora DB cluster, and any EC2 instances or Lambda functions running the FastAPI application). Granular inbound and outbound rules will be defined based on the principle of least privilege.2  
+  * *Aurora Security Group:* This SG will allow inbound PostgreSQL traffic (default port 5432\) exclusively from the Security Group associated with the FastAPI application resources (e.g., EC2, ECS, Lambda). All other inbound traffic will be denied.  
+  * *FastAPI Application Security Group:* This SG will allow inbound traffic on the necessary port(s) (e.g., HTTP/80 or HTTPS/443 if an Application Load Balancer or API Gateway is used, or a custom port if accessed directly) only from trusted sources (e.g., API Gateway, EventBridge triggers, or the ALB). Outbound rules will permit traffic to the Aurora DB cluster (port 5432), Amazon S3 (via VPC Endpoint or NAT Gateway), AWS Secrets Manager (via VPC Endpoint or NAT Gateway), and the Google Gemini API (via NAT Gateway).  
+* **Network Access Control Lists (NACLs):** NACLs will function as stateless firewalls at the subnet level, providing an additional layer of defense.2 While default NACLs permit all inbound and outbound traffic, custom NACLs will be configured for both public and private subnets to explicitly allow only necessary traffic and deny all other traffic. This creates a secondary defense mechanism, complementing the security provided by SGs.
+
+The combined use of Security Groups and NACLs, as recommended by AWS best practices 2, establishes a defense-in-depth security posture for the VPC. This layered approach enhances resilience against potential misconfigurations or vulnerabilities that might occur at a single security layer. Security Groups, being stateful and resource-specific, offer fine-grained control, while NACLs, being stateless and subnet-wide, provide a broader level of traffic filtering. Should a Security Group rule be inadvertently too permissive, a more restrictive NACL can still block undesired traffic, and vice-versa, although SGs are typically the primary control for instances. This layered strategy is crucial for safeguarding sensitive data and backend services, particularly given that the platform will handle potentially confidential documents.
+
+### **1.3. S3 Bucket Creation and Configuration**
+
+A single Amazon S3 bucket will be provisioned to store all unstructured data, including raw PDFs, processed files, and document type configurations.
+
+* **S3 Bucket Provisioning:**  
+  * One S3 bucket will be created (e.g., your-bucket-name).  
+  * The following prefix structure, as defined in the project requirements, will be strictly enforced within this bucket 1:  
+    * uploads/{department\_name}/: Destination for raw PDF files uploaded from the on-premise server via AWS DataSync. The {department\_name} component will be derived from the source folder name on the Windows server (e.g., Dept\_A).  
+    * processed/json/: Storage location for JSON output files generated by the Google Gemini API.  
+    * processed/excel/: Storage location for Excel files generated from the processed JSON data.  
+    * configs/prompts/: Storage location for all prompt.txt and schema.json files that define each document type.  
+  * Bucket policies and IAM permissions (detailed in Section 1.4) will be configured to ensure appropriate read and write access for different AWS services and IAM roles to these specific prefixes. For example, AWS DataSync will require write access to the uploads/ prefix, while the FastAPI backend will need read access to uploads/ and configs/prompts/, and write access to the processed/json/ and processed/excel/ prefixes.  
+  * S3 Versioning will be enabled on the bucket to preserve, retrieve, and restore every version of every object stored, providing an additional layer of data durability and recovery.  
+  * Consideration should be given to implementing S3 Lifecycle policies for managing object storage classes and automated deletion over time (e.g., transitioning older processed files to lower-cost storage tiers like S3 Glacier, or deleting them after a defined retention period). While not explicitly requested for Phase 1, this is a best practice for cost optimization.  
+  * S3 Block Public Access settings will be enabled at the bucket level to prevent accidental public exposure of data.
+
+The defined S3 prefix structure is not merely an organizational convenience; it forms a fundamental part of the application's data flow and operational logic. For instance, the department name embedded within the uploads/{department\_name}/ path is directly utilized by the backend system to associate incoming documents and subsequent processing jobs with specific departments.1 Similarly, the s3\_prompt\_path and s3\_schema\_path attributes stored in the document\_types database table directly reference objects within the configs/prompts/ prefix.1 Any deviation from this established S3 path structure, without corresponding modifications in the application code, would lead to functional failures. This underscores the critical importance of strict adherence to these naming conventions and the implementation of robust error handling in the backend to manage any malformed or unexpected paths. It also implies that any future alterations to this S3 structure will necessitate coordinated updates across multiple system components, including DataSync configurations, Lambda function processing logic, and FastAPI services.
+
+**Table 1: S3 Bucket Structure and Purpose**
+
+| S3 Path Prefix | Purpose/Data Stored | Primary AWS Service Interacting | Key Access Patterns (Read/Write) |
+| :---- | :---- | :---- | :---- |
+| uploads/{department\_name}/ | Raw PDF files from on-premise server | AWS DataSync, FastAPI Backend, AWS Lambda | DataSync: Write; FastAPI/Lambda: Read |
+| processed/json/ | JSON output from Gemini API | FastAPI Backend | FastAPI: Write; (Frontend/Users via API: Read) |
+| processed/excel/ | Excel files generated from JSON data | FastAPI Backend | FastAPI: Write; (Frontend/Users via API: Read) |
+| configs/prompts/ | prompt.txt and schema.json files for document types | FastAPI Backend (for creation/management), Core AI Processing | FastAPI (Admin): Write; Core AI Processing (FastAPI): Read |
+
+### **1.4. IAM Roles and Policies Definition**
+
+AWS Identity and Access Management (IAM) roles and policies will be meticulously defined and implemented based on the principle of least privilege. This ensures that each AWS service and application component has only the permissions necessary to perform its designated functions.
+
+* **FastAPI Backend Role:** This role will be assumed by the compute environment running the FastAPI application (e.g., EC2 instances, ECS tasks, Fargate tasks, or Lambda functions).  
+  * *Permissions:* Read access to specific S3 prefixes (uploads/, configs/prompts/). Write access to specific S3 prefixes (processed/json/, processed/excel/). Permissions to interact with the Amazon Aurora database (either through RDS IAM authentication or by retrieving standard credentials from AWS Secrets Manager). Permissions to retrieve secrets (e.g., database credentials, Gemini API key) from AWS Secrets Manager. Permissions to publish logs to Amazon CloudWatch Logs. Permissions to interact with AWS Cognito if required for backend token validation or user attribute lookups.  
+* **AWS Lambda Function Role (for S3 trigger):** This role will be assumed by the Lambda function that processes new file uploads to S3.  
+  * *Permissions:* Read access to the specific uploads/ S3 prefix. Write access to the processing\_jobs table in the Amazon Aurora database. Permissions to publish logs to Amazon CloudWatch Logs.  
+* **AWS DataSync Role:** This role will be used by the DataSync service to transfer files.  
+  * *Permissions:* Write access to the uploads/{department\_name}/ prefix within the designated S3 bucket.  
+* **Amazon EventBridge Scheduler Role:** This role will be assumed by EventBridge Scheduler to trigger backend tasks.  
+  * *Permissions:* Permissions to invoke the target, which could be a specific FastAPI endpoint (if exposed via API Gateway or an Application Load Balancer) or an intermediary Lambda function that subsequently calls the FastAPI endpoint.  
+* **IAM Users and Groups (for human access):** Separate IAM users and groups will be defined for administrators and developers, granting appropriate console and programmatic access. These will be distinct from the service roles used by AWS services.
+
+Where appropriate, AWS managed policies will be utilized; however, custom IAM policies will be created to ensure fine-grained control and strict adherence to the principle of least privilege.7
+
+The effectiveness and overall security of the entire platform are heavily dependent on the correct configuration of these granular IAM roles and policies. Incorrect or overly permissive settings can lead to service malfunctions or create significant security vulnerabilities. The intricate inter-service communication path—DataSync to S3, S3 event triggering a Lambda function, the Lambda function interacting with Aurora, and the FastAPI application accessing S3, Aurora, Secrets Manager, and the external Gemini API—is entirely governed by these IAM permissions.1 For instance, if the Lambda function's IAM role lacks the necessary permissions to write to the processing\_jobs table in Aurora, the automated job creation process will fail, potentially silently or with errors that are difficult to diagnose without a thorough understanding of IAM configurations and diligent log review. Similarly, if the FastAPI role is unable to retrieve the Gemini API key from Secrets Manager, the core AI processing functionality will be inoperable. This makes meticulous IAM configuration a critical task, not only for maintaining security but also for ensuring the basic operational functionality of the platform.
+
+### **1.5. AWS Secrets Manager Setup**
+
+AWS Secrets Manager will be configured to securely store, manage, and retrieve sensitive credentials, eliminating the need to hardcode them in application code or configuration files.
+
+* **Secrets to be Stored:**  
+  * Amazon Aurora database credentials: This includes the master user credentials or, preferably, credentials for an application-specific database user with least-privilege access.8  
+  * Google Gemini API key: The API key required to authenticate requests to the Google Gemini service will be stored securely.1 This aligns with practices for managing external API keys, such as storing an OpenAI key in Secrets Manager for a FastAPI application.10  
+* **Configuration:**  
+  * Resource-based policies will be configured for each secret to allow access only from the necessary IAM roles (e.g., the FastAPI backend role should be granted permission to retrieve the database credentials and the Gemini API key).  
+  * Automatic rotation for database credentials should be enabled if feasible and aligned with the organization's security policies. Secrets Manager can automate the rotation of credentials for supported databases like Amazon Aurora.
+
+The explicit plan to utilize AWS Secrets Manager for both database credentials and the external Gemini API key 1 demonstrates a commitment to robust security practices. This approach avoids the insecure methods of hardcoding secrets or managing them through environment variables or plain text configuration files. The "Global Settings Page" in the Admin Portal, intended for managing the Gemini API key 1, should ideally interact with Secrets Manager (via a secure backend API call that has permissions to update the secret) rather than storing the key in a less secure location. By centralizing all sensitive secrets in Secrets Manager, the application benefits from AWS's secure storage mechanisms, managed rotation capabilities (especially for database credentials), fine-grained access control through IAM, and comprehensive audit trails via AWS CloudTrail. This significantly mitigates the risk of accidental credential leakage and unauthorized access.
+
+### **1.6. S3 VPC Endpoint Configuration**
+
+To enhance security and potentially optimize network performance for S3 access from within the private subnets, an S3 Gateway VPC Endpoint will be configured.
+
+* **S3 Gateway VPC Endpoint:**  
+  * An S3 Gateway VPC Endpoint will be created within the VPC. This allows resources deployed in the private subnets (such as the FastAPI backend application and AWS Lambda functions) to access Amazon S3 directly without needing to traverse the internet via a NAT Gateway.3  
+  * This configuration improves security by keeping S3 traffic within the AWS network and can also lead to reduced data transfer costs compared to routing S3 traffic through NAT Gateways.  
+  * The route tables associated with the private subnets will be updated to include a route that directs S3-bound traffic through this VPC endpoint.
+
+Using an S3 VPC Gateway Endpoint represents a network optimization that bolsters security and can improve performance and cost-efficiency for S3 interactions originating from private subnets. This configuration ensures that all traffic between resources in the private subnets and Amazon S3 remains within the AWS network backbone. The FastAPI application and Lambda functions integral to this project will frequently interact with S3—reading PDF documents, prompt files, and schema definitions, as well as writing processed JSON and Excel files. Routing this traffic through a dedicated VPC endpoint, instead of relying on NAT Gateways, not only enhances the security posture by avoiding public internet traversal but also circumvents NAT Gateway data processing charges for this specific traffic. This is a standard AWS best practice for any resources within private subnets that require access to S3.3
+
+**Table 2: Key AWS Services for Phase 1**
+
+| Service Name | Primary Role in Project | Key Configuration Aspects/Considerations for Phase 1 |
+| :---- | :---- | :---- |
+| Amazon VPC | Network isolation and foundation | CIDR block, public/private subnets across multiple AZs, route tables, IGW, NAT Gateways, Security Groups, NACLs, VPC Endpoints |
+| Amazon S3 | Storage for raw PDFs, processed JSON/Excel, document type configurations (prompts/schemas) | Single bucket with defined prefix structure (uploads/, processed/, configs/), versioning, access policies (IAM), Block Public Access, S3 Gateway VPC Endpoint |
+| Amazon Aurora (PostgreSQL) | Relational database for structured data (users, jobs, departments, etc.) | PostgreSQL-compatible cluster, deployment in private subnets, multi-AZ, security groups, encryption, backups, parameter groups, initial schema definition |
+| AWS Cognito | User authentication (sign-up, sign-in) | User Pool setup, user attributes, password policies, Phase 1 email/password auth flow (Cognito Hosted UI), App Client for FastAPI integration |
+| AWS DataSync | Automated file ingestion from on-premise Windows server to S3 | Agent deployment on-premise, task configuration for source/destination, scheduling |
+| Amazon EventBridge Scheduler | Serverless scheduler for recurring backend jobs (daily batch processing) | Scheduled rule (daily), target configuration (FastAPI endpoint or intermediary Lambda) |
+| AWS Lambda | Serverless compute for S3 triggers (new file ingestion processing) | Function for S3 uploads/ trigger, logic to parse S3 path for department, create processing\_jobs record in Aurora |
+| AWS Secrets Manager | Secure storage and management of database credentials and Gemini API key | Storing Aurora credentials and Gemini API key, resource-based policies for access control by IAM roles (e.g., FastAPI backend), potential credential rotation |
+| AWS IAM | Identity and Access Management for all AWS resources and services | Least privilege roles and policies for FastAPI, Lambda, DataSync, EventBridge; user/group management for human access |
+
+## **Section 2: Database Setup & Configuration (Amazon Aurora PostgreSQL)**
+
+This section details the provisioning of the Amazon Aurora PostgreSQL-Compatible Edition database cluster and the initial schema setup. This relational database will serve as the central repository for all structured application data, including user information, job records, and department data.1
+
+### **2.1. Provision Amazon Aurora PostgreSQL Cluster**
+
+An Amazon Aurora PostgreSQL-Compatible DB cluster will be created to host the application's relational data.
+
+* **Cluster Configuration:**  
+  * An appropriate DB instance class (e.g., db.r5.large or a similar class, potentially starting with a smaller instance class for development and testing environments) and a compatible PostgreSQL engine version will be selected.3  
+  * The cluster will be deployed within the private subnets established in Section 1.1. To ensure high availability and resilience, instances will be distributed across multiple Availability Zones (AZs).3 This requires creating a DB Subnet Group that encompasses private subnets from at least two, preferably three, different AZs.  
+  * Security Group configuration is critical: the Aurora cluster's security group will be configured to allow inbound traffic on the PostgreSQL port (typically 5432\) exclusively from the security group associated with the FastAPI application resources. All other inbound connections will be denied.  
+  * Encryption at rest will be enabled using AWS Key Management Service (KMS) to protect sensitive data stored in the database.  
+  * Automated backups will be configured with an appropriate retention period.3 A suitable maintenance window will also be defined for system updates and patches.  
+  * Enhanced Monitoring will be enabled for the Aurora cluster.3 This provides detailed metrics and insights into database performance at a fine granularity (e.g., one-second), aiding in performance tuning and troubleshooting.
+
+### **2.2. Configure Database Parameters**
+
+Initial database parameters will be set during or immediately after cluster provisioning.
+
+* **Parameter Settings:**  
+  * An initial database name (e.g., app\_db) will be defined, as indicated in guides for Aurora setup.3  
+  * The master username will be specified, and its password will be securely managed using AWS Secrets Manager, as configured in Section 1.5. This avoids exposing or hardcoding sensitive credentials.  
+  * While Amazon Aurora's default parameter settings are generally well-optimized for performance and reliability, key PostgreSQL parameters may be reviewed and adjusted based on specific application requirements or performance tuning needs.
+
+### **2.3. Define Initial Database Schema**
+
+The database schema, as detailed in the project documentation 1, will be translated into SQL Data Definition Language (DDL) statements or, more commonly when using an ORM, into ORM model definitions.
+
+* **Table Structures:**  
+  * **departments Table:** department\_id (SERIAL, Primary Key), department\_name (VARCHAR, UNIQUE, NOT NULL).  
+  * **users Table:** user\_id (SERIAL, Primary Key), cognito\_sub (UUID, UNIQUE, NOT NULL), name (VARCHAR, NOT NULL), email (VARCHAR, UNIQUE, NOT NULL), role (VARCHAR, NOT NULL, DEFAULT 'user'), department\_id (INTEGER, Foreign Key \-\> departments.department\_id, NULLABLE).  
+  * **document\_types Table:** doc\_type\_id (SERIAL, Primary Key), type\_name (VARCHAR, UNIQUE, NOT NULL), s3\_prompt\_path (VARCHAR, NOT NULL), s3\_schema\_path (VARCHAR, NOT NULL).  
+  * **department\_doc\_type\_access Table (Many-to-Many Relationship):** department\_id (INTEGER, Foreign Key \-\> departments.department\_id), doc\_type\_id (INTEGER, Foreign Key \-\> document\_types.doc\_type\_id).  
+  * **processing\_jobs Table:** job\_id (SERIAL, Primary Key), original\_filename (VARCHAR, NOT NULL), s3\_pdf\_path (VARCHAR, NOT NULL), s3\_json\_path (VARCHAR, NULLABLE), s3\_excel\_path (VARCHAR, NULLABLE), status (VARCHAR, NOT NULL), error\_message (TEXT, NULLABLE), uploader\_user\_id (INTEGER, Foreign Key \-\> users.user\_id, NOT NULL), doc\_type\_id (INTEGER, Foreign Key \-\> document\_types.doc\_type\_id, NOT NULL), created\_at (TIMESTAMP, DEFAULT CURRENT\_TIMESTAMP).  
+  * **api\_usage Table:** usage\_id (SERIAL, Primary Key), job\_id (INTEGER, Foreign Key \-\> processing\_jobs.job\_id, NOT NULL), input\_token\_count (INTEGER, NOT NULL), output\_token\_count (INTEGER, NOT NULL), api\_call\_timestamp (TIMESTAMP, DEFAULT CURRENT\_TIMESTAMP).  
+* All primary keys, foreign keys, unique constraints, not-null constraints, default values, and data types must be correctly specified as per the documentation to ensure data integrity and relational consistency.
+
+The provided database schema 1 is highly detailed and serves as the authoritative data model for all structured information within the application. The integrity enforced by its relational structure, particularly through foreign key constraints, is crucial for maintaining data consistency and for implementing key business rules. For example, the processing\_jobs.uploader\_user\_id column is a non-nullable foreign key referencing users.user\_id, ensuring that every processing job can be audited back to a specific user. Similarly, the processing\_jobs.doc\_type\_id column links to document\_types.doc\_type\_id and is also non-nullable, guaranteeing that every job is processed against a predefined document type. This structured approach is fundamental to the application's reliability and its ability to support meaningful data querying and analysis. Any deviation in the schema implementation from these specifications will have cascading negative effects on the API logic and the overall integrity of the data.
+
+**Table 3: Detailed Database Schema**
+
+| Table Name | Column Name | Data Type | Constraints | Description |
+| :---- | :---- | :---- | :---- | :---- |
+| **departments** | department\_id | SERIAL | Primary Key | Unique identifier for the department. |
+|  | department\_name | VARCHAR | UNIQUE, NOT NULL | The name of the department (e.g., "Finance", "HR"). |
+| **users** | user\_id | SERIAL | Primary Key | Unique identifier for the user. |
+|  | cognito\_sub | UUID | UNIQUE, NOT NULL | The unique identifier from AWS Cognito. |
+|  | name | VARCHAR | NOT NULL | The user's full name. |
+|  | email | VARCHAR | UNIQUE, NOT NULL | The user's email address. |
+|  | role | VARCHAR | NOT NULL, DEFAULT 'user' | The user's role ('admin' or 'user'). |
+|  | department\_id | INTEGER | Foreign Key \-\> departments.department\_id, NULLABLE | The department the user belongs to. If NULL, user is "unassigned". |
+| **document\_types** | doc\_type\_id | SERIAL | Primary Key | Unique identifier for the document type. |
+|  | type\_name | VARCHAR | UNIQUE, NOT NULL | The friendly name for the document type (e.g., "Supplier ABC Invoice"). |
+|  | s3\_prompt\_path | VARCHAR | NOT NULL | The S3 path to the prompt.txt file. |
+|  | s3\_schema\_path | VARCHAR | NOT NULL | The S3 path to the schema.json file. |
+| **department\_doc\_type\_access** | department\_id | INTEGER | Foreign Key \-\> departments.department\_id, Primary Key component | Links to a department. |
+|  | doc\_type\_id | INTEGER | Foreign Key \-\> document\_types.doc\_type\_id, Primary Key component | Links to an accessible document type. |
+| **processing\_jobs** | job\_id | SERIAL | Primary Key | Unique identifier for the processing job. |
+|  | original\_filename | VARCHAR | NOT NULL | The original name of the uploaded file. |
+|  | s3\_pdf\_path | VARCHAR | NOT NULL | S3 path to the raw PDF file. |
+|  | s3\_json\_path | VARCHAR | NULLABLE | S3 path to the processed JSON file. |
+|  | s3\_excel\_path | VARCHAR | NULLABLE | S3 path to the processed Excel file. |
+|  | status | VARCHAR | NOT NULL | Current state of the job ('pending', 'processing', 'success', 'failed'). |
+|  | error\_message | TEXT | NULLABLE | Stores any error messages if the job fails. |
+|  | uploader\_user\_id | INTEGER | Foreign Key \-\> users.user\_id, NOT NULL | The user who initiated the job. |
+|  | doc\_type\_id | INTEGER | Foreign Key \-\> document\_types.doc\_type\_id, NOT NULL | The document type used for processing. |
+|  | created\_at | TIMESTAMP | DEFAULT CURRENT\_TIMESTAMP | When the job was created. |
+| **api\_usage** | usage\_id | SERIAL | Primary Key | Unique identifier for the API call log. |
+|  | job\_id | INTEGER | Foreign Key \-\> processing\_jobs.job\_id, NOT NULL | The job associated with this API call. |
+|  | input\_token\_count | INTEGER | NOT NULL | Tokens used for the input prompt. |
+|  | output\_token\_count | INTEGER | NOT NULL | Tokens generated in the response. |
+|  | api\_call\_timestamp | TIMESTAMP | DEFAULT CURRENT\_TIMESTAMP | When the API call was made. |
+
+### **2.4. Initialize Alembic for Schema Migrations**
+
+Alembic, a database migration tool for SQLAlchemy, will be set up within the FastAPI project to manage and version control database schema changes over time.
+
+* **Alembic Setup:**  
+  * Alembic will be installed as a project dependency (e.g., pip install alembic).11  
+  * The Alembic environment will be initialized within the FastAPI project directory (e.g., by running alembic init alembic).11 This creates a standard directory structure for migration scripts and configuration.  
+  * The alembic/env.py configuration file will be modified:  
+    * It will be configured to reference the SQLAlchemy models' Base.metadata object, which Alembic uses to understand the target database schema.12  
+    * The sqlalchemy.url setting will be configured to obtain the database connection string. This string should be read from environment variables, which, in a production-like setup, would be populated by the application from credentials securely retrieved from AWS Secrets Manager.12
+
+Integrating Alembic from the very beginning of Phase 1, even before all API endpoints are fully developed, signifies a mature and proactive approach to database lifecycle management. This practice prepares the project for iterative development and enables controlled, versioned evolution of the database schema. By establishing Alembic early, the initial creation of the database schema (Task 2.5) will itself be managed as the first migration. Any subsequent modifications to the schema—such as adding new columns, tables, or indexes due to evolving requirements or in later project phases—can be systematically handled through new Alembic revision scripts. This provides robust version control for the database schema, ensures consistency when deploying to different environments (development, testing, production), and allows for reliable rollbacks if schema changes introduce issues. This structured approach preempts the common pitfalls of manual schema alterations or ad-hoc SQL scripts, which are notoriously error-prone and difficult to track in a collaborative development environment.11
+
+### **2.5. Create and Apply Initial Alembic Migration for the Defined Schema**
+
+Once Alembic is initialized and SQLAlchemy ORM models corresponding to the schema defined in Section 2.3 are created within the FastAPI project, the first migration script will be generated and applied.
+
+* **Initial Migration:**  
+  * Alembic's autogenerate feature will be used to create the initial migration script based on the defined SQLAlchemy models (e.g., alembic revision \-m "create\_initial\_tables" \--autogenerate).11 This command compares the models with the (currently empty) database and generates the Python code necessary to create the tables.  
+  * The automatically generated migration script will be carefully reviewed to ensure it accurately reflects the intended database schema and all its constraints.  
+  * The migration will then be applied to the Amazon Aurora database (e.g., alembic upgrade head).11 This command executes the upgrade() function in the migration script, creating all the defined tables and their structures in the database.
+
+## **Section 3: Authentication Service Setup (AWS Cognito)**
+
+User authentication for the platform will be managed by AWS Cognito, a robust and scalable identity management service. This section covers the setup of Cognito for Phase 1\.
+
+### **3.1. Configure AWS Cognito User Pool**
+
+An AWS Cognito User Pool will be created and configured to manage user identities.
+
+* **User Pool Configuration:**  
+  * User attributes to be stored will be defined, including standard attributes like email and name. As per the project requirements, email will be used as the username for sign-in.1  
+  * Password policies, including complexity requirements (e.g., minimum length, character types) and potential expiry settings, will be configured to align with security best practices.  
+  * Sign-up and sign-in flows will be configured. For Phase 1, users will register and log in using their email (as username) and a password.1  
+  * The "Allow users to sign themselves up" option needs clarification. The project document states "Users will register and log in" 1, suggesting self-registration is intended for Phase 1\. If initial user creation is to be exclusively managed by administrators, this option should be disabled. This point requires confirmation before final configuration.  
+  * Email verification settings (e.g., sending a verification code or link to the user's email upon registration) should be configured if required to confirm user email addresses.  
+  * Multi-Factor Authentication (MFA) is planned for Phase 2 for users logging in directly with username/password after Single Sign-On (SSO) is implemented.1 The initial User Pool setup might not enforce MFA but should be designed to allow for its straightforward enablement later.
+
+### **3.2. Define Phase 1 Authentication Flow**
+
+The authentication mechanism for Phase 1 will rely on the features provided by AWS Cognito.
+
+* **Phase 1 Flow:**  
+  * Users will register and subsequently log in using their username (which is their email address) and a password. This interaction will be facilitated by the standard AWS Cognito-hosted UI.1  
+  * The FastAPI backend application will be responsible for validating JSON Web Tokens (JWTs) issued by Cognito upon successful user authentication. These tokens will be included in API requests from the frontend to authenticate users and authorize access to protected resources.
+
+### **3.3. Set up App Client for FastAPI Backend Integration**
+
+An App Client will be created within the Cognito User Pool to enable the FastAPI backend to interact with Cognito.
+
+* **App Client Configuration:**  
+  * An App Client specifically for the FastAPI backend will be configured. This client allows the backend to, for example, validate tokens. If the backend needs to perform user management operations via Cognito APIs (though much of this is handled by Cognito itself), this App Client would also be used.  
+  * The App Client ID and the User Pool ID are critical pieces of information that will be required by the FastAPI application for its configuration. These should be securely stored and accessed by the backend.  
+  * Appropriate OAuth 2.0 grant types and scopes will be configured if applicable. For a scenario where the backend primarily validates tokens issued by the Cognito Hosted UI, the configuration might be minimal, focusing on ensuring the backend can identify itself as a trusted client for token introspection or public key retrieval for JWT signature validation.
+
+Employing AWS Cognito as the authentication provider effectively decouples user identity management from the core application logic of the FastAPI backend. The backend application does not need to implement or manage complex and sensitive processes such as password hashing, secure password storage, user registration workflows, or token issuance directly. Instead, it delegates these critical security functions to Cognito and primarily focuses on validating the JWTs presented by client applications.13 This separation of concerns offers several significant advantages:
+
+1. **Enhanced Security:** It leverages AWS's robust, compliant, and regularly audited authentication infrastructure, reducing the risk of security vulnerabilities in custom-built authentication systems.  
+2. **Scalability:** Cognito is a managed service designed to scale automatically to handle a large number of users and authentication requests.  
+3. **Reduced Development Effort:** The development team is freed from the considerable effort of building, testing, and maintaining complex authentication and identity management logic.  
+4. **Future-Proofing:** This architecture simplifies the integration of more advanced authentication features in the future, such as the planned Single Sign-On (SSO) with Microsoft Entra ID for Phase 2 1 or integration with social identity providers, as Cognito natively supports these capabilities.
+
+## **Section 4: Backend API Scaffolding & Core Setup (Python & FastAPI)**
+
+This section outlines the initial setup of the Python FastAPI project, which will serve as the central API for all business logic, AI processing, and database interactions.1 This includes establishing the project structure, integrating with the database, and setting up essential middleware.
+
+### **4.1. Establish FastAPI Project Structure**
+
+A well-organized and maintainable directory structure for the FastAPI application is crucial for long-term development and collaboration.
+
+* **Project Layout:**  
+  * The project will include dedicated directories for:  
+    * API routes/routers (e.g., app/api/endpoints/ or app/routers/).  
+    * Models: Pydantic models for request and response validation (e.g., app/schemas/ or app/models/pydantic\_models.py), and SQLAlchemy models for database table representations (e.g., app/db/models.py or app/models/db\_models.py).  
+    * Services/Business Logic (e.g., app/services/ or app/crud/).  
+    * Database interaction layer (e.g., app/db/session.py for session management).  
+    * Core configurations (e.g., app/core/config.py).  
+    * Automated tests (e.g., tests/).  
+    * Alembic migration scripts (typically alembic/).  
+  * A Python virtual environment will be used to isolate project dependencies. Dependencies will be managed using a requirements.txt file or, for more advanced dependency management and packaging, pyproject.toml with tools like Poetry or PDM.  
+  * Key initial dependencies will include: fastapi, uvicorn\[standard\] (for the ASGI server), sqlalchemy (for ORM), psycopg2-binary (PostgreSQL adapter for synchronous SQLAlchemy) or asyncpg (for asynchronous SQLAlchemy), alembic (for database migrations), python-dotenv (for managing environment variables during development), and boto3 (the AWS SDK for Python, for interacting with services like S3 and Secrets Manager).
+
+### **4.2. Implement Secure Database Connectivity**
+
+The FastAPI application must connect to the Amazon Aurora PostgreSQL database securely and efficiently.
+
+* **Database Connection:**  
+  * SQLAlchemy will be used as the Object-Relational Mapper (ORM) for database interactions. This choice is consistent with the use of Alembic for migrations and is a common practice in FastAPI applications.12  
+  * Database connection details (hostname, port, username, password, database name) will not be hardcoded in the application. Instead, they will be retrieved securely from AWS Secrets Manager at application startup.8 The application will use environment variables to point to the secret in Secrets Manager, or the AWS SDK (Boto3) will fetch these details directly.  
+  * Connection pooling, a feature provided by SQLAlchemy, will be implemented and configured to efficiently manage and reuse database connections, improving performance and resource utilization.14 Parameters such as pool\_pre\_ping, pool\_size, max\_overflow, pool\_timeout, and pool\_recycle will be considered for tuning the connection pool behavior.14  
+  * A decision will be made regarding the use of synchronous or asynchronous SQLAlchemy operations. Given that the project requirements include WebSockets for real-time communication 1, adopting an asynchronous approach for database interactions (e.g., using create\_async\_engine with asyncpg 14) might be beneficial for overall application responsiveness and scalability.
+
+### **4.3. Implement SQLAlchemy ORM Models**
+
+SQLAlchemy ORM models will be defined to represent the database tables outlined in Section 2.3.
+
+* **Model Definitions:**  
+  * These Python classes, inheriting from SQLAlchemy's declarative base, will map to the database tables (departments, users, document\_types, department\_doc\_type\_access, processing\_jobs, api\_usage).  
+  * They will be the primary interface through which the application interacts with the database for CRUD (Create, Read, Update, Delete) operations.  
+  * These models are also used by Alembic to understand the database schema and generate migration scripts.  
+  * Relationships between tables (e.g., one-to-many between users and processing\_jobs, many-to-many between departments and document\_types via the department\_doc\_type\_access association table) must be correctly defined in the SQLAlchemy models using constructs like relationship() and ForeignKey.
+
+### **4.4. Develop Basic Health Check Endpoint**
+
+A simple health check endpoint will be implemented to allow external services to monitor the application's status.
+
+* **Health Endpoint:**  
+  * An endpoint, typically /health or /status, will be created.  
+  * When accessed (e.g., via an HTTP GET request), it will return a basic success response (e.g., HTTP 200 OK with a simple JSON body like {"status": "healthy"}) if the application is running and able to respond.  
+  * This endpoint can be used by load balancers, container orchestration platforms (like Kubernetes or ECS), or external monitoring systems to verify the application's availability.
+
+### **4.5. Configure CORS and other essential middleware**
+
+Cross-Origin Resource Sharing (CORS) middleware must be configured in FastAPI to allow the Next.js frontend to communicate with the backend API.
+
+* **Middleware Setup:**  
+  * FastAPI's CORSMiddleware will be added to the application.  
+  * It will be configured with the appropriate parameters:  
+    * allow\_origins: A list of origins (domains) from which the frontend will be served (e.g., http://localhost:3000 during development, and the production frontend domain).  
+    * allow\_credentials: Typically set to True if cookies or authentication headers need to be passed.  
+    * allow\_methods: A list of allowed HTTP methods (e.g., \`\`).  
+    * allow\_headers: A list of allowed HTTP headers.  
+  * Other essential middleware, such as for centralized request logging or custom error handling, may also be considered and implemented at this stage.
+
+Configuring CORS correctly and early in the development lifecycle is crucial for enabling smooth parallel development of the frontend and backend components. The project specifies a Next.js frontend and a FastAPI backend.1 During development and often in production, these two parts of the application will be served from different origins (e.g., localhost:3000 for Next.js and localhost:8000 for FastAPI, or different subdomains in production). Web browsers enforce the Same-Origin Policy, which, by default, blocks JavaScript running on one origin from making HTTP requests to another origin. CORS is the mechanism by which a server can explicitly permit such cross-origin requests. By setting up FastAPI's CORSMiddleware with the correct allow\_origins, allow\_methods, and allow\_headers at this stage, frontend developers can immediately start making API calls to the backend without being blocked by browser security policies. This proactive configuration helps avoid frustrating integration issues and streamlines the overall development workflow.
+
+## **Section 5: Core API Endpoint Development (FastAPI)**
+
+This section details the development of essential API endpoints for managing the core entities of the system. These endpoints will primarily be consumed by the Admin Portal in later phases but form the backbone of the platform's administrative capabilities and data access. All endpoints requiring authentication will validate JWTs issued by AWS Cognito.
+
+### **5.1. User Management Endpoints (Admin)**
+
+CRUD (Create, Read, Update, Delete) endpoints for managing users will be developed. These endpoints will be restricted to users with the 'admin' role.
+
+* POST /users: Create a new user. This process will involve creating a user in AWS Cognito (if self-registration is not the primary path or for admin-initiated creation) and then storing associated user profile information (name, email, role, department\_id, and the cognito\_sub identifier from Cognito) in the local users database table.1  
+* GET /users: List all users. This endpoint should support pagination and potentially filtering capabilities (e.g., by department, by role) to handle a large number of users efficiently.  
+* GET /users/{user\_id}: Retrieve the details of a specific user by their user\_id.  
+* PUT /users/{user\_id}: Update an existing user's details. This includes modifying their name, role, and department\_id assignment, as specified for the Admin Portal's User Management Page.1 Updating email might require coordination with Cognito if email is the username.  
+* DELETE /users/{user\_id}: Delete a user. This operation must handle the deletion of the user in AWS Cognito and the removal or archival of the corresponding record in the local users database table. Consideration must be given to how associated data (e.g., processing\_jobs uploaded by the user) is handled – typically, foreign key constraints or application logic would prevent deletion if dependent records exist, or such records might be anonymized or reassigned.
+
+### **5.2. Department Management Endpoints (Admin)**
+
+CRUD endpoints for managing departments will be developed, accessible only by 'admin' users.1
+
+* POST /departments: Create a new department by providing its department\_name.  
+* GET /departments: List all existing departments.  
+* GET /departments/{department\_id}: Retrieve details of a specific department by its department\_id.  
+* PUT /departments/{department\_id}: Update an existing department, primarily for renaming it.  
+* DELETE /departments/{department\_id}: Delete a department. A critical piece of logic associated with this operation is that if a department is deleted, any users currently assigned to that department must have their department\_id field in the users table set to NULL. This effectively makes them "unassigned" until an administrator reassigns them to another department.1
+
+### **5.3. Document Type Management Endpoints (Admin)**
+
+Endpoints for managing document types, including their associated prompt.txt and schema.json files, will be developed for 'admin' users.1
+
+* POST /document-types: Create a new document type. This endpoint will accept the type\_name for the document type. It will also handle the upload of two files: prompt.txt (containing the prompt for the Gemini API) and schema.json (defining the expected JSON output structure). These files will be uploaded to the designated S3 path: s3://your-bucket-name/configs/prompts/. The S3 paths to these uploaded files (s3\_prompt\_path and s3\_schema\_path) along with the type\_name will be stored in the document\_types database table.  
+* GET /document-types: List all available document types.  
+* GET /document-types/{doc\_type\_id}: Retrieve details of a specific document type, including its name and the S3 paths to its prompt and schema files.  
+* PUT /document-types/{doc\_type\_id}: Update an existing document type. This could involve changing its type\_name or re-uploading new versions of the prompt.txt and/or schema.json files (which would then update the corresponding S3 paths in the database).  
+* DELETE /document-types/{doc\_type\_id}: Delete a document type. This operation should consider the cleanup of the associated prompt.txt and schema.json files from S3. It also needs to handle the impact on the department\_doc\_type\_access table (removing any associations) and consider how historical processing\_jobs that used this document type are affected (typically, the historical record remains, but new jobs cannot use the deleted type).
+
+### **5.4. Department Document Type Access Management Endpoints (Admin)**
+
+Endpoints to manage the many-to-many relationship between departments and document types will be developed, allowing administrators to control which document types are accessible to which departments.1 These are also restricted to 'admin' users.
+
+* POST /departments/{department\_id}/document-types/{doc\_type\_id}: Grant a specific department access to a specific document type. This action will create a new record in the department\_doc\_type\_access association table, linking the department\_id and doc\_type\_id.  
+* DELETE /departments/{department\_id}/document-types/{doc\_type\_id}: Revoke a department's access to a document type by deleting the corresponding record from the department\_doc\_type\_access table.  
+* GET /departments/{department\_id}/document-types: List all document types that are currently accessible to a specific department.  
+* GET /document-types/{doc\_type\_id}/departments: List all departments that currently have access to a specific document type.
+
+### **5.5. processing\_jobs Endpoints (General Info & Admin/User Access)**
+
+Endpoints for querying processing jobs will be developed. Access to job information will be governed by the user's role and department affiliation.
+
+* GET /jobs: List processing jobs. This endpoint will implement role-based access control:  
+  * **Admin Role:** Administrators can view all jobs from all users and across all departments. The endpoint should support filtering capabilities (e.g., by status, uploader, department, date range) as specified for the Admin Portal's Job Management Page.1  
+  * **User Role:** Regular users can view their own submitted jobs and all jobs submitted by other users within the same department.1  
+* GET /jobs/{job\_id}: Retrieve the detailed information for a specific processing job. Access to this endpoint will also be subject to the same role-based and department-based authorization logic as the /jobs listing endpoint.  
+* Endpoints related to re-triggering jobs will be detailed in Section 10, as that workflow involves the creation of a *new* job record.
+
+The GET /jobs endpoint, in particular, necessitates non-trivial authorization logic. It's not merely a matter of authenticating the user (i.e., confirming they are logged in) but also of authorizing their access to specific data based on their role and departmental affiliation. This will be a key area for careful implementation and thorough testing. The project requirements 1 clearly delineate different data visibility rules for 'admin' and 'user' roles concerning processing\_jobs.  
+For an 'admin', the system should return all jobs. For a 'user', the system must return jobs where the uploader\_user\_id matches their own ID, or where the job's uploader belongs to the same department\_id as the currently logged-in user. This latter condition requires joining the processing\_jobs table with the users table (on uploader\_user\_id) to ascertain the uploader's department for each job and compare it against the requester's department. This conditional querying, driven by user role and departmental ties, introduces a layer of complexity that must be robustly handled within the service layer of the FastAPI application to ensure data is exposed correctly and securely.  
+**Table 4: Phase 1 Core API Endpoints (FastAPI)**
+
+| Endpoint Path | HTTP Method | Brief Description | Associated User Role(s) | High-Level Request Body/Query Params Notes | High-Level Response Notes |
+| :---- | :---- | :---- | :---- | :---- | :---- |
+| /users | POST | Create a new user | Admin | User details: name, email, password (for Cognito), role, department\_id | Details of the created user, including user\_id and cognito\_sub. |
+| /users | GET | List all users | Admin | Optional query params for pagination, filtering (e.g., department\_id, role) | Paginated list of user details. |
+| /users/{user\_id} | GET | Get details of a specific user | Admin | Path param: user\_id | Detailed information for the specified user. |
+| /users/{user\_id} | PUT | Update user details (name, role, department) | Admin | Path param: user\_id. Body: Fields to update (name, role, department\_id) | Updated user details. |
+| /users/{user\_id} | DELETE | Delete a user | Admin | Path param: user\_id | Confirmation message (e.g., HTTP 204 No Content). |
+| /departments | POST | Create a new department | Admin | Body: department\_name | Details of the created department, including department\_id. |
+| /departments | GET | List all departments | Admin | None | List of all departments. |
+| /departments/{department\_id} | GET | Get details of a specific department | Admin | Path param: department\_id | Detailed information for the specified department. |
+| /departments/{department\_id} | PUT | Rename a department | Admin | Path param: department\_id. Body: new\_department\_name | Updated department details. |
+| /departments/{department\_id} | DELETE | Delete a department (sets user department\_id to NULL) | Admin | Path param: department\_id | Confirmation message. |
+| /document-types | POST | Create a new document type (uploads prompt.txt, schema.json to S3) | Admin | Body: type\_name, multipart/form-data for prompt.txt and schema.json files | Details of the created document type, including doc\_type\_id and S3 paths. |
+| /document-types | GET | List all document types | Admin | None | List of all document types. |
+| /document-types/{doc\_type\_id} | GET | Get details of a specific document type | Admin | Path param: doc\_type\_id | Detailed information for the document type, including S3 paths. |
+| /document-types/{doc\_type\_id} | PUT | Update a document type (name, or re-upload prompt/schema) | Admin | Path param: doc\_type\_id. Body: type\_name (optional), new prompt.txt/schema.json files (optional) | Updated document type details. |
+| /document-types/{doc\_type\_id} | DELETE | Delete a document type | Admin | Path param: doc\_type\_id | Confirmation message. |
+| /departments/{department\_id}/document-types/{doc\_type\_id} | POST | Grant a department access to a document type | Admin | Path params: department\_id, doc\_type\_id | Confirmation of access grant. |
+| /departments/{department\_id}/document-types/{doc\_type\_id} | DELETE | Revoke department's access to a document type | Admin | Path params: department\_id, doc\_type\_id | Confirmation of access revocation. |
+| /departments/{department\_id}/document-types | GET | List document types accessible by a specific department | Admin, User (filtered) | Path param: department\_id | List of accessible document types for the department. (User role sees only types for their own department). |
+| /document-types/{doc\_type\_id}/departments | GET | List departments that can access a specific document type | Admin | Path param: doc\_type\_id | List of departments with access. |
+| /jobs | GET | List processing jobs (role-based access: Admin all; User own \+ dept) | Admin, User | Optional query params for filtering (status, uploader, department, date), pagination | Paginated list of job details, scoped by user role. |
+| /jobs/{job\_id} | GET | Get details of a specific job (role-based access) | Admin, User | Path param: job\_id | Detailed information for the specified job, if accessible by the user. |
+| /health | GET | Health check endpoint | System/Unauthenticated | None | {"status": "healthy"} |
+
+## **Section 6: Core AI Processing Workflow Implementation (FastAPI Service Logic)**
+
+This section details the implementation of the central "Core AI Processing" logic within the FastAPI backend. This service is the engine responsible for extracting data from documents using the Google Gemini API, as described in the project documentation.1
+
+### **6.1. Design and Implement Internal Service/Module for "Core AI Processing"**
+
+A reusable service or module will be created within the FastAPI application to encapsulate the entire AI processing logic for a given job\_id. This modular design ensures that the core processing steps can be consistently invoked by different triggers, such as scheduled batch processing or immediate user uploads.
+
+* **Input:** The primary input to this service will be the job\_id of the processing job to be executed.  
+* **Processing Steps:**  
+  * 6.1.1. Set/Update Job Status to 'processing':  
+    The first action upon initiating processing for a job\_id is to update its status in the processing\_jobs database table. The status field for the corresponding job\_id will be set to 'processing'. This provides a clear indication that the job has been picked up and is actively being worked on.  
+  * 6.1.2. Download PDF from s3\_pdf\_path:  
+    The service will retrieve the s3\_pdf\_path from the processing\_jobs record associated with the input job\_id. Using this S3 path, the raw PDF file will be downloaded from Amazon S3. The file can be processed in memory if feasible, or downloaded to a temporary local file storage if its size or the processing library requires file system access.  
+  * 6.1.3. Retrieve prompt.txt and schema.json from S3:  
+    The doc\_type\_id will be retrieved from the processing\_jobs record. This doc\_type\_id is then used to query the document\_types table to fetch the s3\_prompt\_path and s3\_schema\_path. These paths point to the prompt.txt and schema.json files stored in the s3://your-bucket-name/configs/prompts/ S3 prefix. Both configuration files will be downloaded from S3. The prompt.txt contains the specific instructions for the Gemini API, and the schema.json likely defines the desired structure of the JSON output from the AI model.  
+  * 6.1.4. Integrate Google Gemini API Call:  
+    The input for the Google Gemini API call will be prepared. This typically involves combining the content extracted from the downloaded PDF document with the instructions from the downloaded prompt.txt file. The schema.json may also be used to instruct the Gemini API on the format of the expected response.  
+    The Google Gemini API key, required for authenticating the API request, will be retrieved securely from AWS Secrets Manager (as configured in Section 1.5).  
+    The API call to the Google Gemini service will then be made. Robust error handling, including considerations for network timeouts and potential retry mechanisms (though not explicitly specified in the initial requirements, this is a good practice for external API calls), should be implemented.  
+  * 6.1.5. Handle Gemini API Success:  
+    If the Google Gemini API call is successful and returns a valid JSON response that conforms to the expected structure (potentially validated against the schema.json):  
+    * **Log API Usage:** The input\_token\_count (tokens used for the input prompt) and output\_token\_count (tokens generated in the API response) will be recorded in the api\_usage database table. This record will be linked to the current job\_id.1  
+    * **Save JSON Output:** The JSON data returned by the Gemini API will be saved to the s3://your-bucket-name/processed/json/ S3 prefix. The filename for the saved JSON should be unique and ideally related to the job (e.g., {job\_id}.json or {original\_filename\_base}\_{job\_id}.json) to ensure easy association and retrieval.  
+    * **Generate and Save Excel:** The processed JSON data will be converted into an Excel file. This generated Excel file will then be saved to the s3://your-bucket-name/processed/excel/ S3 prefix. A similar filename convention to the JSON output should be used for the Excel file.  
+    * **Update processing\_jobs Record:** The processing\_jobs database record for the current job\_id will be updated. The s3\_json\_path and s3\_excel\_path fields will be populated with the S3 paths of the newly saved JSON and Excel files, respectively. The status field will be set to 'success', and any pre-existing error\_message for this job should be cleared.  
+  * 6.1.6. Handle Gemini API Failure:  
+    If the Google Gemini API call fails (e.g., due to an API error, network issue, invalid input) or if the returned response is not valid or does not meet expectations:  
+    * **Log Error Details:** The specific error message or details about the failure will be stored in the error\_message field of the processing\_jobs database record for the current job\_id.  
+    * **Set Status to 'failed'**: The status field in the processing\_jobs record will be updated to 'failed'.
+
+The Core AI Processing workflow involves a sequence of critical steps, including database updates, S3 object operations, and external API calls.1 Ensuring atomicity across all these operations is challenging, but robust state management and error recovery mechanisms are crucial. For instance, if saving the generated Excel file to S3 fails after a successful Gemini API call and the successful saving of the JSON output, the job should ideally reflect this partial failure. The current specification indicates that if any sub-step within the success path (Task 6.1.5) fails, the process should likely transition to the failure handling path (Task 6.1.6). The status field in the processing\_jobs table is the primary indicator of a job's state and is critical for tracking its progress and outcome. While full ACID (Atomicity, Consistency, Isolation, Durability) transactions across distributed services like S3 and an external API are not typically feasible, the application logic must be designed to handle partial failures gracefully. This includes comprehensive logging of errors and setting an appropriate terminal status (e.g., 'failed') or an intermediate status if specific sub-steps are designed to be retried (though explicit sub-step retries are not detailed in the current requirements). The existing 'success' and 'failed' statuses are relatively coarse; for more complex recovery scenarios in the future, more granular status indicators could be considered.
+
+**Table 5: processing\_jobs Status Transition Logic**
+
+| Current Status | Triggering Action/Event | Next Possible Status(es) | Key Data Updated in processing\_jobs table |
+| :---- | :---- | :---- | :---- |
+| pending | Scheduled or Immediate Processing Starts | processing | status |
+| processing | Gemini API Success, JSON & Excel files saved to S3 | success | status, s3\_json\_path, s3\_excel\_path, error\_message (cleared) |
+| processing | Gemini API Failure or Internal Error during processing | failed | status, error\_message |
+| failed | Manual Retry initiated by User/Admin (with new doc type) | pending (for *new* job) | A new processing\_jobs record is created with status pending. |
+
+## **Section 7: Automated File Ingestion & Job Creation**
+
+This section details the setup for the automated ingestion of PDF files from an on-premise Windows server into Amazon S3, and the subsequent automatic creation of processing\_jobs records in the database.
+
+### **7.1. Configure AWS DataSync Agent and Task**
+
+AWS DataSync will be used to automate the transfer of files from the on-premise environment to Amazon S3.1
+
+* **DataSync Setup:**  
+  * An AWS DataSync agent will be deployed on the on-premise Windows server that hosts the source files. This agent acts as the client that reads data from the local file system and transfers it to AWS.  
+  * The agent will be configured to monitor specific parent folders on the Windows server. These folders are expected to be named after departments (e.g., \\\\server\\share\\Dept\_A, \\\\server\\share\\Dept\_B).1  
+  * An AWS DataSync task will be created and configured. This task will define the source location (the on-premise Windows server folders) and the destination location in Amazon S3. The destination S3 path will dynamically include the department name: s3://your-bucket-name/uploads/{department\_name}/.1 DataSync will map the source folder name (e.g., Dept\_A) to the {department\_name} part of the S3 prefix.  
+  * The DataSync task will be scheduled to run at an appropriate frequency (e.g., hourly, daily, or potentially more frequently if near real-time synchronization is required and supported by the on-premise system and DataSync configuration).
+
+### **7.2. Develop AWS Lambda Function for S3 uploads/ Trigger**
+
+An AWS Lambda function will be developed to react to new PDF files being uploaded to the s3://your-bucket-name/uploads/ prefix by DataSync. This function is responsible for creating the initial processing\_jobs record.
+
+* **Lambda Function Configuration and Logic:**  
+  * An S3 event notification will be configured on the uploads/ prefix of the S3 bucket. This notification will be set to trigger the Lambda function specifically upon the creation of new objects (e.g., s3:ObjectCreated:\* events). If possible, the trigger can be further filtered to activate only for .pdf files.  
+  * The Lambda function will execute the following logic upon being triggered by a new PDF upload 1:  
+    * 7.2.1. Parse Department Name from S3 Path:  
+      The function will extract the {department\_name} component from the S3 object key of the newly uploaded file. For example, if a file is uploaded to uploads/Dept\_A/invoice\_123.pdf, the Lambda function will extract Dept\_A as the department name.  
+      Using this extracted department\_name, the function will query the departments database table to find the corresponding department\_id. Robust error handling must be implemented for cases where the extracted department name does not match any existing department in the database (e.g., log an error, potentially move the S3 object to a designated error/quarantine prefix, and prevent job creation).  
+    * 7.2.2. Create processing\_jobs Record:  
+      A new record will be inserted into the processing\_jobs database table. The following fields will be populated:  
+      * original\_filename: The name of the PDF file that was uploaded to S3.  
+      * s3\_pdf\_path: The full S3 path to the newly uploaded PDF file.  
+      * status: The initial status of the job will be set to 'pending'.  
+      * uploader\_user\_id: This requires a design decision, as detailed in Task 7.2.3.  
+      * doc\_type\_id: This also requires a critical design decision, as detailed in Task 7.2.4.  
+    * 7.2.3. Determine and Assign uploader\_user\_id:  
+      The project documentation 1 specifies that the uploader\_user\_id field in the processing\_jobs table is NOT NULL. However, it does not explicitly state how this user\_id should be determined for files ingested through the automated DataSync workflow, where a human user is not directly initiating the upload.  
+      * **Recommended Approach:** A dedicated "system" user or "service account" user should be created in the users table (e.g., with a role like 'system' or 'service\_account'). The user\_id of this system user will then be used as the uploader\_user\_id for all jobs created via the automated ingestion process. This provides clear traceability for system-initiated jobs.  
+      * Alternative approaches, such as attempting to map the uploader based on the department or other metadata, are generally more complex and error-prone and are likely not the intended solution. The chosen strategy must be implemented in the Lambda function.  
+    * 7.2.4. Link to doc\_type\_id:  
+      A significant consideration arises here: the doc\_type\_id field in the processing\_jobs table is also NOT NULL 1, and it is essential for the "Core AI Processing" logic (Section 6\) to retrieve the correct prompt and schema files. However, the project documentation 1 does not specify how this doc\_type\_id is determined for files ingested automatically via DataSync and processed by the S3 trigger Lambda. For immediate uploads via the UI, the user explicitly selects a document type.1  
+      This presents a critical gap in the specified automated workflow. Several options must be considered and a decision made during development:  
+      1. **Default doc\_type\_id per Department:** A default doc\_type\_id could be configured for each department in the departments table or a separate configuration table. The Lambda function would then look up and use this default doc\_type\_id based on the department associated with the uploaded file.  
+      2. **Filename Convention:** A specific naming convention for the uploaded PDF files could be enforced, where the filename itself contains an indicator of the document type (e.g., InvoiceSupplierX\_Order123.pdf, where InvoiceSupplierX maps to a doc\_type\_id). The Lambda function would need logic to parse this information from the filename.  
+      3. **Manual Assignment Post-Ingestion (Requires Schema/Process Change):** The doc\_type\_id field in processing\_jobs could be made NULLABLE (requiring a schema change). Jobs created via automated ingestion would initially have a NULL doc\_type\_id and a status like 'pending\_assignment'. These jobs would then require a manual step in the Admin or User portal where a user assigns a document type before the job can be picked up by the scheduled processing. This changes the definition of a 'pending' job.  
+      4. **Content-Based Pre-classification (Advanced):** A simpler, faster AI model or a rule-based engine could be invoked by the Lambda function to perform a preliminary classification of the document content and automatically assign a doc\_type\_id. This is likely out of scope for Phase 1 unless explicitly desired due to its complexity.
+
+The current schema with a NOT NULL constraint on doc\_type\_id means that the Lambda function *must* assign a valid doc\_type\_id for the processing\_jobs record to be created successfully. Option 1 (default per department) or Option 2 (filename convention) might be the most straightforward to implement within the current constraints for Phase 1 if immediate processing is desired for these automated uploads. If Option 3 is chosen, it represents a significant change to the data model and workflow. This decision is of high priority and must be addressed to ensure the automated ingestion pipeline functions correctly.
+
+The absence of a defined mechanism for assigning doc\_type\_id during automated ingestion is a crucial point that needs resolution. The processing\_jobs table schema mandates a non-nullable doc\_type\_id 1, and the Core AI Processing workflow fundamentally relies on this ID to fetch the correct prompt.txt and schema.json files.1 While the immediate upload process allows users to select a document type explicitly, the automated flow lacks this user interaction. This gap directly impacts the Lambda function's ability to create valid processing\_jobs records that are ready for processing. The selected solution will significantly influence system behavior, data integrity, and potentially the user workflow for managing automatically ingested documents.
+
+## **Section 8: Scheduled Batch Processing Implementation**
+
+This section covers the setup for the daily batch processing of 'pending' jobs, which are typically those created via the automated file ingestion workflow or those that were queued for later processing.
+
+### **8.1. Develop FastAPI Endpoint to Process 'Pending' Jobs**
+
+A secure FastAPI endpoint will be created. When invoked, this endpoint will identify and initiate the processing of all jobs currently in the 'pending' state.
+
+* **Endpoint Logic (/jobs/process-pending or similar):**  
+  * The endpoint, upon being called, will query the processing\_jobs database table for all records where the status field is equal to 'pending'.  
+  * It will then iterate through each of these pending jobs.  
+  * For every pending job\_id identified, the endpoint will invoke the "Core AI Processing" service/module (developed in Section 6). This service will handle the actual document processing, interaction with the Gemini API, and updating of the job's status and output file paths.  
+  * Robust error handling is essential within this batch processing loop. If the processing of one job fails (e.g., due to an issue with a specific PDF or an error from the Gemini API for that document), this failure should be logged, the job's status updated to 'failed' with an appropriate error message, but it should *not* halt the processing of the entire batch. The loop should continue to the next pending job.  
+  * **Concurrency Considerations:** If a large number of jobs are typically pending, processing them sequentially might lead to long batch run times. For Phase 1, sequential iteration might be sufficient, but for future scalability, parallel processing should be considered. This could involve using FastAPI's background tasks to process jobs concurrently, or a more advanced approach where this endpoint acts as a dispatcher, perhaps by sending individual job IDs to a message queue (like SQS) which then triggers individual Lambda functions or worker processes for parallel execution (though this is beyond the current specified architecture).  
+  * **Security:** This endpoint must be secured to prevent unauthorized execution. If it's directly invoked by Amazon EventBridge Scheduler via an HTTP target (e.g., through API Gateway or an ALB), mechanisms like an API key in the header or IAM-based authentication (if API Gateway is used with an IAM authorizer) should be implemented. If EventBridge triggers an intermediary Lambda function that then calls this FastAPI endpoint, the endpoint could be configured as an internal-only route, accessible only from within the VPC.
+
+### **8.2. Configure Amazon EventBridge Scheduler to Trigger Batch Processing Endpoint**
+
+Amazon EventBridge Scheduler will be used to automate the daily invocation of the batch processing endpoint.
+
+* **EventBridge Scheduler Rule:**  
+  * An EventBridge Scheduler rule will be created. This rule will be configured with a schedule to trigger once daily, as specified in the project requirements.1 The exact time of day for the trigger will be determined based on operational needs (e.g., during off-peak hours).  
+  * The target of this scheduled rule will be the FastAPI endpoint developed in Section 8.1. The specific configuration of the target depends on how the FastAPI application is exposed:  
+    * If FastAPI is fronted by Amazon API Gateway: EventBridge can be configured to call the API Gateway HTTP endpoint.  
+    * If FastAPI is running on EC2/ECS behind an Application Load Balancer (ALB): EventBridge can be configured to send an HTTP request to the ALB.  
+    * Alternatively, and often a simpler pattern for security and invocation, EventBridge can trigger an AWS Lambda function. This Lambda function would then be responsible for making a secure HTTP request to the internal FastAPI batch processing endpoint. This pattern can simplify authentication between EventBridge and the FastAPI service.  
+  * Appropriate IAM permissions must be granted to the EventBridge Scheduler role to allow it to invoke the specified target (e.g., API Gateway endpoint, Lambda function).
+
+Utilizing Amazon EventBridge Scheduler to trigger the FastAPI batch processing endpoint effectively decouples the scheduling mechanism from the core processing logic. This architectural choice allows the schedule (e.g., its frequency or specific timing) to be modified easily through the AWS console or Infrastructure as Code tools without requiring any changes or redeployments of the FastAPI application code. Furthermore, it leverages a robust, highly available, and serverless scheduling service provided by AWS.1 This separation of concerns means that EventBridge handles the "when" (the timing of the batch process), while the FastAPI application handles the "what" (the actual logic of processing pending jobs). This simplifies the FastAPI application, as it does not need to implement and manage its own internal scheduling threads or cron-like mechanisms, leading to a cleaner and more maintainable codebase.
+
+## **Section 9: Immediate Processing & WebSocket Integration**
+
+This section details the implementation for immediate, user-initiated document processing. This workflow provides real-time feedback to the user via WebSockets as their uploaded document is processed.
+
+### **9.1. Develop FastAPI Endpoint for Direct File Upload**
+
+A FastAPI endpoint will be created to handle direct file uploads from the user interface. This endpoint will accept a PDF file and the doc\_type\_id selected by the user.
+
+* **Endpoint Logic (/jobs/upload-immediate or similar):**  
+  * The endpoint will be designed to receive a PDF file, typically via a multipart/form-data request from the frontend. It will also expect the doc\_type\_id (which the user selects from a dropdown list in the UI) as part of the request.  
+  * Upon receiving the file and doc\_type\_id:  
+    * The raw PDF file will be saved. It can be temporarily stored locally or, preferably, streamed directly to Amazon S3. The S3 destination path should follow the pattern s3://your-bucket-name/uploads/{department\_name}/. The {department\_name} component will be derived from the profile of the logged-in user performing the upload. A unique filename must be ensured for the S3 object, possibly by appending a UUID or a timestamp to the original filename, to prevent naming collisions.  
+    * A new record will be created in the processing\_jobs database table with the following information:  
+      * original\_filename: The name of the PDF file uploaded by the user.  
+      * s3\_pdf\_path: The full S3 path where the uploaded PDF has been stored.  
+      * status: The initial status. The project document states, "backend immediately begins the Core AI Processing logic" 1, suggesting the status might be set directly to 'processing' or transition from 'pending' to 'processing' very quickly.  
+      * uploader\_user\_id: The user\_id of the authenticated user who initiated the upload.  
+      * doc\_type\_id: The doc\_type\_id received from the frontend, corresponding to the user's selection.  
+    * The endpoint should return the job\_id of the newly created processing job to the client (frontend). This job\_id will be used by the frontend to establish a WebSocket connection for status updates.
+
+### **9.2. Implement WebSocket Support in FastAPI for Real-time Status Updates**
+
+FastAPI's native support for WebSockets will be utilized to provide real-time status updates to the frontend during immediate processing.
+
+* **WebSocket Endpoint:**  
+  * A WebSocket endpoint will be defined in FastAPI (e.g., /ws/job-status/{job\_id}). The {job\_id} path parameter will allow the frontend to connect to a specific WebSocket communication channel associated with the job it just created.  
+  * When a client (the Next.js frontend) successfully establishes a WebSocket connection to this endpoint after an immediate upload, the backend should be prepared to send status updates related to the progress of the specified job\_id.
+
+### **9.3. Integrate Core AI Processing Service with Immediate Upload Flow, Pushing Updates via WebSockets**
+
+The immediate upload workflow will be integrated with the Core AI Processing service, and status updates will be pushed to the connected client via WebSockets.
+
+* **Integrated Workflow:**  
+  * After the new processing\_jobs record is created (as per Section 9.1) and the frontend has established a WebSocket connection for that job\_id (as per Section 9.2), the FastAPI backend will trigger the "Core AI Processing" service (developed in Section 6\) for this new job\_id.  
+  * As the Core AI Processing service executes its various steps (e.g., "downloading PDF," "calling Gemini API," "generating Excel file," "success," "failure"), the service itself, or a wrapper function orchestrating it, will send status messages over the active WebSocket connection associated with that job\_id.  
+  * Example status messages could be structured JSON objects like: {"status\_message": "Processing PDF content..."}, {"status\_message": "Extracting data with AI model..."}, {"status\_message": "Generating Excel report..."}, or upon completion: {"status\_message": "success", "job\_id": "...", "json\_url": "s3://...", "excel\_url": "s3://..."}.  
+  * The updates to the status field in the processing\_jobs table (i.e., 'processing', 'success', 'failed') should also be communicated over the WebSocket to ensure the frontend has the most current state.
+
+The WebSocket integration for immediate document processing serves primarily as a significant user experience enhancement.1 Processing a document, especially when it involves AI model inference, can take several seconds or potentially longer. By providing real-time, granular feedback, the application keeps the user informed about the progress and prevents them from feeling that the application is unresponsive or stuck. Instead of a generic, static loading spinner, the user receives meaningful updates about what is happening behind the scenes. This transparency is important for user satisfaction and for managing expectations regarding processing times. The technical implementation requires careful coordination between the backend's sequential processing steps and the emission of corresponding messages over the WebSocket channel to the correct client.
+
+## **Section 10: Manual Re-triggering Logic (FastAPI)**
+
+This section covers the backend logic required to allow users (both regular users and administrators, depending on permissions) to manually re-trigger a processing job that has previously failed. A key aspect of this feature is the ability to change the doc\_type\_id for the retry attempt.1
+
+### **10.1. Develop FastAPI Endpoint for Re-triggering Jobs**
+
+A dedicated FastAPI endpoint will be created to handle requests for re-triggering failed jobs.
+
+* **Endpoint Logic (POST /jobs/{original\_job\_id}/retry or similar):**  
+  * The endpoint will accept the original\_job\_id (the job\_id of the job that previously failed) as a path parameter.  
+  * Crucially, it will also expect a new\_doc\_type\_id in the request body. This new\_doc\_type\_id is selected by the user in the UI (typically via a modal dialog) before submitting the retry request. It might be the same as the document type used in the original failed attempt, or it could be a different one if the user suspects the initial document type was incorrect.1  
+  * **Backend Processing Logic for Retry** 1**:**  
+    1. Retrieve the s3\_pdf\_path (the path to the original raw PDF file) and the original\_filename from the processing\_jobs record associated with the original\_job\_id.  
+    2. Create a **new** processing\_jobs record in the database. This is a critical step to preserve the history of the original failure and to track the retry attempt as a separate job.  
+    3. Populate the new job record with the following information:  
+       * original\_filename: Copied from the original job.  
+       * s3\_pdf\_path: Copied from the original job (the retry will use the same raw PDF file).  
+       * status: Set to 'pending'. If the retry is to be processed immediately (similar to the immediate upload flow), it might transition to 'processing' quickly.  
+       * uploader\_user\_id: The user\_id of the authenticated user who is initiating the retry action.  
+       * doc\_type\_id: The new\_doc\_type\_id that was provided in the request body.  
+    4. Once this new job record is successfully created and its job\_id is available, the backend will initiate the "Core AI Processing" service (developed in Section 6\) for this **new** job\_id.  
+    5. If the user interface from which the re-trigger is initiated supports real-time feedback (similar to the immediate upload page described in Section 9), this retry flow could also be enhanced to push status updates for the new job over a WebSocket connection.
+
+The requirement to create a *new* processing\_jobs record upon each retry attempt is a vital design choice for maintaining a clear and comprehensive audit trail, as well as a historical record of all processing attempts for a given document.1 This approach avoids overwriting the status, error messages, and other details of the original failed job. If the system were to simply re-run the process using the original job\_id, the valuable information about the first attempt's failure (including the error message and the 'failed' status) would be lost. By generating a new job entry for each retry, both the initial failure and each subsequent retry attempt (along with its specific configuration, such as the doc\_type\_id used, and its outcome) are recorded independently. This historical data is invaluable for debugging persistent issues with certain documents, for auditing processing activities, and for understanding why some documents might repeatedly fail or require different document type configurations to be processed successfully.
+
+## **Section 11: Foundational Logging, Monitoring & Error Handling**
+
+Robust logging, basic monitoring capabilities, and a consistent error handling strategy must be established from the outset of Phase 1\. These are not afterthoughts but foundational elements for developing a maintainable, debuggable, and reliable system.
+
+### **11.1. Configure Structured Logging within FastAPI**
+
+Structured logging will be implemented within the FastAPI application to produce logs that are easily parsable, searchable, and analyzable.
+
+* **Logging Implementation:**  
+  * A suitable Python logging library that supports structured logging, such as structlog, will be used, or Python's built-in logging module will be configured to output logs in a structured format (e.g., JSON).  
+  * Logs should capture key information for each API request, including: the requested endpoint and HTTP method, timestamp, user\_id (if the user is authenticated), request parameters/body (potentially sanitized to remove sensitive data), response status code, and request processing duration.  
+  * Important events and state changes within the business logic, especially within the "Core AI Processing" workflow, should be logged with relevant context (e.g., "Gemini API call initiated for job\_id X", "File Y downloaded from S3 for job\_id X", "Successfully saved JSON output for job\_id X").  
+  * All errors and exceptions should be logged comprehensively, including stack traces and any relevant contextual information (e.g., job\_id, doc\_type\_id being processed when an error occurred).
+
+### **11.2. Ensure AWS CloudWatch Logs are Enabled and Configured**
+
+Amazon CloudWatch Logs will be the central repository for logs generated by all relevant AWS services and application components.
+
+* **CloudWatch Logs Integration:**  
+  * **FastAPI Application:** If the FastAPI application is deployed on Amazon EC2, AWS ECS, or AWS Fargate, the CloudWatch agent will be configured to collect application logs (including the structured logs from Section 11.1) and send them to CloudWatch Logs. If deployed on AWS Lambda, application logs are automatically sent to CloudWatch Logs.  
+  * **AWS Lambda Function (for S3 trigger):** Logs generated by the Lambda function that handles S3 uploads are automatically captured in CloudWatch Logs.  
+  * **Amazon Aurora PostgreSQL:** The Aurora cluster will be configured to export relevant database logs (e.g., PostgreSQL error logs, slow query logs if enabled) to CloudWatch Logs. This aids in database performance monitoring and troubleshooting.  
+  * **AWS DataSync:** Task execution logs from DataSync, which provide information about file transfer operations, can be monitored and sent to CloudWatch Logs.  
+  * **Amazon EventBridge Scheduler:** Execution logs for scheduled rules, particularly if invocation of the target fails, are available and can be monitored.  
+  * Appropriate log retention policies will be set for all log groups in CloudWatch Logs to manage storage costs and comply with any data retention requirements.
+
+### **11.3. Define Basic Error Handling Strategy within API Endpoints**
+
+A consistent and user-friendly error handling strategy will be implemented across all FastAPI API endpoints.
+
+* **Error Handling Mechanisms:**  
+  * FastAPI's built-in exception handling mechanisms (e.g., using @app.exception\_handler() decorators or custom exception classes) will be utilized to catch common errors (like HTTPException for standard HTTP errors) and application-specific custom exceptions.  
+  * The API will return standardized error responses to the client, typically in JSON format, including a meaningful error code or type, and a human-readable error message. Sensitive information, such as raw stack traces, should not be exposed in error responses sent to clients in a production environment.  
+  * It is critical that errors occurring within the "Core AI Processing" workflow are properly caught and handled. Such errors must result in the processing\_jobs.status field being updated to 'failed', and a descriptive error\_message being stored in the processing\_jobs table to aid in diagnosis and potential retries.
+
+Implementing comprehensive logging and basic monitoring capabilities from the very beginning of Phase 1 is a proactive measure essential for maintaining system health, efficiently debugging issues, and gaining insights into application performance. A complex system like the one being built, with multiple interacting AWS services 1 and intricate workflows such as the Core AI Processing, will inevitably encounter unexpected behaviors or errors. Without robust logging (Tasks 11.1, 11.2), diagnosing these problems can become exceedingly difficult and time-consuming. Structured logs, centralized in Amazon CloudWatch Logs, facilitate easier searching, filtering, and analysis, and also enable the setup of automated alerts based on log patterns (e.g., a high rate of errors). A consistent error handling strategy (Task 11.3) ensures that failures are managed gracefully from the user's perspective and, equally importantly, provide sufficient information for developers to troubleshoot and resolve the underlying causes. Building these observability features into the system from the start will save significant operational pain and development effort in the long run.
+
+## **Conclusion**
+
+The completion of Phase 1 will mark a significant milestone, delivering a robust and scalable backend foundation for the platform. Key deliverables will include a fully operational AWS cloud infrastructure configured according to best practices, a secure and well-defined Amazon Aurora PostgreSQL database, a reliable user authentication system powered by AWS Cognito, and the core Python FastAPI backend API. This API will provide essential administrative functionalities and, most critically, the AI-driven document processing engine capable of automated ingestion, scheduled batch processing, and real-time immediate processing with WebSocket feedback.1
+
+Upon successful execution of all tasks outlined in this phase, the platform will possess a solid backend engine. This foundation is essential for the subsequent development phases, which include the construction of the Next.js Admin and User Portal frontends (as detailed in Part 5 of the Project Instruction) and the integration of further enhancements such as Single Sign-On with Microsoft Entra ID (planned for Phase 2 of the Authentication Flow).1
+
+For the development team embarking on Phase 1, several key considerations should remain at the forefront:
+
+* **Security by Design:** Adherence to security best practices must be a constant priority throughout the development and configuration process. This includes rigorous application of the principle of least privilege in IAM, secure management of all credentials using AWS Secrets Manager, and the strategic use of private subnets for sensitive backend resources.  
+* **Addressing Design Decisions:** The critical design decisions identified within this plan, particularly concerning the assignment of uploader\_user\_id and doc\_type\_id for jobs created through the automated ingestion workflow (Section 7.2), must be addressed early and definitively to ensure the seamless operation of this key feature.  
+* **Thorough Testing:** Each component, API endpoint, and end-to-end workflow must be subjected to thorough testing. This includes unit tests, integration tests, and end-to-end tests to verify functionality, security, and performance under various conditions.
+
+By diligently following this detailed plan and addressing these considerations, Phase 1 will establish a high-quality, resilient, and scalable backend system, paving the way for the successful development of the complete platform.
+
+
+

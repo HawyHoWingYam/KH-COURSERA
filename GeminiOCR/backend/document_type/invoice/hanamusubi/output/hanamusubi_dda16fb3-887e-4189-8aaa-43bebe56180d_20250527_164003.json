@@ -1,0 +1,26 @@
+[
+  {
+    "details": [
+      {
+        "amount": 10.0,
+        "item_name": "滷味半熟溏心蛋",
+        "quantity": 1,
+        "unit_price": 10.0
+      }
+    ],
+    "discount": 0.0,
+    "issue_info": {
+      "brand": "華御結",
+      "issue_datetime": "08/05/2025 09:49:16",
+      "issue_number": "CE2080520250949169",
+      "pos_terminal": "POS-2",
+      "shop_address": "中環港鐵站CEN W8號舖 (近B出口)",
+      "shop_code": "CEN",
+      "shop_telephone": "9845 7043"
+    },
+    "payment": "八達通付款",
+    "remark": "黃先生 9811 6471",
+    "subtotal": 10.0,
+    "total_amount": 10.0
+  }
+]

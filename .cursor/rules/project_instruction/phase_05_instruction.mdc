@@ -1,0 +1,552 @@
+---
+description: Phase 5 : Application Portals and Features
+globs: 
+alwaysApply: false
+---
+# **Detailed Specification for Application Portals and Features**
+
+## **I. Introduction**
+
+### **Purpose of the Document**
+
+This document provides a granular breakdown of "Part 5: Application Portals & Features" as outlined in the project's foundational instructions.1 It serves as a detailed specification for the frontend development tasks associated with the Admin and User portals. The objective is to articulate the required functionalities, user interface (UI) components, user interactions, data management aspects, and conceptual backend interactions necessary for the successful implementation of these portals.
+
+### **Scope**
+
+The scope of this specification is centered on the Next.js frontend framework designated for building both the Admin and User portals.1 It will detail the UI components, user experience flows, data display and manipulation features, and the conceptual API interactions with the Python and FastAPI backend. The actual implementation of backend logic or frontend code is beyond the purview of this document; rather, it focuses on *what* needs to be developed and *how* it should function from a user and system perspective.
+
+### **Target Audience**
+
+This document is intended for Technical Leads, Project Managers, and Frontend Developers who will be involved in the design, planning, and execution of the application portals. It aims to provide a clear and unambiguous guide to facilitate these processes.
+
+## **II. Admin Portal: Detailed Feature Breakdown and Implementation Tasks**
+
+The Admin Portal is conceived as the central command interface, granting administrators comprehensive control over the document processing platform. It facilitates global oversight and provides access to all administrative functions detailed in the project instructions.1 The frontend for this portal will be developed using Next.js.1
+
+### **II.A. Admin Dashboard**
+
+#### **II.A.1. Purpose and Scope**
+
+The primary purpose of the Admin Dashboard is to furnish administrators with a consolidated, real-time overview of the system's global performance and key operational metrics.1 This allows for quick assessment of the platform's health and efficiency.
+
+#### **II.A.2. Key UI Components and Layout**
+
+The dashboard will be structured to present information clearly and effectively:
+
+* **Widgets:** Distinct visual blocks will be designed for each core metric: "Average Processing Time," "Success vs. Failed Jobs (Today/This Month)," and "Total API Calls".1 These widgets should be prominently displayed.  
+* **Chart:** A graphical representation, such as a bar or line chart, will be implemented to display "daily/monthly input and output token usage for cost analysis".1 This component is vital for monitoring operational expenditures related to API consumption.  
+* **Department Filter:** A key feature of the dashboard is a dropdown menu that allows administrators to "scope the data by a specific department or view the total for all departments".1 This filter must dynamically update all widgets and charts on the dashboard.
+
+#### **II.A.3. Data Sources and Metrics (Conceptual)**
+
+The metrics displayed on the Admin Dashboard will be derived from the application's database and backend services:
+
+* **Average Processing Time:** This metric will be calculated based on data from the processing\_jobs table. It represents the average duration between job creation ( created\_at timestamp) and its completion. A completed\_at or an updated\_at timestamp reflecting the final state change in the processing\_jobs table will be necessary for this calculation.1  
+* **Success vs. Failed Jobs:** This involves counting jobs from the processing\_jobs table based on their status field ('success', 'failed') within the specified timeframes of "Today" and "This Month".1  
+* **Total API Calls:** This metric can be sourced from a sum of records in the api\_usage table, providing insight into the overall usage of the external Gemini API.1  
+* **Token Usage:** This will be the sum of input\_token\_count and output\_token\_count from the api\_usage table, aggregated on a daily or monthly basis for the chart.1
+
+The presentation of "Success vs. Failed Jobs" for "Today/This Month" implies fixed timeframes. However, for enhanced analytical capabilities, future consideration could be given to incorporating a date picker, allowing administrators to select custom date ranges for a more granular analysis of job statuses, although this is not an explicit current requirement.
+
+#### **II.A.4. Department Filtering Functionality**
+
+The department filter is a critical interactive element:
+
+* **Interaction:** When an administrator selects a specific department from the dropdown list, all dashboard widgets and the token usage chart must dynamically refresh to display data pertaining exclusively to that selected department. An option such as "All Departments" will revert the view to global, system-wide metrics.  
+* **Backend Interaction:** API requests designed to fetch dashboard data must be capable of accepting an optional department\_id parameter to facilitate this filtering.
+
+Fetching and aggregating data for the "All Departments" view, especially across numerous widgets, could become resource-intensive if the platform handles a large volume of jobs and departments. This necessitates optimized backend query design, potentially involving pre-calculated summary data or indexed views to ensure responsive dashboard loading times.1
+
+#### **II.A.5. Step-by-Step Implementation Tasks (Frontend)**
+
+1. Design the overall page layout for the Admin Dashboard, ensuring a logical and intuitive arrangement of widgets and the chart.  
+2. Develop individual, reusable React components for each type of display: a generic metric widget component (configurable for different metrics) and a chart component (leveraging a suitable charting library).  
+3. Implement the department selection dropdown menu, populating it with a list of available departments fetched from the backend, plus an option for "All Departments."  
+4. Develop API client functions (e.g., using fetch or a library like Axios) to retrieve dashboard data. These functions must correctly pass the department\_id (if selected) and any time-period parameters to the backend.  
+5. Integrate the fetched data with the respective UI components, ensuring that they dynamically update whenever the department filter selection changes.  
+6. Implement visual loading state indicators (e.g., spinners or skeleton screens) while data is being fetched, and robust error handling mechanisms to display user-friendly messages if data retrieval fails.
+
+#### **II.A.6. Required Backend Interactions (Conceptual API Endpoints)**
+
+* GET /api/admin/dashboard/metrics?department\_id=\<id\>\&time\_period=\<period\> (for widget data)  
+* GET /api/admin/dashboard/token\_usage?department\_id=\<id\>\&granularity=\<daily/monthly\> (for chart data)  
+* GET /api/departments (to populate the department filter dropdown)
+
+#### **II.A.7. Admin Dashboard Widget Specification Table**
+
+To provide a clear reference for development, the following table outlines the specifications for each dashboard widget:
+
+| Widget Name | Metric Description | Data Source (Table(s)/Field(s)) | Calculation Logic (Conceptual) | Default Timeframe | Filterable by Department |
+| :---- | :---- | :---- | :---- | :---- | :---- |
+| Average Processing Time | Average time taken for jobs to complete processing. | processing\_jobs (created\_at, completion timestamp) | AVG(completion\_timestamp \- created\_at) for 'success' or 'failed' jobs | Overall / Configurable | Yes |
+| Success vs. Failed Jobs | Count of successful and failed jobs. | processing\_jobs (status) | COUNT(jobs) WHERE status='success'; COUNT(jobs) WHERE status='failed' | Today / This Month | Yes |
+| Total API Calls | Total number of calls made to the Gemini API. | api\_usage (count of records or sum if a call can span multiple records) | COUNT(usage\_id) | Overall / Configurable | Yes |
+| Token Usage Chart (Input/Output) | Daily/monthly breakdown of input and output tokens. | api\_usage (input\_token\_count, output\_token\_count, api\_call\_timestamp) | SUM(input\_token\_count), SUM(output\_token\_count) GROUP BY DAY/MONTH | Daily / Monthly | Yes |
+
+### **II.B. Job Management Page**
+
+#### **II.B.1. Purpose and Scope**
+
+This page is designed to empower administrators with the ability to view, search, filter, and manage all processing jobs across all users and departments, providing a centralized point of control for job oversight and intervention.1
+
+#### **II.B.2. Key UI Components and Layout**
+
+* **Searchable and Filterable Table:** The central element will be a comprehensive table displaying job records. This table must incorporate robust search functionality (e.g., by filename, uploader's name, department name) and filtering capabilities (e.g., by job status, date range of creation).1  
+* **Table Columns:** The table will include columns for "Job ID, Filename, Uploader, Department, Status, Timestamp".1 The "Uploader" and "Department" will likely require joins to users and departments tables on the backend to display names rather than IDs.  
+* **Expandable Rows:** Each row in the table must be "expandable to show details".1 This expanded view will provide more granular information about the job and serve as the location for download links.  
+* **Download Links:** Within the expanded row details, links will be provided to download the original PDF, the processed JSON output, and the generated Excel file.1 The paths for these files are stored as s3\_pdf\_path, s3\_json\_path, and s3\_excel\_path in the processing\_jobs table.1  
+* **Retry Button:** A "Retry" button will be available for jobs that have a 'failed' status. Activating this button will initiate a modal dialog for confirmation and potential modification of parameters.1
+
+#### **II.B.3. Data Interactions and Management**
+
+* **Display:** The page will fetch and display job records from the processing\_jobs table. To show human-readable names for uploader and department, the backend will need to join processing\_jobs with the users table (for users.name) and the departments table (for departments.department\_name).  
+* **Search/Filter:** Backend API endpoints must support querying the processing\_jobs table based on various criteria supplied by the frontend search and filter UI elements.  
+* **Retry Logic:**  
+  1. The administrator clicks the "Retry" button associated with a failed job.  
+  2. A modal dialog appears, requesting confirmation of the retry action.1  
+  3. Crucially, this modal will allow the administrator to "change the assigned Document Type before re-submitting".1 This requires a dropdown list populated with all available document types from the document\_types table.  
+  4. Upon submission from the modal, the backend is instructed to "create a new processing\_jobs record (to preserve the history of the original failure) linked to the original file and begin processing".1 This new job record will use the potentially modified doc\_type\_id.
+
+The mechanism of creating a new job record for retries is a significant design choice that ensures a complete audit trail of all processing attempts for a given document.1 While this preserves historical data, the UI should consider how to visually link or group an original failed job with its subsequent retry attempts if an admin needs to trace the full processing history of a specific input file. This might involve displaying an "original job ID" or providing a history view for a given s3\_pdf\_path.
+
+When providing download links, the frontend should offer clear user feedback, such as indicating that a download is initiating. For potentially large files, if direct pre-signed S3 URLs are not employed, the backend might proxy the download, and in such cases, an asynchronous download initiation could prevent the UI from becoming unresponsive.
+
+#### **II.B.4. Step-by-Step Implementation Tasks (Frontend)**
+
+1. Design the layout for the Job Management page, focusing on the prominence of the jobs table and its associated controls.  
+2. Implement the job table component, incorporating the specified columns. Develop UI elements for search inputs and filter dropdowns/pickers.  
+3. Develop the functionality for expanding table rows to display detailed job information and the download links for PDF, JSON, and Excel files.  
+4. Implement the "Retry" button for failed jobs and the corresponding modal dialog.  
+   * The modal must fetch and display relevant details of the job being retried.  
+   * The modal must include a dropdown menu populated with all document types fetched from the document\_types table.  
+   * Handle the submission of the retry action, sending the original job ID and the newly selected doc\_type\_id to the backend.  
+5. Develop API client functions for:  
+   * Fetching job lists, including parameters for search, filtering, and pagination.  
+   * Requesting file downloads (which may involve generating pre-signed URLs or streaming from the backend).  
+   * Initiating the job retry process.  
+6. Implement client-side pagination for the job table to efficiently manage large datasets.  
+7. Ensure appropriate loading state indicators are displayed during data fetching and user-friendly error messages are shown for any failed operations.
+
+#### **II.B.5. Required Backend Interactions (Conceptual API Endpoints)**
+
+* GET /api/admin/jobs?search=\<term\>\&filter\_status=\<status\>\&filter\_department\_id=\<id\>\&filter\_uploader\_id=\<id\>\&page=\<num\>\&limit=\<num\>  
+* GET /api/jobs/\<job\_id\>/download/\<file\_type\> (where file\_type is 'pdf', 'json', or 'excel')  
+* POST /api/admin/jobs/\<original\_job\_id\>/retry (Request Payload: { "new\_doc\_type\_id": \<id\> })  
+* GET /api/document\_types (to populate the document type dropdown in the retry modal)
+
+### **II.C. User Management Page**
+
+#### **II.C.1. Purpose and Scope**
+
+This page provides administrators with the tools to manage all user accounts within the system. This includes viewing user details and modifying attributes such as their name, role, and departmental assignment.1
+
+#### **II.C.2. Key UI Components and Layout**
+
+* **User Table:** A primary table will list all users registered in the system. Essential columns should include User ID (users.user\_id), Name (users.name), Email (users.email), Role (users.role), and Department (departments.department\_name via join).1  
+* **Edit Functionality:** Each row in the user table will feature an "Edit" button or similar interactive element to initiate the modification process for that specific user.  
+* **Edit User Modal/Form:** Upon an administrator's activation of the edit function, a modal dialog or a dedicated form section will appear. This form will allow for the modification of the user's "name, role, and department".1  
+  * **Role Selection:** A dropdown menu will provide 'admin' and 'user' options for the role field.  
+  * **Department Assignment:** Another dropdown menu, populated with existing departments from the departments table, will allow department assignment. This should also include an option for "Unassigned," which corresponds to a NULL value for department\_id in the users table.
+
+While not explicitly stated as a requirement, incorporating search and filter functionality (e.g., by name, email, role, or department) into the user table would significantly enhance usability, particularly as the number of users grows.
+
+#### **II.C.3. Data Interactions and Management**
+
+* **Display:** The page will fetch and display user data primarily from the users table. To show the department name, a join with the departments table will be necessary on the backend.  
+* **Edit:** When an administrator saves changes for a user, the frontend will send the updated data to the backend. The backend will then update the corresponding user record in the users table. The user\_id (database primary key) or cognito\_sub (Cognito unique identifier) will be used to identify the user for the update operation.1
+
+Changing a user's role directly impacts their permissions within the application, as the role field in the users table is fundamental to the authorization logic.1 If AWS Cognito Groups are also utilized to mirror these roles, the backend must ensure consistency between the Aurora database and Cognito. The project instructions, however, primarily position Cognito for authentication, with user profile data and application-specific roles managed in Aurora.
+
+#### **II.C.4. Step-by-Step Implementation Tasks (Frontend)**
+
+1. Design the layout for the User Management page.  
+2. Implement the user table component with the specified columns and per-row edit capabilities.  
+3. Develop the "Edit User" modal or form. This form must include input fields for the user's name, a dropdown for selecting the role, and a dropdown for selecting the department.  
+4. Populate the role dropdown statically ('admin', 'user') and the department dropdown dynamically by fetching data from the departments API endpoint.  
+5. Develop API client functions for fetching the list of users and for submitting updates to a user's details.  
+6. Implement client-side pagination for the user table.  
+7. Ensure robust loading state indicators and error/success message handling for all data operations.
+
+#### **II.C.5. Required Backend Interactions (Conceptual API Endpoints)**
+
+* GET /api/admin/users?search=\<term\>\&filter\_role=\<role\>\&filter\_department\_id=\<id\>\&page=\<num\>\&limit=\<num\>  
+* PUT /api/admin/users/\<user\_id\_or\_cognito\_sub\> (Request Payload: { "name": "...", "role": "...", "department\_id": \<id\_or\_null\> })  
+* GET /api/departments (to populate the department dropdown in the edit form)
+
+### **II.D. Department Management Page**
+
+#### **II.D.1. Purpose and Scope**
+
+This administrative interface is dedicated to enabling administrators to "Create, Rename, and Delete departments" within the platform.1 Departments serve as organizational units for users and data segregation.
+
+#### **II.D.2. Key UI Components and Layout**
+
+* **Department List/Table:** A clear list or table will display all existing departments, showing at least the Department ID (departments.department\_id) and Department Name (departments.department\_name).1  
+* **Create Department Button/Form:** A UI element, such as a button labeled "Create Department," will trigger a modal or an inline form. This form will require an input field for the new department's name.  
+* **Rename Department Functionality:** Each listed department will have an associated "Edit" or "Rename" option. Activating this will likely open a modal pre-filled with the current department name, allowing the administrator to modify it.  
+* **Delete Department Functionality:** Each department will also have a "Delete" option. Given the implications of deletion, this action must trigger a confirmation modal dialog.
+
+#### **II.D.3. Data Interactions and Management**
+
+* **Display:** The page will fetch and list all departments from the departments table.  
+* **Create:** To create a new department, the frontend will send the desired department name to the backend. The backend will then insert a new record into the departments table. The department\_name field has a UNIQUE constraint.1  
+* **Rename:** To rename an existing department, the frontend will send the department\_id and the new department\_name to the backend. The backend will update the department\_name field for the specified record, ensuring the new name also adheres to the UNIQUE constraint.  
+* **Delete:** To delete a department, the frontend will send the department\_id to the backend.  
+  * **Impact of Deletion:** A critical piece of backend logic, as specified, is that "If a department is deleted, any users assigned to it will have their department\_id set to NULL, effectively making them "unassigned" until an admin reassigns them".1 This update to the users table must be handled atomically by the backend upon department deletion. The UI's confirmation modal for deletion must clearly communicate this consequence to the administrator.
+
+The department\_name field's uniqueness constraint means the frontend must be prepared to handle errors from the backend if an administrator attempts to create a department with an existing name or rename a department to a name already in use. User-friendly error messages should be displayed in such scenarios.
+
+#### **II.D.4. Step-by-Step Implementation Tasks (Frontend)**
+
+1. Design the layout for the Department Management page.  
+2. Implement the department list or table component.  
+3. Develop the UI for creating a new department. This will typically involve a modal dialog with a text input field for the department name and a submission button.  
+4. Develop the UI for renaming an existing department. This will also likely use a modal, pre-filling the input field with the current department name.  
+5. Develop the UI for deleting a department. This must include a confirmation modal that explicitly warns the administrator about the consequence of users in that department becoming "unassigned."  
+6. Develop API client functions for fetching the list of departments, creating new departments, renaming existing departments, and deleting departments.  
+7. Implement appropriate loading state indicators during API calls and provide clear success or error messages to the administrator (e.g., "Department created successfully," "Error: Department name already exists").
+
+#### **II.D.5. Required Backend Interactions (Conceptual API Endpoints)**
+
+* GET /api/admin/departments  
+* POST /api/admin/departments (Request Payload: { "department\_name": "..." })  
+* PUT /api/admin/departments/\<department\_id\> (Request Payload: { "department\_name": "..." })  
+* DELETE /api/admin/departments/\<department\_id\>
+
+### **II.E. Document Type Management Page**
+
+#### **II.E.1. Purpose and Scope**
+
+This page allows administrators to define and manage document types, which are central to the AI processing workflow. Functionality includes "create new document types by uploading a prompt.txt and schema.json" and to "manage which document types are accessible to which departments".1
+
+#### **II.E.2. Key UI Components and Layout**
+
+* **Create Document Type Section:**  
+  * An input field for the "friendly name for the document type" (this corresponds to type\_name in the document\_types table).1  
+  * A file upload interface specifically for the prompt.txt file.  
+  * A separate file upload interface for the schema.json file.  
+  * A submission button to initiate the creation process.  
+* **Document Type List/Table:** A table or list displaying all existing document types. Columns should include Document Type ID (doc\_type\_id), Type Name (type\_name), S3 Prompt Path (s3\_prompt\_path), and S3 Schema Path (s3\_schema\_path).1  
+* **Manage Department Access Sub-section:** This UI will facilitate the many-to-many relationship between document types and departments.1  
+  * One possible design: Select a document type from the list/table. Then, display a list of all departments with checkboxes or a multi-select component to associate/disassociate that document type with various departments.  
+  * Alternative design: Select a department. Then, display a list of all document types with checkboxes to manage which ones are accessible to the selected department. This interaction directly manipulates records in the department\_doc\_type\_access table.1
+
+Managing many-to-many relationships effectively in a UI can be challenging. For a large number of departments or document types, simple dropdowns might not suffice. A dual-listbox (allowing items to be moved between "available" and "assigned" lists), a table with selectable rows and batch actions, or a tag-like input for assignments could provide a more intuitive user experience.
+
+#### **II.E.3. Data Interactions and Management**
+
+* **Create Document Type:**  
+  1. The frontend collects the type\_name, the prompt.txt file, and the schema.json file from the administrator.  
+  2. These are sent to the backend (likely via a multipart/form-data request).  
+  3. The backend is responsible for uploading the prompt.txt and schema.json files to the designated S3 prefix: s3://your-bucket-name/configs/prompts/.1 The backend will generate the full S3 paths.  
+  4. The backend then creates a new record in the document\_types table, storing the type\_name and the S3 paths to the uploaded prompt and schema files.  
+* **List Document Types:** The frontend fetches and displays data from the document\_types table.  
+* **Manage Department Access:**  
+  1. The frontend fetches lists of all document types and all departments to populate the selection UI.  
+  2. It may also fetch the current associations from the department\_doc\_type\_access table to pre-select/indicate current assignments.  
+  3. When the administrator modifies associations, the frontend sends the updated list of associations (e.g., a doc\_type\_id and an array of associated department\_ids, or vice-versa) to the backend.  
+  4. The backend then updates the department\_doc\_type\_access table by inserting new association records or deleting existing ones as required.
+
+The backend should ideally perform some basic validation on the uploaded prompt.txt and schema.json files (e.g., ensuring they are text-based, or that schema.json is valid JSON). The frontend can also perform basic client-side validation, such as checking file extensions or MIME types.
+
+#### **II.E.4. Step-by-Step Implementation Tasks (Frontend)**
+
+1. Design the layout for the Document Type Management page, clearly separating the creation section from the listing and access management sections.  
+2. Implement the form for creating new document types, including the text input for type\_name and the file upload components for prompt.txt and schema.json. Provide user feedback during file selection and upload (e.g., progress indicators, selected file names).  
+3. Implement the list or table component to display existing document types.  
+4. Design and implement the UI for managing department access to document types. This will involve:  
+   * Fetching and displaying document types and departments.  
+   * Displaying current associations.  
+   * Allowing modification of these associations.  
+5. Develop API client functions for:  
+   * Creating new document types (this will involve handling file uploads in the request).  
+   * Fetching the list of existing document types.  
+   * Fetching the list of departments (for the access management UI).  
+   * Fetching and updating the department-document type associations.  
+6. Implement clear feedback mechanisms for successful creation, updates, file upload progress, and any errors encountered.
+
+#### **II.E.5. Required Backend Interactions (Conceptual API Endpoints)**
+
+* POST /api/admin/document\_types (Request: Multipart form data containing type\_name, prompt\_file (the prompt.txt), schema\_file (the schema.json))  
+* GET /api/admin/document\_types  
+* GET /api/departments (for populating UI elements in access management)  
+* To manage associations (choose one pattern or a combination):  
+  * GET /api/admin/document\_types/\<doc\_type\_id\>/departments (gets departments associated with a doc type)  
+  * PUT /api/admin/document\_types/\<doc\_type\_id\>/departments (Request Payload: { "department\_ids": \[\<id1\>, \<id2\>,...\] } to set associations for a doc type)  
+  * GET /api/admin/departments/\<department\_id\>/document\_types (gets doc types associated with a department)  
+  * PUT /api/admin/departments/\<department\_id\>/document\_types (Request Payload: { "doc\_type\_ids": \[\<id1\>, \<id2\>,...\] } to set associations for a department)
+
+### **II.F. Global Settings Page**
+
+#### **II.F.1. Purpose and Scope**
+
+This page provides a dedicated and secure interface for administrators to "input and update the global Gemini API key".1 This key is essential for the core AI processing functionality of the platform.
+
+#### **II.F.2. Key UI Components and Layout**
+
+* **Form:** A simple form will be presented for API key submission.  
+* **Input Field:** A single input field for the Gemini API key. To enhance security, this field should mask the input (e.g., behave like a password field, type="password").  
+* **Save/Update Button:** A button to submit the entered API key.
+
+#### **II.F.3. Data Interactions and Management**
+
+* **Update:** The API key entered by the administrator is securely transmitted to the backend. The backend is responsible for storing this key in a secure manner, for example, using AWS Secrets Manager.2 The project instruction does not mandate a specific storage mechanism for this key beyond secure input and update, but a service like Secrets Manager is a best practice.  
+* **Security Precaution:** The existing API key must **never** be fetched from the backend and displayed on this page. This page is for updating the key only.
+
+The high sensitivity of the Gemini API key cannot be overstated. It must be transmitted over HTTPS and stored encrypted at rest by the backend. Displaying the key, even to an administrator, increases the risk of accidental exposure. Since the key is not displayed, clear confirmation messages (e.g., "API Key updated successfully") are important, without echoing the key itself.
+
+#### **II.F.4. Step-by-Step Implementation Tasks (Frontend)**
+
+1. Design the layout for the Global Settings page, keeping it simple and focused on the API key update task.  
+2. Implement the form containing a masked input field for the Gemini API key and a "Save" or "Update" button.  
+3. Develop an API client function to securely transmit the new API key to the backend. This function should use the HTTP PUT or POST method.  
+4. Implement clear and concise feedback messages to inform the administrator of a successful update or any errors that occurred during the process.  
+5. Critically, ensure that there is no functionality to fetch or display the currently stored API key.
+
+#### **II.F.5. Required Backend Interactions (Conceptual API Endpoints)**
+
+* PUT /api/admin/settings/gemini\_api\_key (Request Payload: { "api\_key": "..." })
+
+## **III. User Portal: Detailed Feature Breakdown and Implementation Tasks**
+
+The User Portal is designed for general employees, providing them with features to manage their own document processing jobs and view data relevant to their department. Access and functionality are restricted based on their assigned role ('user') and department affiliation.1 The frontend will be built using Next.js.1
+
+### **III.A. User Dashboard**
+
+#### **III.A.1. Purpose and Scope**
+
+The User Dashboard aims to display performance metrics that are "scoped to the user's department only".1 This provides users with relevant insights into their department's document processing activities.
+
+#### **III.A.2. Key UI Components and Layout**
+
+* **Widgets:** The widgets will be "similar to the admin dashboard but will only reflect data from their department".1 This implies the presence of widgets such as:  
+  * "Average Processing Time (Department)"  
+  * "Success vs. Failed Jobs (Department \- Today/This Month)"  
+  * "Total API Calls (Department)"  
+* **Chart (Implied):** While not explicitly stated for the user portal, a department-scoped version of the token usage chart is a logical parallel to the admin dashboard's functionality and would provide valuable cost-related information at the department level.
+
+#### **III.A.3. Data Sources and Metrics (Conceptual)**
+
+All data presented on the User Dashboard will be automatically filtered by the backend based on the department\_id of the logged-in user. The calculation logic for metrics will be similar to that of the Admin Dashboard, but with this department-level constraint applied by the backend. The frontend should not need to explicitly pass the department\_id.
+
+A consideration arises for users whose department\_id is NULL, meaning they are "unassigned".1 The dashboard behavior for such users needs to be defined. It might display a message indicating their unassigned status, show minimal information, or they might not have access to this dashboard page until assigned to a department.
+
+#### **III.A.4. Step-by-Step Implementation Tasks (Frontend)**
+
+1. Design the layout for the User Dashboard page.  
+2. Reuse or adapt the widget components developed for the Admin Dashboard, ensuring they can display department-scoped data.  
+3. Develop API client functions to fetch department-scoped dashboard metrics. The backend will infer the department from the authenticated user's session/token.  
+4. Integrate the fetched data with the UI components.  
+5. Implement appropriate loading state indicators and error handling mechanisms.
+
+#### **III.A.5. Required Backend Interactions (Conceptual API Endpoints)**
+
+* GET /api/user/dashboard/metrics?time\_period=\<period\> (Backend infers department\_id from the authenticated user)  
+* GET /api/user/dashboard/token\_usage?granularity=\<daily/monthly\> (Backend infers department\_id)
+
+### **III.B. Job Management Page**
+
+#### **III.B.1. Purpose and Scope**
+
+This page allows users to view and manage "jobs submitted by the logged-in user and all other users within their department".1 It also provides functionality to retry failed jobs within this scope.
+
+#### **III.B.2. Key UI Components and Layout**
+
+* **Searchable Table:** Similar in structure and functionality to the Admin Job Management table, but the data displayed will be scoped to the user's department. Columns will likely include Job ID, Filename, Uploader, Department (which will typically be the user's own department for all listed jobs), Status, and Timestamp.  
+* **Expandable Rows & Download Links:** Functionality for expanding rows to show job details and providing download links for PDF, JSON, and Excel files will mirror that of the admin portal.  
+* **Retry Button:** A "Retry" button will be available for failed jobs that fall within the user's visibility scope (their own jobs or jobs from others in their department). This button will trigger the same modal dialog and document type change capability as described for the admin portal.1
+
+A key difference for users retrying a job is that the list of document types available for selection in the retry modal should be restricted to those accessible by their specific department, as defined in the department\_doc\_type\_access table.1 This contrasts with administrators, who would likely see all available document types.
+
+#### **III.B.3. Data Interactions and Management**
+
+* **Display:** The page will fetch and display job records from the processing\_jobs table. The backend will filter these jobs to include only those where the uploader\_user\_id belongs to a user in the same department as the currently logged-in user.  
+* **Permissions:** Users are permitted to view and retry their own jobs and jobs submitted by other users within their department.1  
+* **Retry Logic:** The retry mechanism is identical to the admin portal's: a new processing\_jobs record is created to preserve the history of the original failure, and the user can select a (department-permissible) document type for the retry attempt.
+
+Many UI components, such as the job table and the retry modal, can potentially be shared or adapted from those developed for the Admin Job Management page. The primary differences will lie in the data fetching logic (department-scoped) and specific behavioral nuances like the filtered document type list for retries.
+
+#### **III.B.4. Step-by-Step Implementation Tasks (Frontend)**
+
+1. Design the layout for the User Job Management page.  
+2. Implement or adapt the job table component from the Admin portal, ensuring that API calls fetch department-scoped data.  
+3. Implement row expansion, download links, and the retry modal. The retry modal's document type dropdown must be populated with document types accessible to the user's department.  
+4. Develop API client functions for:  
+   * Fetching department-scoped job lists (with search, filter, and pagination parameters).  
+   * Downloading files (PDF, JSON, Excel).  
+   * Re-triggering jobs (sending original job ID and new, department-allowed doc\_type\_id).  
+5. Implement client-side pagination for the job table.  
+6. Ensure appropriate loading states and user-friendly error handling.
+
+#### **III.B.5. Required Backend Interactions (Conceptual API Endpoints)**
+
+* GET /api/user/jobs?search=\<term\>\&filter\_status=\<status\>\&page=\<num\>\&limit=\<num\> (Backend infers department\_id from the authenticated user)  
+* GET /api/jobs/\<job\_id\>/download/\<file\_type\> (This endpoint can be the same as for admins, but the backend must perform an authorization check to ensure the user has permission to access the specified job\_id based on their department)  
+* POST /api/user/jobs/\<original\_job\_id\>/retry (Request Payload: { "new\_doc\_type\_id": \<id\> })  
+* GET /api/document\_types?department\_id=\<inferred\_from\_user\> (To populate the document type dropdown in the retry modal, filtered by the user's department's access rights)
+
+### **III.C. Immediate Upload Page**
+
+#### **III.C.1. Purpose and Scope**
+
+This page enables users to upload a PDF document, select an appropriate document type for processing, and initiate an immediate processing job. The system will provide real-time feedback on the processing status via WebSockets.1
+
+#### **III.C.2. Key UI Components and Layout**
+
+* **File Upload Interface:** A standard HTML file input element, configured to accept only PDF files.  
+* **Document Type Dropdown:** A dropdown menu allowing the user to "select a document type." This list "is filtered by their department's allowed types".1 The data for this dropdown is sourced from the document\_types table, filtered according to the department\_doc\_type\_access table for the user's department.1  
+* **Upload/Submit Button:** A button to initiate the file upload and processing request.  
+* **Real-time Progress Bar:** A visual component that "shows the real-time progress bar powered by WebSockets".1 This bar should dynamically update to reflect the different stages of backend processing, such as 'Processing...', 'Generating Excel...'.  
+* **Immediate Download Links:** Upon successful completion of the processing job, the UI will provide "immediate download links for the JSON and Excel files".1
+
+The WebSocket implementation is a critical aspect of this page's user experience, offering transparency into the multi-step backend processing.1 The progress bar must accurately reflect the status updates communicated by the backend.
+
+#### **III.C.3. Data Interactions and Management**
+
+* **Document Type Fetching:** Before the user can make a selection, the frontend must fetch the list of document types that are accessible to their specific department.  
+* **File Upload:** The selected PDF file and the chosen doc\_type\_id are sent to the backend to initiate the processing job.  
+* **WebSocket Communication:**  
+  1. Upon submission of the file and document type, the frontend establishes a WebSocket connection with the backend.1  
+  2. The backend sends status update messages over this WebSocket connection (e.g., 'Processing PDF...', 'Calling Gemini API...', 'Generating Excel...').1 These messages should ideally include progress indicators if possible.  
+  3. Upon completion (either success or failure), the backend sends a final status message. If successful, this message will include the S3 paths for the generated JSON and Excel files. If failed, it will include an error message.  
+* **Download:** The frontend uses the S3 paths received via WebSocket (upon success) to construct and display download links for the user.
+
+Even for "immediate" uploads, the backend will create a processing\_jobs record.1 The frontend might receive the job\_id from the initial POST request or as part of the WebSocket communication, which can be used for tracking or linking to the job details if needed. Failures during the immediate processing workflow should also be communicated clearly via the WebSocket connection, allowing the UI to display the relevant error\_message from the processing\_jobs table.
+
+#### **III.C.4. Step-by-Step Implementation Tasks (Frontend)**
+
+1. Design the layout for the Immediate Upload page.  
+2. Implement the file input component, ensuring it is restricted to accept only PDF files.  
+3. Implement the document type dropdown menu. This dropdown must be populated by fetching document types that are specifically allowed for the logged-in user's department.  
+4. Develop the logic for initiating the file upload to the backend. This will involve sending the PDF file and the selected doc\_type\_id (likely as a multipart/form-data POST request).  
+5. Implement the client-side WebSocket logic:  
+   * Establish the WebSocket connection after the initial upload request is successfully made (the backend might return a job ID or a specific WebSocket URL to connect to).  
+   * Handle incoming messages: parse status updates, progress information, and update the progress bar and UI text accordingly.  
+   * Handle error messages received over WebSocket and display them appropriately.  
+   * Handle the completion message: if successful, display download links for JSON and Excel; if failed, display the error state.  
+   * Ensure the WebSocket connection is closed gracefully when processing is complete or if the user navigates away from the page.  
+6. Implement the visual progress bar component.  
+7. Implement the UI elements to display download links upon successful job completion.  
+8. Develop API client functions for fetching the allowed document types for the user's department and for initiating the immediate upload process.
+
+#### **III.C.5. Required Backend Interactions (Conceptual API Endpoints & WebSocket)**
+
+* GET /api/document\_types?department\_id=\<inferred\_from\_user\> (to populate the document type dropdown, filtered by the user's department)  
+* POST /api/user/upload/immediate (Request: Multipart form data containing file (the PDF), doc\_type\_id). This HTTP request initiates the processing. The response might include a job\_id or a unique identifier for establishing the WebSocket connection.  
+* **WebSocket Endpoint:** e.g., ws /api/user/upload/status/\<job\_id\_or\_tracking\_id\>  
+  * **Messages from Backend (Example Format):**  
+    * { "status\_message": "Processing PDF...", "progress\_percentage": 25 }  
+    * { "status\_message": "Generating Excel from JSON...", "progress\_percentage": 75 }  
+    * { "status": "success", "job\_id": \<id\>, "s3\_json\_path": "...", "s3\_excel\_path": "..." }  
+    * { "status": "failed", "job\_id": \<id\>, "error\_message": "..." }
+
+### **III.D. Profile Management Page**
+
+#### **III.D.1. Purpose and Scope**
+
+This page is described as a "simple page where users can edit their own name".1 It provides a basic interface for users to update this piece of their profile information.
+
+#### **III.D.2. Key UI Components and Layout**
+
+* **Input Field:** A text input field for the user's name. This field should be pre-filled with the user's current name fetched from the backend.  
+* **Save Button:** A button to submit any changes made to the name.  
+* **Display (Non-editable fields):** For informational context, the page should also display non-editable user details such as their Email, Role, and Department.
+
+While the current requirement is solely for name editing, this page could serve as a foundation for future profile management enhancements, such as password changes (if direct Cognito login with password remains an option post-SSO implementation) or MFA configuration management. If the user's name is also intended to be updated in their AWS Cognito profile attributes, the backend must handle this synchronization. The project instruction primarily indicates the Aurora users table as the source of truth for name post-authentication.1
+
+#### **III.D.3. Data Interactions and Management**
+
+* **Fetch:** On page load, the frontend will fetch the current user's profile details (including name, email, role, and department name) from the backend.  
+* **Update:** When the user modifies their name and clicks "Save," the frontend will send the updated name to the backend. The backend will then update the name field in the users table for the authenticated user.
+
+#### **III.D.4. Step-by-Step Implementation Tasks (Frontend)**
+
+1. Design the layout for the Profile Management page.  
+2. Implement the text input field for the user's name, ensuring it is pre-filled with their current name.  
+3. Implement the "Save" button.  
+4. Display the non-editable information: email, role, and department (the department name would be fetched via user's department\_id).  
+5. Develop API client functions to:  
+   * Fetch the current user's profile data.  
+   * Submit the updated name to the backend.  
+6. Implement clear feedback messages to the user upon successful update or if any errors occur.
+
+#### **III.D.5. Required Backend Interactions (Conceptual API Endpoints)**
+
+* GET /api/user/profile (Backend infers user from authentication context)  
+* PUT /api/user/profile (Request Payload: { "name": "..." })
+
+## **IV. Cross-Cutting Considerations for Portal Development**
+
+Several considerations apply globally to the development of both Admin and User portals to ensure quality, consistency, and maintainability.
+
+### **IV.A. UI/UX Design Principles and Consistency**
+
+A unified user experience is paramount. Both portals should adhere to consistent visual styling, including branding elements, color palettes, typography, and iconography. The design must be responsive, adapting gracefully to various screen sizes and devices. Navigation should be intuitive, and information hierarchy clear to facilitate ease of use. Employing a common UI component library (e.g., Material UI, Ant Design, or a custom-developed library) for standard elements like tables, buttons, modals, and forms will enforce consistency and accelerate development.
+
+### **IV.B. API Integration Strategy (Frontend-Backend Communication Patterns)**
+
+The Next.js frontend will communicate with the Python/FastAPI backend via RESTful APIs.1
+
+* Modern JavaScript features like async/await should be used for handling asynchronous API calls.  
+* A robust error handling strategy is essential for API requests. This includes managing network errors, and different classes of HTTP status code responses (e.g., 4xx for client errors, 5xx for server errors), and providing user-friendly feedback.  
+* API base URLs should be managed via environment variables. Authentication tokens obtained from AWS Cognito must be handled securely, for instance, by storing them in HTTP-only cookies or other secure browser storage mechanisms, and included in API requests as required.
+
+### **IV.C. Real-time Communication (WebSocket Implementation Notes for Frontend)**
+
+WebSockets are specified for real-time communication, particularly for status updates during immediate processing jobs on the User Portal's Immediate Upload Page.1
+
+* A suitable WebSocket client library compatible with Next.js should be selected.  
+* The frontend must implement robust connection management, including opening and closing connections, and potentially handling disconnects and reconnection attempts if the application requires such resilience.  
+* Clear message contracts must be established with the backend, defining the structure and content of messages for status updates, progress indication, success notifications (including paths to processed files), and error details.
+
+### **IV.D. Frontend State Management Approach**
+
+The choice of a state management solution for Next.js will depend on the complexity of the state to be managed.
+
+* For simpler, localized state (e.g., form inputs, modal visibility), React's built-in Context API or component state (useState, useReducer) may suffice.  
+* For more complex global state, such as user authentication status, user profile information (name, role, department), and potentially cached dashboard data, solutions like Zustand, Redux Toolkit, or Recoil should be considered.
+
+### **IV.E. Comprehensive Error Handling and User Feedback Mechanisms**
+
+Effective error handling and user feedback are crucial for a good user experience.
+
+* Error messages displayed to users should be clear, concise, and non-technical.  
+* Toast notifications or similar unobtrusive alerts can be used for transient feedback (e.g., "Settings saved successfully," "Job submitted for processing").  
+* Loading indicators (spinners, progress bars, skeleton screens) should be consistently used during data fetching or long-running operations to inform the user that the system is working.  
+* For form submissions, client-side and server-side validation messages should be clearly presented, ideally at the field level.
+
+### **IV.F. Authentication and Authorization**
+
+Frontend integration with AWS Cognito is a core requirement for user authentication.1
+
+* This will involve either redirecting users to the Cognito-hosted UI for login/signup or integrating Amplify UI components (or a custom solution using Amplify libraries) for a more embedded experience.  
+* Secure handling of JSON Web Tokens (JWTs), specifically the ID token and access token received from Cognito, is critical.  
+* Route guards must be implemented in Next.js to protect pages and features based on the user's authentication status and role (admin or user).  
+* UI elements (e.g., navigation links, buttons for specific actions) should be conditionally rendered or disabled based on the authenticated user's permissions, which are derived from their role and, for 'user' roles, their department and associated document type access rights.1
+
+Developing a shared library of UI components that can be used across both Admin and User portals will offer significant advantages. Components like data tables, modals, forms, and dashboard widgets often share common structures and behaviors. A centralized library promotes code reuse, reduces development effort, ensures visual and functional consistency, and simplifies future maintenance and updates. Furthermore, while backend API development is separate, the frontend team's efficiency heavily relies on clear, well-documented API specifications. Leveraging FastAPI's automatic OpenAPI/Swagger documentation generation capabilities can facilitate this, and early agreement on API contracts between frontend and backend teams is vital for smooth integration and parallel development.5
+
+## **V. Summary of Key Implementation Task Categories**
+
+The development of the Admin and User portals will encompass several broad categories of tasks:
+
+* **V.A. Core Portal Structure:** This involves setting up the Next.js projects for both portals, defining routing configurations, and creating master layout templates that include common elements like navigation bars and footers.  
+* **V.B. Authentication Integration:** Implementing the complete user authentication lifecycle with AWS Cognito, including login and logout flows, secure management of authentication tokens, and the creation of route guards to protect authenticated routes and differentiate access based on user roles.  
+* **V.C. Page Development:** For each page detailed in Sections II and III of this document, development will include:  
+  * Creation of specific React components (tables, forms, input fields, widgets, modals, etc.).  
+  * Integration with backend APIs for data fetching, submission, and updates.  
+  * Management of local and global frontend state relevant to the page's functionality.  
+  * Implementation of all specified user interaction logic.  
+* **V.D. WebSocket Integration:** Client-side implementation for the real-time features on the Immediate Upload Page, including connection establishment, message handling, and UI updates based on WebSocket messages.  
+* **V.E. Styling and UI/UX Refinement:** Application of consistent styling across all components and pages, ensuring responsiveness and adherence to the defined UI/UX design principles.  
+* **V.F. Testing:** Implementation of a comprehensive testing strategy, including unit tests for individual components and utility functions, integration tests for API interactions and state management logic, and potentially end-to-end tests for critical user flows.
+
+## **VI. Conclusion**
+
+The successful implementation of the Admin and User portals, as detailed in this specification, is fundamental to the overall utility and operational efficiency of the document processing platform. These portals provide the necessary interfaces for administrators to manage the system comprehensively and for users to interact with the document processing workflows effectively.
+
+Close collaboration and continuous communication between the frontend and backend development teams will be essential throughout the development lifecycle. Clear API contracts, shared understanding of data models, and coordinated testing efforts will contribute significantly to a smooth and successful implementation. Following the completion of detailed UI/UX mockups and the parallel development of backend APIs, the frontend development can proceed based on the granular tasks outlined herein.
+
+
+
+

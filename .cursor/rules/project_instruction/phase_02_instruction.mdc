@@ -1,0 +1,407 @@
+---
+description: Phase 2: Entra ID SSO Federation and MFA Enforcement
+globs: 
+alwaysApply: false
+---
+# **Detailed Implementation Plan for Project Phase 2: Entra ID SSO Federation and MFA Enforcement**
+
+## **1\. Introduction**
+
+This document outlines a detailed implementation plan for Phase 2 of the project, focusing on enhancing the platform's user authentication mechanisms. Phase 2 builds upon the foundational authentication system established in Phase 1, which utilized a standard AWS Cognito-hosted UI for username (email) and password logins.1
+
+### **1.1. Overview of Phase 2 Objectives**
+
+The primary objectives for Phase 2, as stipulated in the project's instructional materials 1, are twofold:
+
+1. **Microsoft Entra ID (Azure AD) Single Sign-On (SSO) Federation**: To integrate AWS Cognito with Microsoft Entra ID, enabling users to authenticate using their existing corporate credentials. This aims to streamline the login process and improve user experience by leveraging a familiar identity provider (IdP).  
+2. **Multi-Factor Authentication (MFA) Enforcement for Direct Cognito Logins**: Subsequent to the implementation of SSO, to mandate MFA for any user who continues to log in directly to AWS Cognito using their username and password. This measure is intended to bolster the security posture for accounts not utilizing the federated SSO path.
+
+The project's design to implement basic authentication first and then layer more advanced security features like SSO and targeted MFA represents a common and sound strategy. This iterative development allows for focused implementation, thorough testing at each stage, and a more manageable adaptation curve for users. By establishing a working authentication system in Phase 1, the enhancements in Phase 2 can be introduced with less disruption and greater precision.
+
+Furthermore, the directive to enforce MFA *after* SSO implementation suggests a strategic approach to user experience and security. If SSO via Azure AD becomes the predominant authentication pathway, the cohort of users relying on direct Cognito username/password credentials will likely be smaller. Concentrating MFA enforcement on this specific group simplifies the rollout, minimizes potential friction for the broader user base, and aligns with the security principle of strongly securing any direct, non-federated access points.
+
+### **1.2. Purpose and Scope of this Document**
+
+This document provides a granular, step-by-step implementation guide for achieving the two core objectives of Phase 2\. It is designed to serve as a practical roadmap for the technical teams responsible for configuring, testing, and deploying these authentication enhancements.
+
+The scope of this plan is strictly limited to the tasks necessary for:
+
+* Configuring the federation between AWS Cognito and Microsoft Entra ID.  
+* Implementing and enforcing MFA for direct username/password logins to AWS Cognito.
+
+Activities outside this scope include the initial setup of the AWS Cognito User Pool (covered in Phase 1), detailed design or modification of the Next.js frontend UI beyond what is necessary to accommodate the new authentication flows, or any other components of the broader project detailed in the project instruction document.1
+
+### **1.3. Key Assumptions**
+
+The successful execution of this plan relies on the following assumptions:
+
+* An AWS Cognito User Pool has been successfully provisioned and integrated into the application environment as per the specifications of Phase 1\.1  
+* The implementation team possesses, or can obtain, the necessary administrative privileges for both the AWS Management Console (specifically for Amazon Cognito User Pool configuration) and the Microsoft Azure Portal (specifically for Azure Active Directory/Entra ID Enterprise Application management).  
+* Relevant stakeholders, including but not limited to Azure AD administrators and application owners, are available for collaboration and consultation as required during the implementation process.
+
+## **2\. Phase 2.1: Microsoft Entra ID (Azure AD) Federation with AWS Cognito for Single Sign-On (SSO)**
+
+This section details the steps to establish a federation trust between Microsoft Entra ID and the existing AWS Cognito User Pool, enabling users to sign in to the application using their Entra ID credentials.
+
+### **2.1.1. Prerequisites and Strategic Decisions**
+
+Before initiating configuration, several preparatory steps and strategic decisions are essential.
+
+* **Task 2.1.1.1: Secure Necessary Administrative Access**  
+  * **Action**: Confirm and obtain the required administrative credentials and permissions for the following platforms:  
+    * **AWS Management Console**: Privileges sufficient to modify Amazon Cognito User Pool settings, including creating identity providers, configuring attribute mappings, and updating app client configurations.  
+    * **Microsoft Azure Portal**: Privileges sufficient to create and manage Enterprise Applications within Azure Active Directory (Entra ID), configure SAML or OIDC settings, manage user attributes and claims, and assign users/groups to applications.  
+  * **Importance**: Lack of appropriate access will impede or halt the configuration process.  
+* **Task 2.1.1.2: Choose Federation Protocol (SAML 2.0 or OpenID Connect \- OIDC)**  
+  * **Action**: Evaluate and select the most suitable federation protocol. The project documentation does not mandate a specific protocol.1  
+    * **SAML 2.0 (Security Assertion Markup Language 2.0)**: A robust and widely adopted XML-based standard for exchanging authentication and authorization data between an IdP (Azure AD) and a Service Provider (SP) (Cognito). It is often preferred for browser-based SSO in enterprise environments.  
+    * **OIDC (OpenID Connect)**: An identity layer built on top of the OAuth 2.0 framework. It uses JSON-based tokens (ID Tokens, Access Tokens) and is generally considered simpler to integrate with modern web and mobile applications. OIDC can provide rich user identity information through standard claims.  
+  * **Considerations for Decision**:  
+    * Team expertise and familiarity with each protocol.  
+    * Specific features or constraints within the Azure AD environment.  
+    * Application requirements for token types (e.g., if specific OAuth 2.0 access tokens are needed directly from the federation).  
+    * Ease of integration with the Next.js frontend and FastAPI backend. OIDC often aligns well with API-driven architectures and JavaScript frameworks.  
+  * **Impact**: The choice of protocol is fundamental as it dictates the specific configuration steps, metadata exchange formats, and endpoint requirements in both Azure AD and AWS Cognito. This decision must be made upfront.  
+* **Task 2.1.1.3: Information Gathering for Configuration**  
+  * **Action**: Prepare to collect or identify the following essential identifiers and endpoints as configurations proceed:  
+    * **From Azure AD (once the Enterprise Application is set up)**:  
+      * For SAML: Federation Metadata XML URL or downloaded file, Azure AD Identifier (Entity ID).  
+      * For OIDC: Issuer URL, Authorization endpoint URL, Token endpoint URL, JWKS URI, Application (Client) ID.  
+    * **From AWS Cognito**:  
+      * User Pool ID (e.g., us-east-1\_xxxxxxxxx).  
+      * User Pool ARN.  
+      * Cognito Domain Name (e.g., your-project-domain.auth.us-east-1.amazoncognito.com). This is critical for constructing Reply URLs/Redirect URIs.  
+  * **Importance**: These values are necessary for establishing the trust relationship between the two systems.  
+* **Task 2.1.1.4: Define Attribute Mapping Strategy**  
+  * **Action**: Identify user attributes within Azure AD that must be propagated to the AWS Cognito User Pool upon successful SSO.  
+    * Examples: Email address, full name, department, user roles or groups.  
+    * Consult the users table schema in the Amazon Aurora database 1 to determine required attributes like name, email, and potentially department\_id (if department information is sourced from Azure AD). The role attribute in Cognito should also be considered for mapping if Azure AD groups are to determine application roles.  
+  * **Action**: Ensure that corresponding custom or standard attributes exist within the Cognito User Pool schema. If new attributes are needed in Cognito (e.g., a custom attribute for azure\_ad\_department\_id), plan for their creation prior to or during the IdP configuration in Cognito.  
+  * **Impact**: Accurate and complete attribute mapping is crucial for the application's functionality. If users authenticate successfully via SSO but necessary attributes are missing or incorrectly mapped, they may encounter authorization issues, see incorrect data, or be unable to perform their tasks within the application. The application relies on these attributes for its business logic and user experience.
+
+### **2.1.2. Microsoft Azure AD Configuration Steps**
+
+The following steps assume SAML 2.0 is chosen as the federation protocol, with parenthetical notes indicating key differences if OIDC were selected.
+
+* **Task 2.1.2.1: Create or Configure an Enterprise Application in Azure AD**  
+  * **Action**:  
+    1. Navigate to the **Azure Active Directory** service in the Azure portal.  
+    2. Select **Enterprise applications**.  
+    3. Click **\+ New application**.  
+    4. Click **\+ Create your own application**.  
+    5. Enter a descriptive name for the application (e.g., "ProjectName AWS Cognito Integration").  
+    6. Select the option "Integrate any other application you don't find in the gallery (Non-gallery)".  
+    7. Click **Create**.  
+  * **Importance**: This Azure AD application object will represent the AWS Cognito service provider.  
+* **Task 2.1.2.2: Configure Single Sign-On (SAML)**  
+  * **Action**:  
+    1. Once the enterprise application is created, navigate to its overview page and select **Single sign-on** from the "Manage" menu.  
+    2. Choose **SAML** as the single sign-on method.  
+    3. **Edit Basic SAML Configuration**:  
+       * **Identifier (Entity ID)**: Enter urn:amazon:cognito:sp:\<YourCognitoUserPoolID\>. Replace \<YourCognitoUserPoolID\> with your actual Cognito User Pool ID. This value must precisely match the Audience URI expected by Cognito.  
+       * **Reply URL (Assertion Consumer Service URL)**: Enter https://\<YourCognitoDomainName\>.auth.\<region\>.amazoncognito.com/saml2/idpresponse. Replace \<YourCognitoDomainName\> with your Cognito domain and \<region\> with the AWS region of your User Pool. This is the endpoint where Cognito will receive SAML assertions from Azure AD.  
+       * **Sign on URL (Optional)**: This can be left blank, or you can specify the URL that initiates the login flow, such as your application's login page or the Cognito Hosted UI endpoint.  
+       * **Relay State (Optional)**: If your application requires a specific relay state, configure it here. Typically not required for basic Cognito federation.  
+       * **Logout Url (Optional)**: If implementing SAML Single Log-Out (SLO), configure this with Cognito's SLO endpoint.  
+    4. Save the configuration.  
+  * **(OIDC Note)**: If using OIDC, instead of SAML configuration, you would register **Redirect URIs** under "Authentication" for the App Registration associated with the Enterprise Application. The primary Redirect URI would be https://\<YourCognitoDomainName\>.auth.\<region\>.amazoncognito.com/oauth2/idpresponse.  
+  * **Impact**: The accuracy of the Identifier (Entity ID) and Reply URL is paramount. Any mismatch between the Azure AD configuration and what Cognito expects will result in federation failure. These URLs form the basis of trust and communication routing for the SAML protocol.  
+* **Task 2.1.2.3: Configure User Attributes & Claims (SAML)**  
+  * **Action**:  
+    1. In the SAML-based Sign-on settings, locate the **Attributes & Claims** section and click **Edit**.  
+    2. Review the default claims. Add or modify claims to send the necessary user attributes to Cognito.  
+    3. For each required attribute (identified in Task 2.1.1.4):  
+       * Click **\+ Add new claim**.  
+       * **Name**: Provide a claim name (e.g., email, given\_name, family\_name, department). It's common practice to use standard claim URIs (e.g., http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress) or simple names. These names will be mapped in Cognito.  
+       * **Source**: Select "Attribute".  
+       * **Source attribute**: Choose the corresponding Azure AD user attribute (e.g., user.mail, user.givenname, user.surname, user.department).  
+    4. Ensure the **Unique User Identifier (Name ID)** is configured appropriately. Common choices include user.userprincipalname or user.mail. The format should be "Persistent" or "EmailAddress" depending on Cognito's requirements and your linking strategy.  
+    5. Save the claims configuration.  
+  * **(OIDC Note)**: For OIDC, claims are typically configured under "Token configuration" for the App Registration. You would add optional claims to the ID token or access token as needed. Standard OIDC scopes (like profile, email) often provide a baseline set of claims.  
+  * **Impact**: Azure AD becomes the authoritative source for the attributes of users authenticating via SSO. Cognito will rely on these incoming claims to populate or update user profiles in the User Pool. If an attribute required by the application 1 is not sent or incorrectly mapped, the user's experience and access within the application will be compromised, even if authentication succeeds.  
+* **Task 2.1.2.4: Manage SAML Signing Certificate**  
+  * **Action**:  
+    1. In the SAML-based Sign-on settings, locate the **SAML Signing Certificate** section.  
+    2. Download the **Federation Metadata XML** file. This file contains Azure AD's configuration details, including its signing certificate, which Cognito will use to verify SAML assertions. Alternatively, copy the **App Federation Metadata Url**.  
+    3. Note the expiration date of the active certificate. Plan for certificate renewal and update in Cognito before expiry to avoid service disruption.  
+  * **Importance**: The SAML signing certificate is used by Azure AD to sign SAML assertions, and Cognito uses the public key from this certificate to verify the assertion's authenticity and integrity.  
+* **Task 2.1.2.5: Assign Users and Groups**  
+  * **Action**:  
+    1. Navigate back to the Enterprise Application's overview page.  
+    2. Select **Users and groups** from the "Manage" menu.  
+    3. Click **\+ Add user/group**.  
+    4. Assign the specific Azure AD users or security groups that should be permitted to use SSO to access this application. If no users or groups are assigned (and user assignment is required, which is the default), no one will be able to sign in.  
+  * **Importance**: This step controls which Azure AD users are authorized to attempt SSO into the Cognito-integrated application.  
+* **Task 2.1.2.6: (Optional) Conditional Access Policies**  
+  * **Action**: Evaluate if any Azure AD Conditional Access policies should be applied to this Enterprise Application.  
+  * **Considerations**: Such policies could enforce MFA at the Azure AD level (before reaching Cognito), require compliant devices, or restrict access based on location.  
+  * **Importance**: This allows leveraging Azure AD's advanced security features for federated users. If Azure AD enforces MFA, it might influence how Cognito's MFA for direct logins is perceived or configured.
+
+### **2.1.3. AWS Cognito User Pool Configuration Steps**
+
+After configuring Azure AD, the next step is to configure the AWS Cognito User Pool to trust Azure AD as an IdP.
+
+* **Task 2.1.3.1: Navigate to User Pool and Identity Providers**  
+  * **Action**:  
+    1. In the AWS Management Console, navigate to **Amazon Cognito**.  
+    2. Select **User Pools** and choose the relevant User Pool for this project.  
+    3. In the navigation pane, under **Federation**, select **Identity providers**.  
+* **Task 2.1.3.2: Add Identity Provider (SAML or OIDC)**  
+  * **Action**: Click **Add identity provider**.  
+  * Select **SAML** or **OpenID Connect** based on the protocol chosen in Task 2.1.1.2.  
+* **Task 2.1.3.3: Configure SAML IdP Details**  
+  * **Action** (if SAML was chosen):  
+    1. **Provider name**: Enter a unique, friendly name for this IdP (e.g., AzureAD-SSO). This name may be visible to users if multiple IdPs are configured.  
+    2. **Metadata document**: Either upload the **Federation Metadata XML** file downloaded from Azure AD (Task 2.1.2.4) or provide the **App Federation Metadata Url**. Using the URL is generally preferred as it allows for automatic updates if Azure AD's signing certificate changes (though this depends on Cognito's caching and refresh behavior for metadata).  
+    3. **Identifiers (Optional)**: If the metadata document does not explicitly contain the IdP's Entity ID, you may need to enter it here. This should be Azure AD's identifier.  
+    4. **Enable IdP sign out flow (Optional)**: If Azure AD supports SAML Single Log-Out (SLO) and this functionality is desired, check this box. This typically requires Azure AD to have a configured SLO endpoint.  
+    5. Click **Add identity provider**.  
+  * **(OIDC Note)**: If OIDC was chosen, the configuration fields would include:  
+    * **Client ID**: The Application (Client) ID of the Azure AD App Registration.  
+    * **Client secret (Optional but recommended if Azure AD app is confidential)**: The client secret from the Azure AD App Registration.  
+    * **Attributes request method**: Typically GET or POST.  
+    * **Authorize scope**: Default is openid. Add other scopes like email profile as needed, separated by spaces.  
+    * **Issuer URL**: The OIDC issuer URL from Azure AD (e.g., https://login.microsoftonline.com/\<TenantID\>/v2.0). Cognito will use this to discover OIDC endpoints (Authorization, Token, UserInfo, JWKS URI).  
+  * **Impact**: The complexity of SAML Single Log-Out (SLO) should not be underestimated. SLO requires coordinated invalidation of sessions across Azure AD, Cognito, and the application itself. If not fully and correctly implemented, users might log out of one system but remain authenticated in others, leading to a confusing and potentially insecure state. The project team must decide if SLO is a firm requirement for Phase 2 or can be deferred.  
+* **Task 2.1.3.4: Map Attributes**  
+  * **Action**: After adding the IdP, Cognito will prompt for attribute mapping.  
+    1. Map the incoming SAML assertion attributes (or OIDC claims) from Azure AD to the corresponding Cognito User Pool attributes.  
+    2. For each Cognito attribute that needs to be populated from Azure AD (e.g., email, name, custom attributes for department):  
+       * Select the Cognito attribute from the dropdown.  
+       * Enter the name of the SAML attribute (claim name) as configured in Azure AD (Task 2.1.2.3) or the OIDC claim name. For SAML, this might be a full URI (e.g., http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress) or a simple name (e.g., email).  
+    3. Ensure all attributes required by the application, as defined in the users table schema 1, are accurately mapped.  
+    4. Save the attribute mappings.  
+  * **Importance**: This step is critical for ensuring user data consistency and application functionality.  
+* **Task 2.1.3.5: Update App Client Settings**  
+  * **Action**:  
+    1. In the User Pool navigation pane, go to **App integration** and select **App client settings**.  
+    2. Locate the app client used by your Next.js frontend application. (The project instruction 1 implies a Next.js frontend interacting with Cognito).  
+    3. Under **Enabled Identity Providers**, check the box next to the newly configured Azure AD IdP (e.g., AzureAD-SSO).  
+    4. Verify that the **OAuth 2.0 grant types** (e.g., Authorization Code grant) and **Allowed OAuth Scopes** (e.g., openid, email, profile, aws.cognito.signin.user.admin) are correctly configured as per Phase 1 requirements and best practices for public clients.2  
+    5. Ensure the **Callback URL(s)** and **Sign out URL(s)** are correctly configured to point to your application, which will handle the responses from Cognito after authentication or logout.  
+    6. Save changes to the app client.  
+  * **Impact**: Merely configuring the identity provider in Cognito is insufficient. The specific app client(s) used by the application must be explicitly authorized to use this new IdP. Forgetting this step is a common oversight and will prevent users from seeing the Azure AD login option or successfully completing the SSO flow. This directly affects the Next.js frontend's ability to initiate SSO.  
+* **Task 2.1.3.6: Configure Cognito Hosted UI (If Used)**  
+  * **Action**: If the application relies on the Cognito Hosted UI for login and registration:  
+    1. Navigate to **Hosted UI** under **App integration**.  
+    2. The newly enabled Azure AD IdP should automatically appear as a login option on the Hosted UI page.  
+    3. Customize the UI further if needed (e.g., logo, CSS).  
+  * **Importance**: For applications using the Hosted UI, this provides a seamless way to present the new SSO option to users.
+
+### **2.1.4. Testing and Verification**
+
+Thorough testing is crucial to ensure the SSO federation is working correctly and securely.
+
+* **Task 2.1.4.1: End-to-End SSO Login Test**  
+  * **Action**:  
+    1. Initiate a login attempt from the application.  
+    2. The application should redirect to Cognito (either Hosted UI or a custom flow that presents IdP options).  
+    3. Select the Azure AD SSO option.  
+    4. The user should be redirected to the Azure AD login page.  
+    5. Authenticate using valid Azure AD credentials for an assigned user.  
+    6. Verify successful authentication and redirection back to the application's specified callback URL.  
+    7. Confirm that the user has an active, authenticated session within the application.  
+* **Task 2.1.4.2: Verify User Provisioning/Linking in Cognito**  
+  * **Action**:  
+    1. After a first-time SSO login for an Azure AD user, check the **Users** tab in the Cognito User Pool.  
+    2. Confirm that a new user profile has been created for this federated user.  
+    3. Verify that the user's "Identity provider" or similar field indicates they are federated via Azure AD.  
+    4. If the Azure AD user already had a pre-existing local account in Cognito with the same verified email (or other linking attribute), verify the accounts are correctly linked.  
+* **Task 2.1.4.3: Validate Attribute Mapping**  
+  * **Action**:  
+    1. Within the application, check the user's profile page or any displayed user information.  
+    2. Verify that attributes mapped from Azure AD (e.g., name, email, department) are correctly populated and displayed.  
+    3. Alternatively, an administrator can inspect the user's attributes directly in the Cognito User Pool, or developers can inspect the ID token received by the application.  
+* **Task 2.1.4.4: Test with Different User Scenarios**  
+  * **Action**: Test the SSO flow with various user types:  
+    * An Azure AD user who is assigned to the Enterprise Application.  
+    * An Azure AD user who is *not* assigned to the Enterprise Application (should be denied access by Azure AD).  
+    * An Azure AD user who does not yet have an account in Cognito (tests JIT provisioning).  
+    * An Azure AD user who might have a pre-existing local account in Cognito (tests account linking, if configured).  
+* **Task 2.1.4.5: Negative Testing**  
+  * **Action**:  
+    1. Attempt SSO login with invalid Azure AD credentials (ensure appropriate error messages are displayed by Azure AD).  
+    2. If possible to simulate, test behavior if Azure AD is temporarily unavailable or if there's a network issue preventing communication with Azure AD.  
+    3. Test with expired or revoked SAML certificates (if this state can be simulated) to understand failure modes.
+
+The following checklist provides a structured way to track the configuration tasks across both Azure AD and AWS Cognito, ensuring all critical points are addressed. This is invaluable for initial setup, troubleshooting, and future reference.
+
+| Task ID | Description | Azure AD Setting/Action | Cognito Setting/Action | Expected Outcome | Status | Notes |
+| :---- | :---- | :---- | :---- | :---- | :---- | :---- |
+| CKL-SSO-1 | Choose Federation Protocol | Decide: SAML 2.0 or OIDC | N/A | Protocol selected and documented. |  | Document rationale. OIDC often simpler for web/mobile. |
+| CKL-SSO-2 | Create Enterprise App in Azure AD | Create Non-gallery App, Name it. | N/A | App created in Azure AD. |  | e.g., "ProjectName AWS Cognito" |
+| CKL-SSO-3 | Configure Basic SAML (if SAML) | Set Identifier (Entity ID), Reply URL (ACS URL). | Note Cognito User Pool ID & Domain. | SAML settings match between Azure AD and Cognito expectations. |  | Entity ID: urn:amazon:cognito:sp:\<UserPoolID\>, Reply URL: https://\<CognitoDomain\>/saml2/idpresponse |
+| CKL-SSO-4 | Configure Redirect URIs (if OIDC) | Set Redirect URIs for App Registration. | Note Cognito User Pool ID & Domain. | OIDC Redirect URIs correctly configured. |  | Primary: https://\<CognitoDomain\>/oauth2/idpresponse |
+| CKL-SSO-5 | Configure User Attributes & Claims | Map Azure AD attributes (e.g., user.mail) to claim names (e.g., email). Set NameID format. | Prepare to map these claims to Cognito attributes. | Necessary attributes are included in the token/assertion. |  | Ensure all attributes from users table 1 are covered if sourced from Azure AD. |
+| CKL-SSO-6 | Obtain Federation Metadata / OIDC Endpoints | Download SAML Metadata XML or copy Metadata URL. For OIDC, note Issuer, Auth, Token, JWKS endpoints. | N/A | Metadata/endpoints available for Cognito config. |  | Note certificate expiry. |
+| CKL-SSO-7 | Assign Users/Groups in Azure AD | Assign relevant users/groups to the Enterprise App. | N/A | Only authorized Azure AD users can attempt SSO. |  |  |
+| CKL-SSO-8 | Add Identity Provider in Cognito | Select SAML/OIDC. Provider Name. Upload/link SAML metadata or enter OIDC details (Client ID, Issuer, etc.). | N/A | Azure AD configured as a trusted IdP in Cognito. |  |  |
+| CKL-SSO-9 | Map Attributes in Cognito | Map incoming SAML attributes/OIDC claims to Cognito User Pool attributes (e.g., Azure email claim to Cognito Email). | N/A | User attributes from Azure AD correctly populate Cognito profiles. |  | Crucial for application functionality. |
+| CKL-SSO-10 | Update Cognito App Client Settings | Enable the new Azure AD IdP for the relevant app client(s). Verify OAuth scopes and grant types. | N/A | Application (Next.js frontend) can now use Azure AD for login. |  | Forgetting this makes the IdP unusable by the app. Refer to.2 |
+| CKL-SSO-11 | Test End-to-End SSO | User attempts login via Azure AD. | User is redirected, authenticates, and session created in app. Cognito user profile created/linked. Attributes correctly populated. | SSO flow works as expected. |  | Test various user scenarios (new user, existing user, unauthorized user). |
+
+## **3\. Phase 2.2: MFA Enforcement for Direct Cognito Logins**
+
+This section details the steps to configure and enforce Multi-Factor Authentication (MFA) for users who log in directly to AWS Cognito using their username and password. This enforcement is specifically targeted and should not impact users authenticating via the newly configured Azure AD SSO, as per project requirements.1
+
+### **3.1.1. AWS Cognito User Pool MFA Configuration**
+
+The core of this phase involves configuring MFA settings within the Cognito User Pool.
+
+* **Task 3.1.1.1: Navigate to MFA Settings**  
+  * **Action**:  
+    1. In the AWS Management Console, access the Amazon Cognito service.  
+    2. Select the relevant User Pool.  
+    3. Navigate to the MFA configuration section. This is typically found under "Sign-in experience" \> "Multi-factor authentication (MFA)" or a similarly named section like "MFA and verifications".4 The console interface may have slight variations.  
+* **Task 3.1.1.2: Configure MFA Methods**  
+  * **Action**: Determine and select the MFA methods that will be available to users for direct Cognito logins. The project instructions do not specify preferred methods.1  
+    * **Authenticator apps (TOTP \- Time-based One-Time Password)**: Users can use apps like Google Authenticator, Microsoft Authenticator, or Authy. This method is generally considered more secure than SMS-based MFA.  
+    * **SMS text messages**: Users receive a one-time code via SMS to their verified phone number. While convenient, this method is susceptible to risks like SIM swapping.  
+  * **Decision Point**: The choice of MFA methods involves a trade-off between security and user convenience. Offering TOTP as the primary or recommended method is advisable from a security standpoint. If SMS is offered, users should be educated about its relative risks.  
+* **Task 3.1.1.3: Set MFA Enforcement Policy**  
+  * **Action**: This is the most critical step for meeting the project requirement: "After SSO is implemented, any user still logging in directly with a username/password will be required by Cognito to set up and use Multi-Factor Authentication (MFA)".1 The goal is to avoid prompting SSO users (who authenticate via Azure AD) for a second MFA factor from Cognito, especially if Azure AD itself enforces MFA.  
+  * Cognito's MFA settings can be "Off", "Optional", or "Required". A global "Required" setting might inadvertently affect SSO users. Therefore, a targeted approach is necessary:  
+    * **Option A (User Groups \- Potentially Most Granular for this Scenario)**:  
+      1. Create a new User Group within Cognito (e.g., DirectLoginMFAEnforcedUsers).  
+      2. Identify and add users who are expected to *only* use direct username/password login (i.e., will not use Azure AD SSO) to this group. This identification process is key.  
+      3. Configure MFA to be "Required" specifically for this User Group. Cognito allows setting MFA policies at the group level.  
+      * *Consideration*: This approach requires a mechanism to manage membership of this group.  
+    * **Option B (Adaptive Authentication \- If Available and Suitable)**:  
+      1. Explore Cognito's Adaptive Authentication features (part of Advanced Security).  
+      2. Configure rules to trigger MFA based on risk factors. One such factor could be the absence of authentication through a federated IdP. If a user logs in directly, their risk profile could be elevated to require MFA.  
+      * *Consideration*: Adaptive Authentication is an advanced feature and may have additional costs. Its configuration needs to be precise to target only direct logins without impacting SSO users.  
+    * **Option C (Cognito Global Setting with IdP Behavior Understanding)**:  
+      1. Set MFA to "Required" globally in Cognito.  
+      2. Thoroughly test to confirm that users authenticating via the Azure AD IdP are *not* prompted for Cognito MFA. This relies on the assumption that Cognito's federation flow bypasses its own MFA prompts if the IdP has successfully authenticated the user (potentially with its own MFA). This behavior needs empirical validation in the specific setup.  
+      * *Consideration*: This is the simplest to configure but carries the highest risk of unintended MFA prompts for SSO users if the interaction between federated login and Cognito MFA is not as expected.  
+  * **Selected Approach**: The choice among these options depends on the desired level of control, the availability of Cognito features (e.g., Adaptive Authentication tier), and administrative overhead. Option A offers explicit control if the target user group is well-defined.  
+  * **Impact**: The challenge lies in the nuanced requirement of conditional MFA. A misconfiguration could either fail to enforce MFA on direct logins or, more problematically, create a disruptive double-MFA prompt for SSO users. The implementation must ensure Cognito's MFA is triggered exclusively for the direct username/password authentication path.  
+* **Task 3.1.1.4: Customize User Experience for MFA Setup (Optional)**  
+  * **Action**: Review and, if necessary, customize the SMS and email messages that Cognito sends to users during MFA setup and verification.4  
+  * **Considerations**: Clear, concise messaging can improve the user's experience when enrolling in MFA.
+
+### **3.1.2. User Communication and Rollout Strategy**
+
+Effective communication is vital for a smooth MFA adoption process, especially as it introduces an additional step to the login flow for affected users.
+
+* **Task 3.1.2.1: Develop User Communication Plan**  
+  * **Action**: Draft clear, proactive communications targeted at users who will continue to log in directly with a username and password.  
+    * Explain the importance of MFA for enhancing account security.  
+    * Clearly state when MFA will become mandatory for their login method.  
+    * Outline any actions they need to take before the deadline.  
+  * **Importance**: Pre-informing users helps manage expectations and reduces resistance.  
+* **Task 3.1.2.2: Prepare User Guidance Materials**  
+  * **Action**: Create user-friendly instructional materials.  
+    * Provide step-by-step guides (with screenshots, if feasible) on how to set up each enabled MFA method (e.g., installing and configuring a TOTP authenticator app, adding and verifying a phone number for SMS MFA).  
+    * Include answers to frequently asked questions (FAQs) and basic troubleshooting tips.  
+  * **Importance**: Self-service resources empower users and reduce the load on support channels.  
+* **Task 3.1.2.3: Plan Support Channels**  
+  * **Action**: Define and prepare support channels for users encountering issues during MFA setup or usage.  
+    * This could involve the existing helpdesk, dedicated support personnel, or enhanced FAQ documentation.  
+  * **Importance**: Accessible support is crucial for users who struggle with the new process.  
+* **Task 3.1.2.4: Phased Rollout (Optional but Recommended)**  
+  * **Action**: If the number of users affected by direct login MFA is substantial, consider a phased rollout.  
+    * **Option 1**: Make MFA "Optional" for a defined period, encouraging users to enroll, before switching to "Required".  
+    * **Option 2**: Roll out to a pilot group of direct-login users first to gather feedback and identify potential issues before a wider enforcement.  
+  * **Impact**: A phased approach allows for adjustments based on real-world user experience and can make the transition smoother. Proactive user communication is essential for any MFA rollout to ensure users understand the reasons for the change, the steps they need to take, and where to find assistance. This minimizes frustration and support overhead.
+
+### **3.1.3. Testing and Verification**
+
+Rigorous testing is required to ensure MFA is enforced correctly for direct logins and does not negatively impact SSO users.
+
+* **Task 3.1.3.1: Test MFA Setup Flow**  
+  * **Action**: Using a test user account designated for direct Cognito login (and targeted by the MFA enforcement policy):  
+    1. Attempt to log in after MFA has been set to "Required" for this user/group.  
+    2. Verify that the user is correctly prompted to set up MFA.  
+    3. Successfully complete the MFA setup process for all enabled methods (e.g., register a TOTP authenticator app, verify an SMS phone number).  
+* **Task 3.1.3.2: Test MFA Login Flow**  
+  * **Action**: After the test user has successfully set up MFA:  
+    1. Log out.  
+    2. Attempt to log back in using the username, password, and the configured MFA method.  
+    3. Verify that the MFA prompt appears correctly and that login is successful after providing a valid MFA code/input.  
+* **Task 3.1.3.3: Test Account Recovery with MFA (If Applicable)**  
+  * **Action**: If account recovery mechanisms (e.g., forgotten password) are configured in Cognito, test these flows for a user who has MFA enabled.  
+  * Verify that the recovery process is compatible with MFA and that users can successfully recover their accounts.  
+* **Task 3.1.3.4: Verify No MFA Impact on SSO Users**  
+  * **Action**: This is a critical validation step.  
+    1. Perform SSO login tests using an Azure AD test account (as done in Task 2.1.4.1).  
+    2. Confirm unequivocally that users authenticating via Azure AD are *not* prompted by Cognito to set up or provide Cognito MFA. (Note: Azure AD itself might enforce its own MFA as part of its policies, which is distinct from Cognito's MFA and is expected behavior if configured in Azure AD).  
+  * **Importance**: Validates the targeted nature of the MFA enforcement.  
+* **Task 3.1.3.5: Test with Different User States**  
+  * **Action**: Test various scenarios:  
+    * A direct Cognito login user who has not yet enrolled in MFA (should be forced to enroll).  
+    * A direct Cognito login user who has already enrolled in MFA (should be prompted for MFA code).  
+    * An SSO user authenticating via Azure AD (should not be prompted for Cognito MFA).
+
+The following checklist helps ensure that MFA configurations are correctly implemented and verified, particularly focusing on the distinct experiences for direct and SSO logins.
+
+| Task ID | Description | Cognito Setting/Action | Target User Group (for Direct Login MFA) | Expected Behavior (Direct Login) | Expected Behavior (SSO Login via Azure AD) | Status | Notes |
+| :---- | :---- | :---- | :---- | :---- | :---- | :---- | :---- |
+| CKL-MFA-1 | Navigate to MFA Settings | Access MFA section in Cognito User Pool. | N/A | N/A | N/A |  | Path: Sign-in experience \> Multi-factor authentication (MFA).4 |
+| CKL-MFA-2 | Configure MFA Methods | Enable desired methods (e.g., Authenticator App (TOTP), SMS). | N/A | Users prompted to set up chosen methods. | N/A |  | TOTP recommended for better security. |
+| CKL-MFA-3 | Set MFA Enforcement Policy | Implement targeted enforcement (e.g., "Required" for specific User Group, Adaptive Auth rule, or validated global setting). | e.g., DirectLoginMFAEnforcedUsers | Users in target group are required to use MFA. | No Cognito MFA prompt. (Azure AD may have its own MFA). |  | This is crucial for meeting the project requirement.1 Avoid impacting SSO users. |
+| CKL-MFA-4 | Test MFA Setup Flow for Direct Login User | Attempt login with a targeted test user. | Test User (Direct Login) | User is forced to enroll in MFA. Setup is successful. | N/A |  |  |
+| CKL-MFA-5 | Test MFA Login Flow for Direct Login User | Attempt login with an MFA-enrolled targeted test user. | Test User (Direct Login, MFA enrolled) | User is prompted for MFA code. Login succeeds with valid code. | N/A |  |  |
+| CKL-MFA-6 | Verify No MFA Impact on SSO Users | Perform SSO login with an Azure AD test user. | Test User (SSO via Azure AD) | N/A | Login succeeds without Cognito MFA prompt. |  | Critical validation. |
+| CKL-MFA-7 | Test Account Recovery with MFA (Direct Login) | Initiate account recovery for an MFA-enabled direct login user. | Test User (Direct Login, MFA enrolled) | Account recovery process is successful and compatible with MFA. | N/A |  |  |
+| CKL-MFA-8 | Communicate MFA Changes to Affected Users | Execute user communication plan. Distribute guidance materials. | All Direct Login Users | Users are informed and prepared for MFA. | N/A |  | Proactive communication is key for adoption.1 |
+
+## **4\. Key Considerations and Next Steps**
+
+Successfully implementing Phase 2 involves not only technical execution but also adherence to security best practices, planning for contingencies, and looking ahead to future needs.
+
+### **4.1. Security Best Practices During Implementation**
+
+Maintaining a strong security posture throughout the implementation process is paramount.
+
+* **Principle of Least Privilege**: Ensure that any IAM users or roles used to configure AWS Cognito, and any administrative accounts used for Azure AD, possess only the minimum necessary permissions required to perform the configuration tasks. Avoid using root accounts or overly broad administrative roles.  
+* **Secure Handling of Configuration Data**: Any sensitive information, such as downloaded SAML metadata XML files (which may contain certificates) or client secrets (if OIDC with a confidential client were used), must be handled securely. Avoid committing them to version control systems or storing them in insecure locations, even temporarily. Use secure channels for transmission if they need to be shared.  
+* **Audit Logging**: Regularly review AWS CloudTrail logs for Cognito API activity and Azure AD sign-in logs and audit logs during and immediately after implementation. This helps detect any unauthorized changes or anomalous behavior.
+
+Adopting a holistic view of security is important. While SSO and MFA are strong authentication mechanisms, their effectiveness can be diminished if administrative access controls are weak or if monitoring practices are inadequate. Security is a layered approach, and each component contributes to the overall resilience of the system.
+
+### **4.2. Potential Rollback Strategies**
+
+Despite careful planning and testing, unforeseen issues can arise in a production environment. Having documented rollback plans allows for a swift reversion to a known stable state, minimizing user impact.
+
+* **For SSO Federation (Azure AD with Cognito)**:  
+  1. **Immediate Mitigation**: In AWS Cognito, navigate to the App Client settings for your application and uncheck the Azure AD identity provider from the "Enabled Identity Providers" list. This will immediately remove the Azure AD login option for users.  
+  2. **Full Rollback**: If necessary, delete the Identity Provider configuration for Azure AD from the Cognito User Pool.  
+  3. **Azure AD Side**: Disable or delete the Enterprise Application in Azure AD if it's no longer needed.  
+  4. **Communication**: Inform users that the SSO option is temporarily unavailable and guide them to use their direct Cognito username/password (Phase 1 login method).  
+* **For MFA Enforcement on Direct Cognito Logins**:  
+  1. **Immediate Mitigation/Rollback**: In AWS Cognito, change the MFA enforcement policy. For example, if MFA was set to "Required" for a specific group or globally, change it to "Optional" or "Off".  
+  2. **Communication**: Inform affected users of the change in MFA status if it's being rolled back or temporarily disabled.
+
+A well-defined rollback plan is a critical component of risk management for any significant system modification. It provides a safety net, allowing the team to address issues methodically without prolonged service disruption.
+
+### **4.3. Monitoring and Troubleshooting Post-Implementation**
+
+After deployment, ongoing monitoring is essential to ensure the new authentication flows are functioning as expected and to quickly identify and address any issues.
+
+* **Monitoring Points**:  
+  * **Azure AD Sign-in Logs**: Monitor these logs in the Azure portal for successful and failed SSO attempts originating from users trying to access the federated application. These logs provide details on authentication successes, failures, and reasons for failure.  
+  * **AWS CloudTrail Logs**: Filter for API calls related to Amazon Cognito (cognito-idp.amazonaws.com) to track administrative changes, authentication events, and potential errors.  
+  * **Application Logs**: Ensure the Next.js frontend and FastAPI backend have adequate logging to capture authentication-related events and errors from their perspective.  
+  * **Cognito User Pool Metrics (CloudWatch)**: Monitor metrics like SignInSuccesses, SignInThrottles, TokenRefreshSuccesses, etc.  
+* **Common Troubleshooting Areas**:  
+  * **SAML/OIDC Configuration Errors**: Mismatched Entity IDs/Issuer URLs, incorrect Reply URLs/Redirect URIs, expired or mismatched signing certificates, incorrect claim mapping.  
+  * **Attribute Mapping Problems**: Users authenticate successfully but lack necessary attributes in the application, leading to functional issues.  
+  * **User Difficulties with MFA**: Users struggling with setting up authenticator apps, not receiving SMS codes, or losing access to their MFA device.  
+  * **Clock Skew Issues**: For SAML and OIDC, significant time differences between IdP, SP, and client machines can sometimes cause token validation failures.  
+  * **Browser/Client Issues**: Cached credentials, incorrect cookie handling, or browser extension interference.
+
+### **4.4. Future Enhancements (Beyond Phase 2\)**
+
+While Phase 2 significantly enhances authentication, further improvements can be considered for future iterations:
+
+* **Advanced Azure AD Conditional Access**: For federated users, leverage more sophisticated Azure AD Conditional Access policies, such as requiring specific device compliance, trusted locations, or risk-based MFA, even if Cognito's direct MFA is not triggered.  
+* **Full Single Log-Out (SLO)**: If SAML SLO was not fully implemented in Phase 2 due to its complexity, it could be a future enhancement to ensure that logging out of the application also logs the user out of their Azure AD session (and vice-versa, if applicable).  
+* **Expanded MFA Coverage**: Depending on the evolving security posture and risk assessment, consider expanding MFA enforcement to a broader set of users or making it universally mandatory if not already covered by IdP-enforced MFA.  
+* **Passwordless Authentication**: Explore options for passwordless authentication, either through Cognito's built-in features (like FIDO2 passkeys, if they become more robustly supported for the targeted flows) or via Azure AD's passwordless capabilities for federated users.  
+* **User Account Linking Strategies**: Refine strategies for linking federated identities with existing local Cognito accounts, especially if users might have multiple identities.
+
+By successfully completing Phase 2, the platform will have a more robust, user-friendly, and secure authentication system. Continuous review and adaptation of security measures will be important as the platform evolves and new threats emerge.
+
+
+
