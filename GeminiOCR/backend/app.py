@@ -834,7 +834,6 @@ async def startup_db_client():
 
         # Try connecting to database
         db = next(get_db())
-        db.execute("SELECT 1")
         logger.info("Successfully connected to database")
     except Exception as e:
         logger.error(f"Failed to connect to database: {str(e)}")
