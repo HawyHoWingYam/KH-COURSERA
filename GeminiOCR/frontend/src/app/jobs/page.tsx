@@ -17,7 +17,7 @@ export default function Jobs() {
     const fetchJobs = async () => {
       try {
         // In a real app, this would be an API call like:
-        const response = await fetch('http://localhost:8000/jobs');
+        const response = await fetch(`http://${process.env.API_BASE_URL || 'localhost'}:${process.env.PORT || 8000}/jobs`);
         const data = await response.json();
         
         // Mock data for demonstration

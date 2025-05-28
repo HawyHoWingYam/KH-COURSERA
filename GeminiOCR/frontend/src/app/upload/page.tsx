@@ -22,11 +22,11 @@ export default function Upload() {
         const types = await fetchDocumentTypes();
         setDocumentTypes(types);
       } catch (err) {
-        setError('Failed to load document types');
+        setError('Upload : Failed to load document types');
         console.error(err);
       }
     };
-    
+
     loadDocumentTypes();
   }, []);
 
@@ -37,7 +37,7 @@ export default function Upload() {
         setCompanies([]);
         return;
       }
-      
+
       try {
         const companiesData = await fetchCompaniesForDocType(selectedType);
         setCompanies(companiesData);
@@ -46,7 +46,7 @@ export default function Upload() {
         console.error(err);
       }
     };
-    
+
     loadCompanies();
     setSelectedCompany(null);
   }, [selectedType]);
@@ -69,7 +69,7 @@ export default function Upload() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!selectedType || !selectedCompany || !file) {
       setError('Please select document type, company, and file');
       return;
@@ -79,7 +79,12 @@ export default function Upload() {
     setError('');
 
     try {
-      const job = await processDocument(selectedType, selectedCompany, file);
+      const formData = new FormData();
+      //formData.append('file', file);
+      formData.append('document', file);
+      formData.append('doc_type_id', selectedType.toString());
+      formData.append('company_id', selectedCompany.toString());
+      const job = await processDocument(formData);
       router.push(`/jobs/${job.job_id}`);
     } catch (err) {
       setError('Failed to upload document. Please try again.');
@@ -92,13 +97,13 @@ export default function Upload() {
   return (
     <div className="max-w-2xl mx-auto bg-white p-6 rounded-lg shadow-md">
       <h1 className="text-2xl font-bold mb-6">Upload Document</h1>
-      
+
       {error && (
         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
           {error}
         </div>
       )}
-      
+
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label className="block text-gray-700 mb-2">Document Type</label>
@@ -116,7 +121,7 @@ export default function Upload() {
             ))}
           </select>
         </div>
-        
+
         <div>
           <label className="block text-gray-700 mb-2">Company</label>
           <select
@@ -134,7 +139,7 @@ export default function Upload() {
             ))}
           </select>
         </div>
-        
+
         <div>
           <label className="block text-gray-700 mb-2">Document File</label>
           <input
@@ -148,7 +153,7 @@ export default function Upload() {
             Supported formats: JPEG, PNG, PDF
           </p>
         </div>
-        
+
         <div className="pt-4">
           <button
             type="submit"

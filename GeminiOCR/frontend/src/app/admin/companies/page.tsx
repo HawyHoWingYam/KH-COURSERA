@@ -3,16 +3,18 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Company } from '@/lib/api';
+// Get base URL and port from config
+const API_BASE_URL = `http://${process.env.API_BASE_URL || 'localhost'}:${process.env.PORT || 8000}`;
 
 // Extended API methods for admin functions
 async function fetchCompanies(): Promise<Company[]> {
-  const res = await fetch('http://localhost:8000/companies');
+  const res = await fetch(`${API_BASE_URL}/companies`);
   if (!res.ok) throw new Error('Failed to fetch companies');
   return res.json();
 }
 
 async function createCompany(data: { company_name: string; company_code: string; active: boolean }): Promise<Company> {
-  const res = await fetch('http://localhost:8000/companies', {
+  const res = await fetch(`${API_BASE_URL}/companies`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -22,7 +24,7 @@ async function createCompany(data: { company_name: string; company_code: string;
 }
 
 async function updateCompany(id: number, data: { company_name: string; company_code: string; active: boolean }): Promise<Company> {
-  const res = await fetch(`http://localhost:8000/companies/${id}`, {
+  const res = await fetch(`${API_BASE_URL}/companies/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -32,7 +34,7 @@ async function updateCompany(id: number, data: { company_name: string; company_c
 }
 
 async function deleteCompany(id: number): Promise<void> {
-  const res = await fetch(`http://localhost:8000/companies/${id}`, {
+  const res = await fetch(`${API_BASE_URL}/companies/${id}`, {
     method: 'DELETE',
   });
   if (!res.ok) throw new Error('Failed to delete company');

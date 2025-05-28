@@ -1,0 +1,57 @@
+Please analyze the provided invoice image from a printing company ("Hong Kong Printing Centre Limited") and extract the following information. Pay attention to the typical layout of such invoices and distinguish between printed text, handwritten text, and text from ink stamps (印章).
+
+**Overall Document Type:** Statement / Invoice
+
+**I. Top Section (顶部):**
+
+1.  **Supplier Information (Hong Kong Printing Centre Limited):**
+    * **Address (香港印刷中心有限公司的地址):** Likely located at the top left or center. (Printed Text)
+2.  **Received Date Stamp (收到的日期印章):**
+    * **Date:** Often a separate stamp, look for a date format. (Stamp Text, possibly with handwritten parts)
+3.  **Customer Information (Hyakunousha International Limited - 收件公司資料):** Typically below the supplier details or to the right.
+    * **Company Name (公司名稱):** (Printed Text)
+    * **Address (地址):** (Printed Text)
+    * **Attention/Recipient (收件人):** (Printed Text, may include a name like "Kit Wong")
+    * **Recipient Phone (收件人電話):** (Printed Text)
+    * **Contact Person (聯繫人):** (Printed Text)
+
+**II. Main Details & Table Section (表格区):**
+
+1.  **Contact and Statement Date (聯絡電話和帳單日期):**
+    * **Supplier Phone (電話):** Often to the left, below supplier details. (Printed Text, e.g., "Tel: 21053088")
+    * **Statement Date (帳單日期):** Often to the right, aligned with or near the phone number. (Printed Text)
+2.  **Customer ID (客戶ID):**
+    * **ID Number:** Usually to the right, below the statement date. (Printed Text)
+3.  **Invoice/Statement Table (帳單表格):**
+    * **Table Headers (表頭):** Identify the column names. Expect: (Printed Text)
+        * Date
+        * Ref (Reference Number)
+        * Description
+        * Qty (Quantity)
+        * Amount (HK$)
+    * **Line Items (項目列表):** For each row in the table, extract all values under the headers. (Mainly Printed Text, descriptions might be long)
+    * **Total Amount (總金額):** Usually at the bottom of the "Amount" column, often labeled "Total (HK$)". (Printed Text)
+4.  **Aging Information (賬齡分析):** Below the main table, look for categories like: (Printed Text)
+    * '0 - 30 days' (and its corresponding amount)
+    * '31 - 60 days' (and its corresponding amount)
+    * '61 - 90 days' (and its corresponding amount)
+    * 'Over 90 days' (and its corresponding amount)
+
+**III. Bottom Section (底部下方):**
+
+1.  **Supplier Contact Details (香港印刷中心有限公司的網址和聯絡資料):**
+    * **Website (網址):** e.g., "www.hk-printing.com.hk" (Printed Text)
+    * **Other Contact Info (聯絡資料):** Tel, Fax, Email. (Printed Text)
+2.  **Approval Stamp / Handwritten Notes (批核印章/手寫備註):** Look for a larger stamp or handwritten section, often with multiple lines or fields.
+    * **"Checked by:"** (Printed Label) with associated signature/name (Handwritten Text or Stamp)
+    * **"Approved by:"** (Printed Label) with associated signature/name (Handwritten Text or Stamp)
+    * **"Approved date:"** (Printed Label) with associated date (Handwritten Text or Stamp)
+    * **"Voucher # / Other Ref (文件號碼):"** Might be a handwritten number or a combination of printed and handwritten text (e.g., "HL0000236856"). (Handwritten Text or Stamp)
+    * **Department Classification (歸類部門 - 印章第二行):** If visible within a multi-line stamp, identify the department. (Stamp Text or Handwritten)
+    * **Signature (簽名 - 印章第五行或附近):** Look for a signature. (Handwritten Text)
+
+**General Instructions for Extraction:**
+* Clearly label each piece of extracted information.
+* If a piece of information is not present, indicate "Not Found".
+* For handwritten text or stamp text, please note it as such (e.g., "Received Date: 25 FEB 2025 (Stamp)").
+* Be precise with numbers, dates, and monetary values.

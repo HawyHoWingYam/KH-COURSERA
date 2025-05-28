@@ -493,6 +493,7 @@ async def process_document(
             company_id=company_id,
             doc_type_id=doc_type_id,
             original_filename=document.filename,
+            # s3_pdf_path=file_path,
             status="pending",
         )
 
@@ -503,24 +504,26 @@ async def process_document(
         job_id = job.job_id
 
         # Save the uploaded file
-        upload_dir = os.path.join("uploads", company.company_code, doc_type.type_code, str(job_id))
+        upload_dir = os.path.join(
+            "uploads", company.company_code, doc_type.type_code, str(job_id)
+        )
         os.makedirs(upload_dir, exist_ok=True)
-        
+
         file_path = os.path.join(upload_dir, document.filename)
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(document.file, buffer)
-        
+
         # Get file size
         file_size = os.path.getsize(file_path)
-        
+
         # Create file entry with file size
         db_file = DBFile(
             file_path=file_path,
             file_name=document.filename,
             file_size=file_size,  # Add file size
-            file_type=document.content_type
+            file_type=document.content_type,
         )
-        
+
         db.add(db_file)
         db.commit()
         db.refresh(db_file)
@@ -599,10 +602,7 @@ async def process_document_task(
         results = {
             "job_id": job_id,
             "processed_date": datetime.utcnow().isoformat(),
-            "extracted_data": {
-                "key1": "value1",
-                "key2": "value2"
-            }
+            "extracted_data": {"key1": "value1", "key2": "value2"},
         }
 
         # Save JSON output
@@ -611,85 +611,88 @@ async def process_document_task(
 
         # Get JSON file size
         json_file_size = os.path.getsize(json_output_path)
-        
+
         # Create file entries for output files
         json_file = DBFile(
             file_path=json_output_path,
             file_name="results.json",
             file_type="application/json",
-            file_size=json_file_size
+            file_size=json_file_size,
         )
-        
+
         db.add(json_file)
         db.commit()
         db.refresh(json_file)
-        
+
         # Create document file relationship
         json_doc_file = DocumentFile(
-            job_id=job_id,
-            file_id=json_file.file_id,
-            file_category="json_output"
+            job_id=job_id, file_id=json_file.file_id, file_category="json_output"
         )
-        
+
         db.add(json_doc_file)
-        
+
         # Mock Excel output
         with open(excel_output_path, "w") as f:
             f.write("Mock Excel file")
-        
+
         # Get Excel file size
         excel_file_size = os.path.getsize(excel_output_path)
-        
+
         excel_file = DBFile(
             file_path=excel_output_path,
             file_name="results.xlsx",
             file_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            file_size=excel_file_size
+            file_size=excel_file_size,
         )
-        
+
         db.add(excel_file)
         db.commit()
         db.refresh(excel_file)
-        
+
         # Create document file relationship
         excel_doc_file = DocumentFile(
-            job_id=job_id,
-            file_id=excel_file.file_id,
-            file_category="excel_output"
+            job_id=job_id, file_id=excel_file.file_id, file_category="excel_output"
         )
-        
+
         db.add(excel_doc_file)
-        
+
         # Update job status to success
         job.status = "success"  # Using 'success' consistently
         db.commit()
-        
+
         # Send WebSocket notification
         await send_websocket_message(
             job_id,
             {
-                "status": "success", 
+                "status": "success",
                 "message": "Document processing completed",
                 "files": [
-                    {"id": json_file.file_id, "name": "results.json", "type": "json_output"},
-                    {"id": excel_file.file_id, "name": "results.xlsx", "type": "excel_output"}
-                ]
-            }
+                    {
+                        "id": json_file.file_id,
+                        "name": "results.json",
+                        "type": "json_output",
+                    },
+                    {
+                        "id": excel_file.file_id,
+                        "name": "results.xlsx",
+                        "type": "excel_output",
+                    },
+                ],
+            },
         )
 
     except Exception as e:
         logger.error(f"Error in background processing task for job {job_id}: {str(e)}")
-        
+
         # Update job status to error
         if job:
             job.status = "error"
             job.error_message = str(e)
             db.commit()
-        
+
         # Send WebSocket notification
         await send_websocket_message(
-            job_id,
-            {"status": "error", "message": f"Processing failed: {str(e)}"}
+            job_id, {"status": "error", "message": f"Processing failed: {str(e)}"}
         )
     finally:
         db.close()
@@ -707,12 +710,14 @@ def get_job_status(job_id: int, db: Session = Depends(get_db)):
     job = db.query(ProcessingJob).filter(ProcessingJob.job_id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
     # Get associated files
-    files_query = db.query(DocumentFile, DBFile).join(
-        DBFile, DocumentFile.file_id == DBFile.file_id
-    ).filter(DocumentFile.job_id == job_id)
-    
+    files_query = (
+        db.query(DocumentFile, DBFile)
+        .join(DBFile, DocumentFile.file_id == DBFile.file_id)
+        .filter(DocumentFile.job_id == job_id)
+    )
+
     files = []
     for doc_file, file in files_query:
         # Calculate file size if not already stored
@@ -722,17 +727,20 @@ def get_job_status(job_id: int, db: Session = Depends(get_db)):
             # Update the file size in the database
             file.file_size = file_size
             db.commit()
-        
-        files.append({
-            "file_id": file.file_id,
-            "file_name": file.file_name,
-            "file_path": file.file_path,
-            "file_category": doc_file.file_category,
-            "file_size": file_size or 0,  # Default to 0 if size can't be determined
-            "file_type": file.file_type or "application/octet-stream",  # Default content type
-            "created_at": file.created_at.isoformat()
-        })
-    
+
+        files.append(
+            {
+                "file_id": file.file_id,
+                "file_name": file.file_name,
+                "file_path": file.file_path,
+                "file_category": doc_file.file_category,
+                "file_size": file_size or 0,  # Default to 0 if size can't be determined
+                "file_type": file.file_type
+                or "application/octet-stream",  # Default content type
+                "created_at": file.created_at.isoformat(),
+            }
+        )
+
     return {
         "job_id": job.job_id,
         "company_id": job.company_id,
@@ -744,7 +752,7 @@ def get_job_status(job_id: int, db: Session = Depends(get_db)):
         "error_message": job.error_message,
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
-        "files": files
+        "files": files,
     }
 
 
@@ -814,14 +822,14 @@ def download_file(file_id: int, db: Session = Depends(get_db)):
     file = db.query(DBFile).filter(DBFile.file_id == file_id).first()
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     if not os.path.exists(file.file_path):
         raise HTTPException(status_code=404, detail="File not found on disk")
-    
+
     return FileResponse(
-        path=file.file_path, 
-        filename=file.file_name, 
-        media_type=file.file_type or "application/octet-stream"
+        path=file.file_path,
+        filename=file.file_name,
+        media_type=file.file_type or "application/octet-stream",
     )
 
 
@@ -840,7 +848,47 @@ async def startup_db_client():
         raise e
 
 
+# Add this endpoint to your FastAPI app
+@app.get("/document-types/{doc_type_id}/companies", response_model=List[dict])
+def get_companies_for_document_type(doc_type_id: int, db: Session = Depends(get_db)):
+    # Verify document type exists
+    doc_type = (
+        db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+    )
+    if not doc_type:
+        raise HTTPException(status_code=404, detail="Document type not found")
+
+    # Get companies that have configurations for this document type
+    companies_query = (
+        db.query(Company)
+        .join(
+            CompanyDocumentConfig,
+            Company.company_id == CompanyDocumentConfig.company_id,
+        )
+        .filter(
+            CompanyDocumentConfig.doc_type_id == doc_type_id,
+            CompanyDocumentConfig.active == True,
+            Company.active == True,
+        )
+        .all()
+    )
+
+    return [
+        {
+            "company_id": company.company_id,
+            "company_name": company.company_name,
+            "company_code": company.company_code,
+            "active": company.active,
+            "created_at": company.created_at.isoformat(),
+            "updated_at": company.updated_at.isoformat(),
+        }
+        for company in companies_query
+    ]
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    with open("env/config.json") as f:
+        config = json.load(f)
+    uvicorn.run(app, host="0.0.0.0", port=config["port"])

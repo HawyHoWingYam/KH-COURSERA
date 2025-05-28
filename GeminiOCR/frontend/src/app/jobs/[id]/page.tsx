@@ -60,8 +60,8 @@ export default function JobDetails() {
         wsRef.current.close();
       }
 
-      // Connect to WebSocket
-      wsRef.current = new WebSocket(`ws://localhost:8000/ws/${jobId}`);
+      // Connect to WebSocket using config values
+      wsRef.current = new WebSocket(`ws://${process.env.API_BASE_URL || 'localhost'}:${process.env.PORT || 8000}/ws/${jobId}`);
 
       wsRef.current.onopen = () => {
         setWsMessages(prev => [...prev, 'WebSocket connection established']);

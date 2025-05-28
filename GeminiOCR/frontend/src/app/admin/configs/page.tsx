@@ -16,10 +16,12 @@ interface ConfigType {
     company_name?: string;  // Joined from companies
     type_name?: string;     // Joined from document_types
 }
+// Get base URL and port from config
+const API_BASE_URL = `http://${process.env.API_BASE_URL || 'localhost'}:${process.env.PORT || 8000}`;
 
 // Extended API methods for admin functions
 async function fetchConfigs(): Promise<ConfigType[]> {
-    const res = await fetch('http://localhost:8000/configs');
+    const res = await fetch(`${API_BASE_URL}/configs`);
     if (!res.ok) throw new Error('Failed to fetch configurations');
     return res.json();
 }
@@ -31,7 +33,7 @@ async function createConfig(data: {
     schema_path: string;
     active: boolean;
 }): Promise<ConfigType> {
-    const res = await fetch('http://localhost:8000/configs', {
+    const res = await fetch(`${API_BASE_URL}/configs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
@@ -45,7 +47,7 @@ async function updateConfig(id: number, data: {
     schema_path: string;
     active: boolean;
 }): Promise<ConfigType> {
-    const res = await fetch(`http://localhost:8000/configs/${id}`, {
+    const res = await fetch(`${API_BASE_URL}/configs/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
@@ -55,7 +57,7 @@ async function updateConfig(id: number, data: {
 }
 
 async function deleteConfig(id: number): Promise<void> {
-    const res = await fetch(`http://localhost:8000/configs/${id}`, {
+    const res = await fetch(`${API_BASE_URL}/configs/${id}`, {
         method: 'DELETE',
     });
     if (!res.ok) throw new Error('Failed to delete configuration');
@@ -66,7 +68,7 @@ async function uploadFile(file: File, path: string): Promise<string> {
     formData.append('file', file);
     formData.append('path', path);
 
-    const res = await fetch('http://localhost:8000/upload', {
+    const res = await fetch(`${API_BASE_URL}/upload`, {
         method: 'POST',
         body: formData,
     });
@@ -104,9 +106,9 @@ export default function ConfigsPage() {
                 setIsLoading(true);
                 // These would be actual API calls in a real implementation
                 const configsData = await fetchConfigs();
-                const companiesRes = await fetch('http://localhost:8000/companies');
+                const companiesRes = await fetch(`${API_BASE_URL}/companies`);
                 const companiesData = await companiesRes.json();
-                const docTypesRes = await fetch('http://localhost:8000/document-types');
+                const docTypesRes = await fetch(`${API_BASE_URL}/document-types`);
                 const docTypesData = await docTypesRes.json();
 
                 setConfigs(configsData);

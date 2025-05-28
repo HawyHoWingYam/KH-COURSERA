@@ -1,0 +1,99 @@
+{
+    "description": "Multiple shop invoices (華御結)",
+    "type": "array",
+    "items": {
+        "description": "A shop invoice (華御結)",
+        "type": "object",
+        "properties": {
+            "issue_info": {
+                "description": "An object that contains issue information (華御結)",
+                "type": "object",
+                "properties": {
+                    "brand": {
+                        "description": "A string of the issuer brand name (should be '華御結' only)",
+                        "type": "string"
+                    },
+                    "shop_code": {
+                        "description": "A string of the shop code (mostly should be abbreviations in 3 charaters)",
+                        "type": "string"
+                    },
+                    "shop_address": {
+                        "description": "A string of the shop address (should be Chinese)",
+                        "type": "string"
+                    },
+                    "shop_telephone": {
+                        "description": "A string of the shop telephone",
+                        "type": "string"
+                    },
+                    "issue_number": {
+                        "description": "A string of issue number (賬單號碼)",
+                        "type": "string"
+                    },
+                    "issue_datetime": {
+                        "description": "A string of issue datetime (結賬時間)",
+                        "type": "string"
+                    },
+                    "pos_terminal": {
+                        "description": "A string of the pos terminal (POS編號)",
+                        "type": "string"
+                    }
+                }
+            },
+            "details": {
+                "description": "An object that contains all details in this invoice",
+                "type": "array",
+                "items": {
+                    "description": "An object that contains 1 row of detail in this invoice",
+                    "type": "object",
+                    "properties": {
+                        "item_name": {
+                            "description": "A string of the item (名稱) column of that row",
+                            "type": "string"
+                        },
+                        "quantity": {
+                            "description": "A string of the quantity (數量) column of that row, it should be a number only",
+                            "type": "number"
+                        },
+                        "unit_price": {
+                            "description": "A string of the unit price (單價) column of that row, it should be a number only",
+                            "type": "number"
+                        },
+                        "amount": {
+                            "description": "A string of the amount (金額) column of that row, it should be a number only",
+                            "type": "number"
+                        }
+                    }
+                }
+            },
+            "subtotal": {
+                "description": "A string of the subtotal (小計) in this invoice, it should be a number only",
+                "type": "number"
+            },
+            "discount": {
+                "description": "A string of the discount (優惠) in this invoice, it should be a number only",
+                "type": "number"
+            },
+            "total_amount": {
+                "description": "A string of the total amount (總計) in this invoice, it should be a number only",
+                "type": "number"
+            },
+            "payment": {
+                "description": "A string of the payment (付款方法) in this invoice",
+                "type": "string"
+            },
+            "remark": {
+                "description": "A string parse json of the handwritten information in this invoice",
+                "type": "string"
+            }
+        },
+        "required": [
+            "issue_info",
+            "details",
+            "subtotal",
+            "discount",
+            "total_amount",
+            "payment",
+            "remark"
+        ]
+    }
+}

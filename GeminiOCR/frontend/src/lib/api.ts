@@ -56,11 +56,12 @@ export interface Job {
   files?: FileInfo[]; // Updated to use FileInfo
 }
 
-// Base API URL
-const API_BASE_URL = 'http://localhost:8000';
+// Base API URL and port from config
+const API_BASE_URL = `http://${process.env.API_BASE_URL || 'localhost'}:${process.env.PORT || 8000}`;
 
 // Generic fetch function with error handling
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  console.log(`Fetching ${API_BASE_URL}${endpoint}`);
   const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
   
   if (!response.ok) {
@@ -165,8 +166,7 @@ export async function uploadFile(file: globalThis.File, path: string): Promise<{
 
 // WebSocket connection
 export function connectWebSocket(jobId: number, onMessage: (data: any) => void) {
-  const socket = new WebSocket(`ws://localhost:8000/ws/${jobId}`);
-  
+  const socket = new WebSocket(`ws://${process.env.API_BASE_URL || 'localhost'}:${process.env.PORT || 8000}/ws/${jobId}`);
   socket.onopen = () => {
     console.log(`WebSocket connection established for job ${jobId}`);
   };
@@ -203,4 +203,24 @@ export async function downloadFile(fileId: number): Promise<Blob> {
   }
   
   return response.blob();
+}
+
+// Add this function to your api.ts file
+export async function fetchCompaniesForDocType(docTypeId: number): Promise<Company[]> {
+  // This endpoint will need to be implemented on the backend
+  return fetchApi<Company[]>(`/document-types/${docTypeId}/companies`);
+}
+
+// Also make sure this function exists since it's imported in upload/page.tsx
+export async function fetchDocumentTypes(): Promise<DocumentType[]> {
+  return fetchApi<DocumentType[]>('/document-types');
+}
+
+// And this one for processing documents
+export async function processDocument(formData: FormData): Promise<{ job_id: number; status: string; message: string }> {
+  console.log('Processing document:', formData);
+  return fetchApi<{ job_id: number; status: string; message: string }>('/process', {
+    method: 'POST',
+    body: formData,
+  });
 } 

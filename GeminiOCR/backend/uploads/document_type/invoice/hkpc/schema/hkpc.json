@@ -1,0 +1,306 @@
+{
+    "description": "Multiple invoices (Hong Kong Printing Centre to Hyakunousha)",
+    "type": "array",
+    "items": {
+        "description": "A invoice (Hong Kong Printing Centre to Hyakunousha)",
+        "type": "object",
+        "properties": {
+            "issuer_info": {
+                "description": "An object that contains Issuer or Supplier Information (Hong Kong Printing Centre)",
+                "type": "object",
+                "properties": {
+                    "company_name": {
+                        "description": "An object that contains Issuer or Supplier company name (Hong Kong Printing Centre)",
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "description": "A string of the Issuer or Supplier company name (Hong Kong Printing Centre)",
+                                "type": "string"
+                            },
+                            "source": {
+                                "description": "A string to describe the source of Issuer or Supplier company name (Hong Kong Printing Centre) is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "company_address": {
+                        "description": "An object that contains Issuer or Supplier company address (Hong Kong Printing Centre)",
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "description": "A string of Issuer or Supplier company address (Hong Kong Printing Centre)",
+                                "type": "string"
+                            },
+                            "source": {
+                                "description": "A string to describe the source of Issuer or Supplier company address (Hong Kong Printing Centre) is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "contact_phone": {
+                        "description": "An object that contains Issuer or Supplier company contact phone (Hong Kong Printing Centre)",
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "description": "A string of Issuer or Supplier company contact phone  (Hong Kong Printing Centre)",
+                                "type": "string"
+                            },
+                            "source": {
+                                "description": "A string to describe the source of Issuer or Supplier company contact phone  (Hong Kong Printing Centre) is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "statement_date": {
+                        "description": "An object that contains the statement date (Hong Kong Printing Centre)",
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "description": "A string of the statement date (Hong Kong Printing Centre)",
+                                "type": "string"
+                            },
+                            "source": {
+                                "description": "A string to describe the statement date (Hong Kong Printing Centre) is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "receiver_info": {
+                "description": "An object that contains Receiver or Customer Information (Hyakunousha)",
+                "type": "object",
+                "properties": {
+                    "company_id": {
+                        "description": "An object that contains Receiver or Customer company id (Hyakunousha)",
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "description": "A string of the Receiver or Customer company id (Hyakunousha)",
+                                "type": "string"
+                            },
+                            "source": {
+                                "description": "A string to describe the source of Receiver or Customer company id (Hyakunousha) is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "company_name": {
+                        "description": "An object that contains Receiver or Customer company name (Hyakunousha)",
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "description": "A string of the Receiver or Customer company name (Hyakunousha)",
+                                "type": "string"
+                            },
+                            "source": {
+                                "description": "A string to describe the source of Receiver or Customer company name (Hyakunousha) is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "company_address": {
+                        "description": "An object that contains Receiver or Customer company address (Hyakunousha)",
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "description": "A string of the Receiver or Customer company address (Hyakunousha)",
+                                "type": "string"
+                            },
+                            "source": {
+                                "description": "A string to describe the source of Receiver or Customer company address (Hyakunousha) is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "fax": {
+                        "description": "An object that contains the fax number in Receiver or Customer company (Hyakunousha)",
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "description": "A string of fax number in Receiver or Customer company (Hyakunousha)",
+                                "type": "string"
+                            },
+                            "source": {
+                                "description": "A string to describe the source of fax number in Receiver or Customer company address (Hyakunousha) is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "contact_person": {
+                        "description": "An object that contains the contact_person in Receiver or Customer company (Hyakunousha)",
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "description": "A string of contact_person in Receiver or Customer company (Hyakunousha)",
+                                "type": "string"
+                            },
+                            "source": {
+                                "description": "A string to describe the source of contact_person in Receiver or Customer company address (Hyakunousha) is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "recipient": {
+                        "description": "An object that contains the recipient in Receiver or Customer company (Hyakunousha)",
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "description": "A string of recipient in Receiver or Customer company (Hyakunousha)",
+                                "type": "string"
+                            },
+                            "source": {
+                                "description": "A string to describe the source of recipient in Receiver or Customer company address (Hyakunousha) is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "recipient_contact": {
+                        "description": "An object that contains the recipient contact phone in Receiver or Customer company (Hyakunousha)",
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "description": "A string of recipient contact phone in Receiver or Customer company (Hyakunousha)",
+                                "type": "string"
+                            },
+                            "source": {
+                                "description": "A string to describe the source of recipient contact phone in Receiver or Customer company address (Hyakunousha) is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "details": {
+                "description": "An object that contains all details in this invoice",
+                "type": "array",
+                "items": {
+                    "description": "An object that contains 1 row of detail in this invoice",
+                    "type": "object",
+                    "properties": {
+                        "date": {
+                            "description": "An object that contains the date column of that row",
+                            "type": "object",
+                            "properties": {
+                                "text": {
+                                    "description": "A string of the date column of that row",
+                                    "type": "string"
+                                },
+                                "source": {
+                                    "description": "A string to describe the date column of that row is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "ref": {
+                            "description": "An object that contains the ref column of that row",
+                            "type": "object",
+                            "properties": {
+                                "text": {
+                                    "description": "A string of the ref column of that row",
+                                    "type": "string"
+                                },
+                                "source": {
+                                    "description": "A string to describe the ref of that row column is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "desc": {
+                            "description": "An object that contains the description column of that row",
+                            "type": "object",
+                            "properties": {
+                                "text": {
+                                    "description": "A string of the description column of that row",
+                                    "type": "string"
+                                },
+                                "source": {
+                                    "description": "A string to describe the description column of that row is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "quantity": {
+                            "description": "An object that contains the qty column of that row, it should be a number only",
+                            "type": "object",
+                            "properties": {
+                                "text": {
+                                    "description": "A string of the qty column of that row, it should be a number only",
+                                    "type": "number"
+                                },
+                                "source": {
+                                    "description": "A string to describe the qty column of that row is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "amt": {
+                            "description": "An object that contains the amount column of that row",
+                            "type": "object",
+                            "properties": {
+                                "text": {
+                                    "description": "A string of the amount column of that row",
+                                    "type": "number"
+                                },
+                                "source": {
+                                    "description": "A string to describe the amount column of that row is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "service_period": {
+                "description": "An object that contains the service period in this invoice, (0 - 30 / 31 - 60 / 61 - 90 / Over 90 days)",
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "description": "A string of the service period in this invoice, (0 - 30 / 31 - 60 / 61 - 90 / Over 90 days)",
+                        "type": "string"
+                    },
+                    "source": {
+                        "description": "A string to describe the service period in this invoice is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                        "type": "string"
+                    }
+                }
+            },
+            "currency": {
+                "description": "An object that contains the currency for total amount in this invoice, it should be currency abbreviations in 3 charaters",
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "description": "A string of the currency for total amount in this invoice, it should be currency abbreviations in 3 charaters",
+                        "type": "string"
+                    },
+                    "source": {
+                        "description": "A string to describe the currency for total amount in this invoice is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                        "type": "string"
+                    }
+                }
+            },
+            "total_amount": {
+                "description": "An object that contains the total amount in this invoice",
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "description": "A string of the total amount in this invoice",
+                        "type": "string"
+                    },
+                    "source": {
+                        "description": "A string to describe the total amount in this invoice is handwritten or not, it should be 'handwritten' or 'non-handwritten'",
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "required": [
+            "issuer_info",
+            "receiver_info",
+            "details",
+            "service_period",
+            "currency",
+            "total_amount"
+        ]
+    }
+}

@@ -2,16 +2,18 @@
 
 import { useState, useEffect } from 'react';
 import { DocumentType } from '@/lib/api';
+// Get base URL and port from config
+const API_BASE_URL = `http://${process.env.API_BASE_URL || 'localhost'}:${process.env.PORT || 8000}`;
 
 // Extended API methods for admin functions
 async function fetchDocumentTypes(): Promise<DocumentType[]> {
-  const res = await fetch('http://localhost:8000/document-types');
+  const res = await fetch(`${API_BASE_URL}/document-types`);
   if (!res.ok) throw new Error('Failed to fetch document types');
   return res.json();
 }
 
 async function createDocumentType(data: { type_name: string; type_code: string; description?: string }): Promise<DocumentType> {
-  const res = await fetch('http://localhost:8000/document-types', {
+  const res = await fetch(`${API_BASE_URL}/document-types`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -21,7 +23,7 @@ async function createDocumentType(data: { type_name: string; type_code: string; 
 }
 
 async function updateDocumentType(id: number, data: { type_name: string; type_code: string; description?: string }): Promise<DocumentType> {
-  const res = await fetch(`http://localhost:8000/document-types/${id}`, {
+  const res = await fetch(`${API_BASE_URL}/document-types/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -31,7 +33,7 @@ async function updateDocumentType(id: number, data: { type_name: string; type_co
 }
 
 async function deleteDocumentType(id: number): Promise<void> {
-  const res = await fetch(`http://localhost:8000/document-types/${id}`, {
+  const res = await fetch(`${API_BASE_URL}/document-types/${id}`, {
     method: 'DELETE',
   });
   if (!res.ok) throw new Error('Failed to delete document type');
