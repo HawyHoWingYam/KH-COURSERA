@@ -1,0 +1,38 @@
+[
+  {
+    "details": [
+      {
+        "amount": 22.00,
+        "item_name": "[御結]蒲燒三文魚腩 Hana Lunch Set B Soup L1",
+        "quantity": 1,
+        "unit_price": 22.00
+      },
+      {
+        "amount": 18.00,
+        "item_name": "[御結]濃香蛋黃醬 Hana Lunch Set B Soup L1",
+        "quantity": 1,
+        "unit_price": 18.00
+      },
+      {
+        "amount": 25.00,
+        "item_name": "和風骨膠原雞丸豆乳湯(小袋裝) Hana Lunch Set B Soup L1",
+        "quantity": 1,
+        "unit_price": 25.00
+      }
+    ],
+    "discount": -15.00,
+    "issue_info": {
+      "brand": "華御結",
+      "issue_datetime": "07/04/2025 13:37:01",
+      "issue_number": "ETS070420251337019",
+      "pos_terminal": "POS-1",
+      "shop_address": "尖東港鐵站 ETS 1號舖 (近出口)",
+      "shop_code": "ETS",
+      "shop_telephone": "2453 0955"
+    },
+    "payment": "八達通付款",
+    "remark": "spl",
+    "subtotal": 65.00,
+    "total_amount": 50.00
+  }
+]

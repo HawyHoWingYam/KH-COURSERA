@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { fetchDocumentTypes, fetchCompaniesForDocType, processDocument } from '@/lib/api';
 import type { DocumentType, Company } from '@/lib/api';
+import { MdZoomIn, MdZoomOut, MdRefresh } from 'react-icons/md';
 
 export default function Upload() {
   const router = useRouter();
@@ -13,7 +14,10 @@ export default function Upload() {
   const [selectedCompany, setSelectedCompany] = useState<number | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const fileUrlRef = useRef<string | null>(null);
 
   // Fetch document types on mount
   useEffect(() => {
@@ -51,6 +55,15 @@ export default function Upload() {
     setSelectedCompany(null);
   }, [selectedType]);
 
+  // Clean up object URLs when component unmounts
+  useEffect(() => {
+    return () => {
+      if (fileUrlRef.current) {
+        URL.revokeObjectURL(fileUrlRef.current);
+      }
+    };
+  }, []);
+
   const handleDocTypeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const value = parseInt(e.target.value);
     setSelectedType(isNaN(value) ? null : value);
@@ -62,9 +75,46 @@ export default function Upload() {
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
+    setError(null);
+    // Clean up previous URL if exists
+    if (fileUrlRef.current) {
+      URL.revokeObjectURL(fileUrlRef.current);
     }
+    
+    const selectedFile = e.target.files?.[0];
+    if (selectedFile) {
+      setFile(selectedFile);
+      
+      // Create object URL for preview
+      const fileUrl = URL.createObjectURL(selectedFile);
+      setPreviewUrl(fileUrl);
+      fileUrlRef.current = fileUrl;
+      
+      // Reset zoom level for new file
+      setZoomLevel(1);
+    } else {
+      setFile(null);
+      setPreviewUrl(null);
+      fileUrlRef.current = null;
+    }
+  };
+
+  // Function to determine if file is PDF
+  const isPDF = (fileName: string) => {
+    return fileName?.toLowerCase().endsWith('.pdf');
+  };
+
+  // Zoom control functions
+  const zoomIn = () => {
+    setZoomLevel(prev => Math.min(prev + 0.25, 3)); // Max zoom 3x
+  };
+  
+  const zoomOut = () => {
+    setZoomLevel(prev => Math.max(prev - 0.25, 0.5)); // Min zoom 0.5x
+  };
+  
+  const resetZoom = () => {
+    setZoomLevel(1);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -95,7 +145,7 @@ export default function Upload() {
   };
 
   return (
-    <div className="max-w-2xl mx-auto bg-white p-6 rounded-lg shadow-md">
+    <div className="max-w-4xl mx-auto p-6">
       <h1 className="text-2xl font-bold mb-6">Upload Document</h1>
 
       {error && (
@@ -104,7 +154,7 @@ export default function Upload() {
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form onSubmit={handleSubmit} className="space-y-6">
         <div>
           <label className="block text-gray-700 mb-2">Document Type</label>
           <select
@@ -153,6 +203,82 @@ export default function Upload() {
             Supported formats: JPEG, JPG, PNG, PDF
           </p>
         </div>
+
+        {/* File Preview Section with Zoom Controls */}
+        {previewUrl && file && (
+          <div className="my-4">
+            <div className="flex justify-between items-center mb-2">
+              <h3 className="text-lg font-medium">File Preview</h3>
+              <div className="flex items-center space-x-2">
+                <button 
+                  type="button"
+                  onClick={zoomOut}
+                  className="p-2 rounded-full bg-gray-100 hover:bg-gray-200"
+                  title="Zoom Out"
+                >
+                  <MdZoomOut size={18} />
+                </button>
+                <span className="text-sm font-medium">
+                  {Math.round(zoomLevel * 100)}%
+                </span>
+                <button 
+                  type="button"
+                  onClick={zoomIn}
+                  className="p-2 rounded-full bg-gray-100 hover:bg-gray-200"
+                  title="Zoom In"
+                >
+                  <MdZoomIn size={18} />
+                </button>
+                <button 
+                  type="button"
+                  onClick={resetZoom}
+                  className="p-2 rounded-full bg-gray-100 hover:bg-gray-200 ml-2"
+                  title="Reset Zoom"
+                >
+                  <MdRefresh size={18} />
+                </button>
+              </div>
+            </div>
+            
+            <div className="border rounded-md overflow-hidden max-h-[500px]">
+              {isPDF(file.name) ? (
+                <div>
+                  <object
+                    data={`${previewUrl}#zoom=${zoomLevel * 100}`} 
+                    type="application/pdf"
+                    className="w-full h-[500px]"
+                  >
+                    <p>PDF preview not available. Please download to view.</p>
+                  </object>
+                  <p className="text-xs text-gray-500 mt-1 text-center">
+                    Note: PDF zoom controls may vary by browser
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-auto max-h-[500px] max-w-full" style={{ position: 'relative' }}>
+                  <div style={{ 
+                    minHeight: '100%',
+                    minWidth: '100%',
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center'
+                  }}>
+                    <img 
+                      src={previewUrl} 
+                      alt="File preview" 
+                      style={{
+                        transform: `scale(${zoomLevel})`,
+                        transformOrigin: 'center center',
+                        maxWidth: zoomLevel <= 1 ? '100%' : 'none',
+                        transition: 'transform 0.2s ease'
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         <div className="pt-4">
           <button

@@ -6,6 +6,27 @@ import Link from 'next/link';
 import { fetchJobStatus, fetchJobFiles, getFileDownloadUrl, FileInfo } from '@/lib/api';
 import type { Job } from '@/lib/api';
 
+// Add these imports for the preview components
+import { JsonView } from 'react-json-view-lite';
+import 'react-json-view-lite/dist/index.css';
+
+// Define types for preview data
+interface PreviewData {
+  headers?: string[];
+  rows?: any[][];
+  error?: string;
+  [key: string]: any; // For handling arbitrary JSON data
+}
+
+// Define types for preview states
+interface PreviewStates {
+  [key: number]: boolean;
+}
+
+interface FilePreviewDataMap {
+  [key: number]: PreviewData;
+}
+
 export default function JobDetails() {
   const params = useParams();
   const jobId = parseInt(params.id as string);
@@ -17,6 +38,10 @@ export default function JobDetails() {
   const [error, setError] = useState('');
 
   const wsRef = useRef<WebSocket | null>(null);
+
+  // Fix type definitions for preview states
+  const [previewStates, setPreviewStates] = useState<PreviewStates>({});
+  const [filePreviewData, setFilePreviewData] = useState<FilePreviewDataMap>({});
 
   // Fetch job details initially
   useEffect(() => {
@@ -81,6 +106,7 @@ export default function JobDetails() {
                 if (data.status === 'success') {
                   return fetchJobFiles(jobId);
                 }
+                return undefined;
               })
               .then(filesData => {
                 if (filesData) setFiles(filesData);
@@ -123,6 +149,83 @@ export default function JobDetails() {
       file.file_name.includes(category) ||
       file.file_path.includes(category)
     );
+  };
+
+  // Fix type annotations for togglePreview function and update API path
+  const togglePreview = async (fileId: number, fileType: string) => {
+    // Toggle preview state
+    setPreviewStates(prev => ({
+      ...prev,
+      [fileId]: !prev[fileId]
+    }));
+
+    // If opening preview and we don't have the data yet, fetch it
+    if (!previewStates[fileId] && !filePreviewData[fileId]) {
+      try {
+        // Fix the path to match your Next.js route structure
+        const response = await fetch(`/files/${fileId}/preview`);
+        console.log(`Preview request status: ${response.status}`);
+        
+        if (!response.ok) throw new Error(`Failed to load preview (${response.status})`);
+        
+        const data = await response.json();
+        setFilePreviewData(prev => ({
+          ...prev,
+          [fileId]: data
+        }));
+      } catch (error) {
+        console.error('Error loading preview:', error);
+        setFilePreviewData(prev => ({
+          ...prev,
+          [fileId]: { error: `Failed to load preview: ${error instanceof Error ? error.message : 'Unknown error'}` }
+        }));
+      }
+    }
+  };
+
+  // Fix type annotations for renderPreview function
+  const renderPreview = (file: FileInfo) => {
+    const data = filePreviewData[file.file_id];
+    
+    if (!data) return <div className="text-center py-4">Loading preview...</div>;
+    if (data.error) return <div className="text-red-600 py-4">{data.error}</div>;
+    
+    if (file.file_name.endsWith('.json')) {
+      return (
+        <div className="bg-gray-50 p-4 rounded-md overflow-auto max-h-96">
+          <JsonView data={data} />
+        </div>
+      );
+    } else if (file.file_name.endsWith('.xlsx') || file.file_name.endsWith('.xls')) {
+      return (
+        <div className="bg-gray-50 p-4 rounded-md overflow-auto max-h-96">
+          <table className="min-w-full divide-y divide-gray-300">
+            <thead>
+              <tr className="bg-gray-100">
+                {data.headers?.map((header, idx) => (
+                  <th key={idx} className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
+                    {header}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows?.map((row, idx) => (
+                <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                  {row.map((cell, cellIdx) => (
+                    <td key={cellIdx} className="px-4 py-2 text-sm text-gray-900">
+                      {cell}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+    
+    return <div className="text-center py-4">No preview available for this file type</div>;
   };
 
   if (isLoading) {
@@ -177,33 +280,33 @@ export default function JobDetails() {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <p className="text-gray-500 text-sm">Job ID</p>
-            <p className="font-medium">{job.job_id}</p>
+            <p className="font-medium">{job?.job_id}</p>
           </div>
           <div>
             <p className="text-gray-500 text-sm">Status</p>
             <p className="font-medium">
               <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full 
-              ${job.status === 'success' || job.status === 'complete'
+              ${job?.status === 'success' || job?.status === 'complete'
                   ? 'bg-green-100 text-green-800'
-                  : job.status === 'processing'
+                  : job?.status === 'processing'
                     ? 'bg-blue-100 text-blue-800'
                     : 'bg-red-100 text-red-800'
                 }`}>
-                {job.status}
+                {job?.status}
               </span>
             </p>
           </div>
           <div>
             <p className="text-gray-500 text-sm">Original Filename</p>
-            <p className="font-medium">{job.original_filename}</p>
+            <p className="font-medium">{job?.original_filename}</p>
           </div>
           <div>
             <p className="text-gray-500 text-sm">Created At</p>
             <p className="font-medium">
-              {new Date(job.created_at).toLocaleString()}
+              {job?.created_at ? new Date(job.created_at).toLocaleString() : ''}
             </p>
           </div>
-          {job.error_message && (
+          {job?.error_message && (
             <div className="col-span-2">
               <p className="text-gray-500 text-sm">Error Message</p>
               <p className="font-medium text-red-600">{job.error_message}</p>
@@ -211,26 +314,45 @@ export default function JobDetails() {
           )}
         </div>
 
-        {(job.status === 'success' || job.status === 'complete') && files.length > 0 && (
+        {job && (job.status === 'success' || job.status === 'complete') && files.length > 0 && (
           <div className="mt-6 pt-6 border-t border-gray-200">
             <h2 className="text-lg font-medium mb-4">Files</h2>
-            <div className="space-y-3">
+            <div className="space-y-6">
               {files.map(file => (
-                <div key={file.file_id} className="flex justify-between items-center">
-                  <div>
-                    <p className="font-medium">{file.file_name}</p>
-                    <p className="text-sm text-gray-500">
-                      {file.file_type} • {(file.file_size / 1024).toFixed(2)} KB
-                    </p>
+                <div key={file.file_id} className="border border-gray-200 rounded-lg overflow-hidden">
+                  <div className="flex justify-between items-center p-4">
+                    <div>
+                      <p className="font-medium">{file.file_name}</p>
+                      <p className="text-sm text-gray-500">
+                        {file.file_type} • {(file.file_size / 1024).toFixed(2)} KB
+                      </p>
+                    </div>
+                    <div className="flex space-x-2">
+                      {(file.file_name.endsWith('.json') || file.file_name.endsWith('.xlsx') || file.file_name.endsWith('.xls')) && (
+                        <button
+                          onClick={() => togglePreview(file.file_id, file.file_type)}
+                          className="bg-gray-100 text-gray-700 py-2 px-4 rounded hover:bg-gray-200"
+                        >
+                          {previewStates[file.file_id] ? 'Hide Preview' : 'Show Preview'}
+                        </button>
+                      )}
+                      <a
+                        href={getFileDownloadUrl(file.file_id)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="bg-blue-600 text-white py-2 px-4 rounded hover:bg-blue-700"
+                      >
+                        Download
+                      </a>
+                    </div>
                   </div>
-                  <a
-                    href={getFileDownloadUrl(file.file_id)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="bg-blue-600 text-white py-2 px-4 rounded hover:bg-blue-700"
-                  >
-                    Download
-                  </a>
+                  
+                  {/* Preview section */}
+                  {previewStates[file.file_id] && (
+                    <div className="border-t border-gray-200">
+                      {renderPreview(file)}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -238,7 +360,7 @@ export default function JobDetails() {
         )}
       </div>
 
-      {job.status === 'processing' && (
+      {job?.status === 'processing' && (
         <div className="bg-white shadow-md rounded-lg p-6">
           <h2 className="text-lg font-medium mb-4">Processing Updates</h2>
           <div className="bg-gray-50 p-4 rounded-lg h-60 overflow-y-auto">

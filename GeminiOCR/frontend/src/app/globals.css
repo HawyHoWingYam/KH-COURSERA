@@ -24,3 +24,13 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Add this to your global CSS or page-specific CSS */
+.overflow-auto {
+  overflow: auto;
+  -webkit-overflow-scrolling: touch; /* Improved scrolling on iOS */
+}
+
+.max-w-none {
+  max-width: none;
+}
