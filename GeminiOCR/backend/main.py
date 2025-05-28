@@ -72,19 +72,28 @@ def configure_prompt(doc_type, provider_name):
     """
     try:
         # Look for provider-specific prompt
-        prompt_file = os.path.join(os.getcwd(), "document_type", doc_type, provider_name, "prompt", f"{provider_name}.txt")
+        prompt_file = os.path.join(
+            os.getcwd(),
+            "document_type",
+            doc_type,
+            provider_name,
+            "prompt",
+            f"{provider_name}.txt",
+        )
         if os.path.exists(prompt_file):
             with open(prompt_file, "r", encoding="utf-8") as file:
                 prompt = file.read()
             return prompt
-        
+
         # Fallback to generic document type prompt if available
-        generic_prompt = os.path.join(os.getcwd(), "document_type", doc_type, "prompt", f"{doc_type}.txt")
+        generic_prompt = os.path.join(
+            os.getcwd(), "document_type", doc_type, "prompt", f"{doc_type}.txt"
+        )
         if os.path.exists(generic_prompt):
             with open(generic_prompt, "r", encoding="utf-8") as file:
                 prompt = file.read()
             return prompt
-            
+
         print(f"No prompt found for {doc_type}/{provider_name}")
         return ""
     except Exception as e:
@@ -122,19 +131,28 @@ def get_response_schema(doc_type, provider_name):
     """
     try:
         # Look for provider-specific schema
-        schema_file = os.path.join(os.getcwd(), "document_type", doc_type, provider_name, "schema", f"{provider_name}.json")
+        schema_file = os.path.join(
+            os.getcwd(),
+            "document_type",
+            doc_type,
+            provider_name,
+            "schema",
+            f"{provider_name}.json",
+        )
         if os.path.exists(schema_file):
             with open(schema_file, "r", encoding="utf-8") as file:
                 schema = json.load(file)
             return schema
-            
+
         # Fallback to generic document type schema
-        generic_schema = os.path.join(os.getcwd(), "document_type", doc_type, "schema", f"{doc_type}.json")
+        generic_schema = os.path.join(
+            os.getcwd(), "document_type", doc_type, "schema", f"{doc_type}.json"
+        )
         if os.path.exists(generic_schema):
             with open(generic_schema, "r", encoding="utf-8") as file:
                 schema = json.load(file)
             return schema
-            
+
         print(f"Schema file not found for {doc_type}/{provider_name}")
         return None
     except json.JSONDecodeError as e:
@@ -145,7 +163,9 @@ def get_response_schema(doc_type, provider_name):
         return None
 
 
-def extract_text_from_image(image_path, enhanced_prompt, response_schema, api_key):
+def extract_text_from_image(
+    image_path, enhanced_prompt, response_schema, api_key, model_name
+):
     """
     Extract text from image using the enhanced pipeline.
     """
@@ -159,7 +179,7 @@ def extract_text_from_image(image_path, enhanced_prompt, response_schema, api_ke
 
     # Configure the model
     model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash-preview-04-17",
+        model_name=model_name,
         ##model_name="gemini-2.5-flash",
         generation_config={
             "temperature": 0.3,  # Lower temperature for more deterministic OCR results
@@ -199,10 +219,12 @@ def extract_text_from_image(image_path, enhanced_prompt, response_schema, api_ke
 
 def main():
     try:
-        with open(os.path.join(os.getcwd(), "env", "config.json"), "r", encoding="utf-8") as file:
+        with open(
+            os.path.join(os.getcwd(), "env", "config.json"), "r", encoding="utf-8"
+        ) as file:
             config = json.load(file)
             API_KEY = config["api_key"]
-    
+
         if not API_KEY:
             print("Please set your GEMINI_API_KEY in config.json")
             return
@@ -215,19 +237,22 @@ def main():
                 return
 
             # Get available document types
-            doc_types = [d for d in os.listdir(os.path.join(os.getcwd(), "document_type")) 
-                        if os.path.isdir(os.path.join(os.getcwd(), "document_type", d))]
-            
+            doc_types = [
+                d
+                for d in os.listdir(os.path.join(os.getcwd(), "document_type"))
+                if os.path.isdir(os.path.join(os.getcwd(), "document_type", d))
+            ]
+
             print("Available document types:")
             for i, doc_type in enumerate(doc_types, 1):
                 print(f"{i}. {doc_type}")
-                
+
             # Select document type
             while True:
                 try:
                     choice = int(input(f"Select document type (enter number): "))
                     if 1 <= choice <= len(doc_types):
-                        selected_doc_type = doc_types[choice-1]
+                        selected_doc_type = doc_types[choice - 1]
                         break
                     print(f"Please enter a number between 1 and {len(doc_types)}.")
                 except ValueError:
@@ -236,7 +261,11 @@ def main():
             # Step 1: Ask how many documents to process
             while True:
                 try:
-                    num_docs = int(input(f"How many {selected_doc_type} documents do you want to process? "))
+                    num_docs = int(
+                        input(
+                            f"How many {selected_doc_type} documents do you want to process? "
+                        )
+                    )
                     if num_docs > 0:
                         break
                     print("Please enter a positive number.")
@@ -244,9 +273,16 @@ def main():
                     print("Please enter a valid number.")
 
             # Step 2: Show provider list for the selected document type
-            providers = [d for d in os.listdir(os.path.join(os.getcwd(), "document_type", selected_doc_type)) 
-                      if os.path.isdir(os.path.join(os.getcwd(), "document_type", selected_doc_type, d))]
-            
+            providers = [
+                d
+                for d in os.listdir(
+                    os.path.join(os.getcwd(), "document_type", selected_doc_type)
+                )
+                if os.path.isdir(
+                    os.path.join(os.getcwd(), "document_type", selected_doc_type, d)
+                )
+            ]
+
             print(f"Available {selected_doc_type} providers:")
             for i, provider in enumerate(providers, 1):
                 print(f"{i}. {provider}")
@@ -256,7 +292,9 @@ def main():
                 while True:
                     try:
                         choice = int(
-                            input(f"Select provider for {selected_doc_type} #{i+1} (enter number): ")
+                            input(
+                                f"Select provider for {selected_doc_type} #{i+1} (enter number): "
+                            )
                         )
                         if 1 <= choice <= len(providers):
                             selected_providers.append(providers[choice - 1])
@@ -273,7 +311,14 @@ def main():
                 )
 
                 # Construct file path
-                file_path = os.path.join(os.getcwd(), "document_type", selected_doc_type, provider, "upload", file_name)
+                file_path = os.path.join(
+                    os.getcwd(),
+                    "document_type",
+                    selected_doc_type,
+                    provider,
+                    "upload",
+                    file_name,
+                )
 
                 # Check if file exists
                 if not os.path.exists(file_path):
@@ -294,15 +339,21 @@ def main():
 
                 # Process the document
                 print(f"Processing {provider} {selected_doc_type}: {file_name}...")
-                extracted_text = extract_text_from_image(file_path, prompt, schema, API_KEY)
+                extracted_text = extract_text_from_image(
+                    file_path, prompt, schema, API_KEY
+                )
 
                 # Create output directory if it doesn't exist
-                output_dir = os.path.join(os.getcwd(), "document_type", selected_doc_type, provider, "output")
+                output_dir = os.path.join(
+                    os.getcwd(), "document_type", selected_doc_type, provider, "output"
+                )
                 os.makedirs(output_dir, exist_ok=True)
-                
+
                 # Generate output filename
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_filename = os.path.join(output_dir, f"{provider}_{timestamp}.json")
+                output_filename = os.path.join(
+                    output_dir, f"{provider}_{timestamp}.json"
+                )
 
                 # Save extracted text to JSON file
                 try:

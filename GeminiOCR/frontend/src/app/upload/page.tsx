@@ -150,7 +150,7 @@ export default function Upload() {
             required
           />
           <p className="text-sm text-gray-500 mt-1">
-            Supported formats: JPEG, PNG, PDF
+            Supported formats: JPEG, JPG, PNG, PDF
           </p>
         </div>
 

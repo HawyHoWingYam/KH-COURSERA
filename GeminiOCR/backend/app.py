@@ -20,6 +20,7 @@ import uuid
 import json
 import logging
 import asyncio
+import fitz  # PyMuPDF for PDF handling
 
 from db.database import get_db, engine
 from db.models import (
@@ -32,6 +33,7 @@ from db.models import (
     DocumentFile,
 )
 import main as ocr_processor
+from main import extract_text_from_image
 
 # Create all tables
 Base.metadata.create_all(bind=engine)
@@ -56,6 +58,11 @@ logger = logging.getLogger(__name__)
 
 # WebSocket connections store
 active_connections = {}
+
+# Load config at module level
+CONFIG_PATH = os.path.join("env", "config.json")
+with open(CONFIG_PATH, "r") as f:
+    config = json.load(f)
 
 
 # Health check endpoint
@@ -455,111 +462,92 @@ async def process_document(
     document: UploadFile = File(...),
     company_id: int = Form(...),
     doc_type_id: int = Form(...),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db)
 ):
     try:
         # Check if company and document type exist
         company = db.query(Company).filter(Company.company_id == company_id).first()
         if not company:
             raise HTTPException(status_code=404, detail="Company not found")
-
-        doc_type = (
-            db.query(DocumentType)
-            .filter(DocumentType.doc_type_id == doc_type_id)
-            .first()
-        )
+        
+        doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
         if not doc_type:
             raise HTTPException(status_code=404, detail="Document type not found")
-
+            
         # Check if configuration exists
-        config = (
-            db.query(CompanyDocumentConfig)
-            .filter(
-                CompanyDocumentConfig.company_id == company_id,
-                CompanyDocumentConfig.doc_type_id == doc_type_id,
-                CompanyDocumentConfig.active == True,
-            )
-            .first()
-        )
-
+        config = db.query(CompanyDocumentConfig).filter(
+            CompanyDocumentConfig.company_id == company_id,
+            CompanyDocumentConfig.doc_type_id == doc_type_id,
+            CompanyDocumentConfig.active == True
+        ).first()
+        
         if not config:
             raise HTTPException(
-                status_code=404,
-                detail=f"No active configuration found for {company.company_name} and {doc_type.type_name}",
+                status_code=404, 
+                detail=f"No active configuration found for company ID {company_id} and document type ID {doc_type_id}"
             )
-
+            
+        # Verify prompt_path and schema_path exist
+        if not config.prompt_path or not os.path.exists(config.prompt_path):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Prompt template not found: {config.prompt_path}"
+            )
+            
+        if not config.schema_path or not os.path.exists(config.schema_path):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Schema file not found: {config.schema_path}"
+            )
+        
+        # Save the uploaded file
+        upload_dir = os.path.join("uploads", company.company_code, doc_type.type_code, "jobs")
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        # Generate a unique filename
+        file_path = os.path.join(upload_dir, document.filename)
+        
+        # Save file to disk
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(document.file, buffer)
+        
         # Create a new processing job
         job = ProcessingJob(
             company_id=company_id,
             doc_type_id=doc_type_id,
             original_filename=document.filename,
-            # s3_pdf_path=file_path,
             status="pending",
+            s3_pdf_path=file_path  # Now file_path is defined
         )
-
+        
         db.add(job)
         db.commit()
         db.refresh(job)
-
+        
         job_id = job.job_id
-
-        # Save the uploaded file
-        upload_dir = os.path.join(
-            "uploads", company.company_code, doc_type.type_code, str(job_id)
-        )
-        os.makedirs(upload_dir, exist_ok=True)
-
-        file_path = os.path.join(upload_dir, document.filename)
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(document.file, buffer)
-
-        # Get file size
-        file_size = os.path.getsize(file_path)
-
-        # Create file entry with file size
-        db_file = DBFile(
-            file_path=file_path,
-            file_name=document.filename,
-            file_size=file_size,  # Add file size
-            file_type=document.content_type,
-        )
-
-        db.add(db_file)
-        db.commit()
-        db.refresh(db_file)
-
-        # Create document file relationship
-        doc_file = DocumentFile(
-            job_id=job_id, file_id=db_file.file_id, file_category="original_upload"
-        )
-
-        db.add(doc_file)
-        db.commit()
-
+        
         # Process document in background
         background_tasks.add_task(
-            process_document_task,
-            job_id,
-            file_path,
-            config.prompt_path,
-            config.schema_path,
+            process_document_task, 
+            job_id, 
+            file_path, 
+            config.prompt_path,  # Pass actual path from config
+            config.schema_path,  # Pass actual path from config
             company.company_code,
-            doc_type.type_code,
+            doc_type.type_code
         )
-
+        
         return {
             "job_id": job_id,
             "status": "pending",
-            "message": "Document processing started",
+            "message": "Document processing started"
         }
-
+    
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error processing document: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail=f"Error processing document: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
 
 
 # Background processing task
@@ -580,6 +568,8 @@ async def process_document_task(
             logger.error(f"Job {job_id} not found")
             return
 
+        # Update the s3_pdf_path to fix the NOT NULL constraint
+        job.s3_pdf_path = file_path
         job.status = "processing"
         db.commit()
 
@@ -588,8 +578,43 @@ async def process_document_task(
             job_id, {"status": "processing", "message": "Document processing started"}
         )
 
-        # Process the document (mock implementation)
-        await asyncio.sleep(2)  # Simulate processing time
+        # Load prompt and schema
+        with open(prompt_path, "r") as f:
+            prompt_template = f.read()
+        
+        with open(schema_path, "r") as f:
+            schema_json = json.load(f)
+
+        # Get API key from config
+        api_key = config.get("api_key")
+        model_name = config.get("model_name")
+        if not api_key:
+            raise ValueError("API key not found in config.json")
+
+        await send_websocket_message(
+            job_id, {"status": "processing", "message": "Extracting text from document..."}
+        )
+
+        # Process the document based on file type
+        file_extension = os.path.splitext(file_path)[1].lower()
+        
+        if file_extension in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp']:
+            # Direct image processing
+            json_result = extract_text_from_image(file_path, prompt_template, schema_json, api_key, model_name)
+        elif file_extension == '.pdf':
+            # For PDF, extract the first page as image and process
+            output_image_path = os.path.join(os.path.dirname(file_path), "page_1.jpg")
+            
+            # Extract first page as image
+            doc = fitz.open(file_path)
+            page = doc[0]
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better resolution
+            pix.save(output_image_path)
+            
+            # Process the extracted image
+            json_result = extract_text_from_image(output_image_path, prompt_template, schema_json, api_key, model_name)
+        else:
+            raise ValueError(f"Unsupported file type: {file_extension}")
 
         # Generate output files
         output_dir = os.path.join("uploads", company_code, doc_type_code, str(job_id))
@@ -598,16 +623,14 @@ async def process_document_task(
         json_output_path = os.path.join(output_dir, "results.json")
         excel_output_path = os.path.join(output_dir, "results.xlsx")
 
-        # Mock results
-        results = {
-            "job_id": job_id,
-            "processed_date": datetime.utcnow().isoformat(),
-            "extracted_data": {"key1": "value1", "key2": "value2"},
-        }
-
         # Save JSON output
         with open(json_output_path, "w") as f:
-            json.dump(results, f, indent=2)
+            # If the result is a string, assume it's already JSON formatted
+            if isinstance(json_result, str):
+                f.write(json_result)
+            else:
+                # Otherwise, dump the object as JSON
+                json.dump(json_result, f, indent=2)
 
         # Get JSON file size
         json_file_size = os.path.getsize(json_output_path)
@@ -631,9 +654,9 @@ async def process_document_task(
 
         db.add(json_doc_file)
 
-        # Mock Excel output
+        # Generate Excel file (mock for now, can be enhanced later)
         with open(excel_output_path, "w") as f:
-            f.write("Mock Excel file")
+            f.write("JSON to Excel conversion would happen here")
 
         # Get Excel file size
         excel_file_size = os.path.getsize(excel_output_path)
@@ -657,7 +680,7 @@ async def process_document_task(
         db.add(excel_doc_file)
 
         # Update job status to success
-        job.status = "success"  # Using 'success' consistently
+        job.status = "success"
         db.commit()
 
         # Send WebSocket notification

@@ -3,6 +3,7 @@
     "database_url": "postgresql://postgres:admin@localhost:5432/document_processing_platform",
     "API_BASE_URL": "localhost",
     "port": 8000,
+    "model_name": "gemini-2.5-flash-preview-04-17",
     "document_type": {
         "invoices": {
             "archers": {
