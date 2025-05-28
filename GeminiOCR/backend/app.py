@@ -34,6 +34,7 @@ from db.models import (
 )
 import main as ocr_processor
 from main import extract_text_from_image
+from utils.excel_converter import json_to_excel
 
 # Create all tables
 Base.metadata.create_all(bind=engine)
@@ -621,21 +622,23 @@ async def process_document_task(
         os.makedirs(output_dir, exist_ok=True)
 
         json_output_path = os.path.join(output_dir, "results.json")
-        excel_output_path = os.path.join(output_dir, "results.xlsx")
 
         # Save JSON output
         with open(json_output_path, "w") as f:
             # If the result is a string, assume it's already JSON formatted
             if isinstance(json_result, str):
                 f.write(json_result)
+                # Parse the JSON string to get the object
+                result_obj = json.loads(json_result)
             else:
                 # Otherwise, dump the object as JSON
                 json.dump(json_result, f, indent=2)
+                result_obj = json_result
 
         # Get JSON file size
         json_file_size = os.path.getsize(json_output_path)
 
-        # Create file entries for output files
+        # Create file entries for JSON output
         json_file = DBFile(
             file_path=json_output_path,
             file_name="results.json",
@@ -653,11 +656,11 @@ async def process_document_task(
         )
 
         db.add(json_doc_file)
-
-        # Generate Excel file (mock for now, can be enhanced later)
-        with open(excel_output_path, "w") as f:
-            f.write("JSON to Excel conversion would happen here")
-
+        
+        # Generate Excel file dynamically
+        excel_output_path = os.path.join(output_dir, "results.xlsx")
+        json_to_excel(result_obj, excel_output_path, doc_type_code)
+        
         # Get Excel file size
         excel_file_size = os.path.getsize(excel_output_path)
 
