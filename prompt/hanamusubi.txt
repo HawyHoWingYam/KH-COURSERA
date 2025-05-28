@@ -1,5 +1,11 @@
 Please analyze the provided food retail shop invoice image and extract the following information. This invoice details a customer's food purchase. Pay close attention to the typical layout and distinguish between printed text and handwritten text.
 
+Document Localization: Before extraction, identify the boundaries of the invoice(s) within the image. Focus exclusively on the content of the invoice and ignore any surrounding clutter, other objects, or background details.
+
+Image Orientation: Check if the invoice is incorrectly oriented (e.g., skewed or rotated). If so, it must be straightened (deskewed) before proceeding with data extraction to ensure accuracy.
+
+Multiple Invoices: The image may contain more than one invoice. If multiple invoices are detected side-by-side, perform the complete analysis and extraction process outlined below for each individual invoice separately.
+
 **Overall Document Type:** Shop Invoice / Receipt (店铺收据)
 
 **I. Invoice Top Section (Invoice顶部):**

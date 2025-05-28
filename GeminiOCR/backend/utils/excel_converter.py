@@ -86,63 +86,56 @@ def normalize_table_data(table_data: List[Dict]) -> pd.DataFrame:
     
     return df
 
-def json_to_excel(json_data: Union[Dict, List], output_path: str, doc_type_code: str = None) -> str:
-    """
-    Convert JSON data to Excel format using pandas with a single flat table layout.
-    
-    Args:
-        json_data: The JSON data to convert (dict or list)
-        output_path: Path to save the Excel file
-        doc_type_code: Document type code for sheet naming
-    """
-    # Handle list input - process first item
-    if isinstance(json_data, list):
-        if json_data:
-            json_data = json_data[0]  # Take first item
-        else:
-            json_data = {"error": "Empty data array"}
-    
+def json_to_excel(json_datas: Union[Dict, List], output_path: str, doc_type_code: str = None) -> str:
     # Create a single DataFrame from the data
+    
     main_df = None
-    
-    # Process tables first - we'll use the first table as our main data
-    for key, value in json_data.items():
-        if isinstance(value, list) and value and all(isinstance(x, dict) for x in value):
-            # Found a table, use this as the main structure
-            table_df = normalize_table_data(value)
-            if not table_df.empty:
-                main_df = table_df
-                break
-    
-    # If no tables were found, create an empty DataFrame
-    if main_df is None:
-        main_df = pd.DataFrame()
-    
-    # Inject metadata as columns
-    for key, value in json_data.items():
-        if isinstance(value, list) and all(isinstance(x, dict) for x in value):
-            # Skip tables
-            continue
-            
-        # Handle simple values and text extraction
-        if isinstance(value, dict):
-            extracted_value = extract_text_value(value)
-            if extracted_value != value and not isinstance(extracted_value, dict):
-                # Simple text extraction
-                col_name = format_key_for_display(key)
-                main_df[col_name] = extracted_value
+    for json_data in json_datas:
+        sub_df = None
+        for key, value in json_data.items():
+            if isinstance(value, list) and value and all(isinstance(x, dict) for x in value):
+                # Found a table, use this as the main structure
+                table_df = normalize_table_data(value)
+                if not table_df.empty:
+                    sub_df = table_df
+                    break
+        
+        # If no tables were found, create an empty DataFrame
+        if sub_df is None:
+            sub_df = pd.DataFrame()
+        
+        # Inject metadata as columns
+        for key, value in json_data.items():
+            if isinstance(value, list) and all(isinstance(x, dict) for x in value):
+                # Skip tables
+                continue
+                
+            # Handle simple values and text extraction
+            if isinstance(value, dict):
+                extracted_value = extract_text_value(value)
+                if extracted_value != value and not isinstance(extracted_value, dict):
+                    # Simple text extraction
+                    col_name = format_key_for_display(key)
+                    sub_df[col_name] = extracted_value
+                else:
+                    # Flatten nested dictionaries
+                    flattened = flatten_dict(value)
+                    for sub_key, sub_value in flattened.items():
+                        full_key = f"{key}_{sub_key}" if sub_key else key
+                        col_name = format_key_for_display(full_key)
+                        sub_df[col_name] = sub_value
             else:
-                # Flatten nested dictionaries
-                flattened = flatten_dict(value)
-                for sub_key, sub_value in flattened.items():
-                    full_key = f"{key}_{sub_key}" if sub_key else key
-                    col_name = format_key_for_display(full_key)
-                    main_df[col_name] = sub_value
-        else:
-            # Simple metadata field
-            col_name = format_key_for_display(key)
-            main_df[col_name] = value
-    
+                # Simple metadata field
+                col_name = format_key_for_display(key)
+                sub_df[col_name] = value
+        print("sub_df", sub_df)
+        if sub_df is not None:
+            if main_df is None:
+                main_df = sub_df
+            else:
+                main_df = pd.concat([main_df, sub_df], ignore_index=True)
+        print("main_df", main_df)
+                
     # Write to Excel
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         sheet_name = doc_type_code[:30] if doc_type_code else "Data"
