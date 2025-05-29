@@ -198,7 +198,7 @@ def extract_text_from_image(
                 response_schema=response_schema,
             ),
         )
-
+        print(response.usage_metadata)
         # Return the formatted JSON response
         return response.text
     except Exception as e:
@@ -244,13 +244,16 @@ def extract_text_from_pdf(
     # Make API request with PDF
     try:
         response = model.generate_content(
-            contents=[enhanced_prompt, {"mime_type": "application/pdf", "data": pdf_data}],
+            contents=[
+                enhanced_prompt,
+                {"mime_type": "application/pdf", "data": pdf_data},
+            ],
             generation_config=genai.GenerationConfig(
                 response_mime_type="application/json",
                 response_schema=response_schema,
             ),
         )
-
+        print(response.usage_metadata)
         # Return the formatted JSON response
         return response.text
     except Exception as e:
@@ -258,7 +261,10 @@ def extract_text_from_pdf(
         # Try a fallback approach without the schema if there's an error
         try:
             fallback_response = model.generate_content(
-                contents=[enhanced_prompt, {"mime_type": "application/pdf", "data": pdf_data}],
+                contents=[
+                    enhanced_prompt,
+                    {"mime_type": "application/pdf", "data": pdf_data},
+                ],
                 generation_config=genai.GenerationConfig(
                     response_mime_type="application/json",
                 ),
