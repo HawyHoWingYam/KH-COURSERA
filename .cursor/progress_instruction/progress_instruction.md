@@ -69,10 +69,9 @@ Create a **Batch Job Overview** page that:
   ├── json/
   │   ├── file1.json
   │   └── file2.json
-  ├── excel/
-  │   ├── file1.xlsx
-  │   └── file2.xlsx
-  └── summary.csv (processing statistics for all files)
+  └── excel/
+      └── summary.xlsx (processing statistics for all json files)
+  
   ```
 - Maintains the same folder structure as the input ZIP where possible
 

@@ -185,7 +185,7 @@ def extract_text_from_image(
             "temperature": 0.3,  # Lower temperature for more deterministic OCR results
             "top_p": 0.95,
             "top_k": 40,
-            "max_output_tokens": 8192,
+            # "max_output_tokens": 8192,
         },
     )
 
@@ -214,6 +214,58 @@ def extract_text_from_image(
             return fallback_response.text
         except Exception as f_e:
             print(f"Fallback also failed: {f_e}")
+            return f"Error: {e}"
+
+
+def extract_text_from_pdf(
+    pdf_path, enhanced_prompt, response_schema, api_key, model_name
+):
+    """
+    Extract text directly from PDF using Gemini API.
+    """
+    # Configure Gemini API
+    genai.configure(api_key=api_key)
+
+    # Load PDF as bytes
+    with open(pdf_path, "rb") as f:
+        pdf_data = f.read()
+
+    # Configure the model
+    model = genai.GenerativeModel(
+        model_name=model_name,
+        generation_config={
+            "temperature": 0.3,
+            "top_p": 0.95,
+            "top_k": 40,
+            # "max_output_tokens": 8192,
+        },
+    )
+
+    # Make API request with PDF
+    try:
+        response = model.generate_content(
+            contents=[enhanced_prompt, {"mime_type": "application/pdf", "data": pdf_data}],
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=response_schema,
+            ),
+        )
+
+        # Return the formatted JSON response
+        return response.text
+    except Exception as e:
+        print(f"Error generating content from PDF: {e}")
+        # Try a fallback approach without the schema if there's an error
+        try:
+            fallback_response = model.generate_content(
+                contents=[enhanced_prompt, {"mime_type": "application/pdf", "data": pdf_data}],
+                generation_config=genai.GenerationConfig(
+                    response_mime_type="application/json",
+                ),
+            )
+            return fallback_response.text
+        except Exception as f_e:
+            print(f"PDF processing fallback also failed: {f_e}")
             return f"Error: {e}"
 
 

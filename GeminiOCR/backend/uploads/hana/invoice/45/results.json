@@ -1,0 +1,26 @@
+[
+  {
+    "details": [
+      {
+        "amount": 12.00,
+        "item_name": "[御結] 蒲燒鰻魚",
+        "quantity": 1,
+        "unit_price": 12.00
+      }
+    ],
+    "discount": 0.00,
+    "issue_info": {
+      "brand": "華御結",
+      "issue_datetime": "09/04/2025 08:10:24",
+      "issue_number": "SIH-090420250810241",
+      "pos_terminal": "POS-2",
+      "shop_address": "港鐵香港站SIH 12號舖 (近F出口)",
+      "shop_code": "SIH",
+      "shop_telephone": "9645 7508"
+    },
+    "payment": "八達通付款",
+    "remark": "9861/2062 Yvonne kan",
+    "subtotal": 12.00,
+    "total_amount": 12.00
+  }
+]

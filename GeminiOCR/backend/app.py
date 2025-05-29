@@ -21,6 +21,7 @@ import json
 import logging
 import asyncio
 import fitz  # PyMuPDF for PDF handling
+import google.generativeai as genai  # Correct import for Google's Generative AI
 
 from db.database import get_db, engine
 from db.models import (
@@ -33,7 +34,7 @@ from db.models import (
     DocumentFile,
 )
 import main as ocr_processor
-from main import extract_text_from_image
+from main import extract_text_from_image, extract_text_from_pdf
 from utils.excel_converter import json_to_excel
 
 # Create all tables
@@ -518,7 +519,7 @@ async def process_document(
             doc_type_id=doc_type_id,
             original_filename=document.filename,
             status="pending",
-            s3_pdf_path=file_path  # Now file_path is defined
+            s3_pdf_path=file_path  # Add this line to fix the NOT NULL constraint
         )
         
         db.add(job)
@@ -599,22 +600,15 @@ async def process_document_task(
         # Process the document based on file type
         file_extension = os.path.splitext(file_path)[1].lower()
         
-        if file_extension in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp']:
-            # Direct image processing
+        # Handle based on file type
+        if file_extension in ['.jpg', '.jpeg', '.png']:
+            # Process image directly
             json_result = extract_text_from_image(file_path, prompt_template, schema_json, api_key, model_name)
         elif file_extension == '.pdf':
-            # For PDF, extract the first page as image and process
-            output_image_path = os.path.join(os.path.dirname(file_path), "page_1.jpg")
-            
-            # Extract first page as image
-            doc = fitz.open(file_path)
-            page = doc[0]
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better resolution
-            pix.save(output_image_path)
-            
-            # Process the extracted image
-            json_result = extract_text_from_image(output_image_path, prompt_template, schema_json, api_key, model_name)
+            # Process PDF directly using the new method
+            json_result = extract_text_from_pdf(file_path, prompt_template, schema_json, api_key, model_name)
         else:
+            # Unsupported file type
             raise ValueError(f"Unsupported file type: {file_extension}")
 
         # Generate output files
