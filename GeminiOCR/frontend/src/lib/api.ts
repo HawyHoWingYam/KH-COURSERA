@@ -45,30 +45,43 @@ export interface FileInfo {
 export interface Job {
   job_id: number;
   company_id: number;
-  company_name: string;
+  company_name?: string;
   doc_type_id: number;
-  type_name: string;
-  status: 'pending' | 'processing' | 'success' | 'complete' | 'error';
+  type_name?: string;
+  status: string;
   original_filename: string;
-  error_message: string | null;
+  error_message?: string;
   created_at: string;
   updated_at: string;
-  files?: FileInfo[]; // Updated to use FileInfo
 }
 
 // Base API URL and port from config
-const API_BASE_URL = `http://${process.env.API_BASE_URL || 'localhost'}:${process.env.PORT || 8000}`;
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
 
 // Generic fetch function with error handling
-async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  console.log(`Fetching ${API_BASE_URL}${endpoint}`);
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
+async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const url = `${API_BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
   
+  console.log(`Fetching from: ${url}`);
+  
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      ...options.headers,
+    },
+  });
+
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || `API error: ${response.status}`);
+    const errorText = await response.text();
+    console.error('API error:', errorText);
+    try {
+      const errorJson = JSON.parse(errorText);
+      throw new Error(errorJson.detail || 'API request failed');
+    } catch {
+      throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+    }
   }
-  
+
   return response.json();
 }
 
@@ -170,7 +183,7 @@ export function connectWebSocket(jobId: number, onMessage: (data: any) => void) 
   socket.onopen = () => {
     console.log(`WebSocket connection established for job ${jobId}`);
   };
-  
+
   socket.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
@@ -179,15 +192,15 @@ export function connectWebSocket(jobId: number, onMessage: (data: any) => void) 
       console.error('Error parsing WebSocket message:', error);
     }
   };
-  
+
   socket.onerror = (error) => {
     console.error('WebSocket error:', error);
   };
-  
+
   socket.onclose = () => {
     console.log(`WebSocket connection closed for job ${jobId}`);
   };
-  
+
   return {
     close: () => socket.close(),
   };
@@ -197,11 +210,11 @@ export function connectWebSocket(jobId: number, onMessage: (data: any) => void) 
 export async function downloadFile(fileId: number): Promise<Blob> {
   const fileInfo = await fetchApi<{ file_path: string; file_name: string; file_type: string }>(`/files/${fileId}`);
   const response = await fetch(`${API_BASE_URL}/download/${fileId}`);
-  
+
   if (!response.ok) {
     throw new Error(`Download failed: ${response.status}`);
   }
-  
+
   return response.blob();
 }
 
@@ -219,8 +232,29 @@ export async function fetchDocumentTypes(): Promise<DocumentType[]> {
 // And this one for processing documents
 export async function processDocument(formData: FormData): Promise<{ job_id: number; status: string; message: string }> {
   console.log('Processing document:', formData);
+  
+  // Make sure we're using the backend API URL
   return fetchApi<{ job_id: number; status: string; message: string }>('/process', {
     method: 'POST',
     body: formData,
+    // Don't set Content-Type header - the browser will set it with the correct boundary for FormData
   });
+}
+
+// Add the fetchJobs function
+export async function fetchJobs(
+  params: { company_id?: number; doc_type_id?: number; status?: string; limit?: number; offset?: number } = {}
+): Promise<Job[]> {
+  const queryParams = new URLSearchParams();
+  
+  if (params.company_id) queryParams.append('company_id', params.company_id.toString());
+  if (params.doc_type_id) queryParams.append('doc_type_id', params.doc_type_id.toString());
+  if (params.status) queryParams.append('status', params.status);
+  if (params.limit) queryParams.append('limit', params.limit.toString());
+  if (params.offset) queryParams.append('offset', params.offset.toString());
+  
+  const queryString = queryParams.toString();
+  const endpoint = `/jobs${queryString ? `?${queryString}` : ''}`;
+  
+  return fetchApi<Job[]>(endpoint);
 } 

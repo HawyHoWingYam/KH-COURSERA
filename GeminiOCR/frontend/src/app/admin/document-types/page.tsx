@@ -171,7 +171,7 @@ export default function DocumentTypesPage() {
       {/* Create/Edit Form */}
       {(isCreating || editingDocType) && (
         <div className="bg-white shadow-md rounded-lg p-6 mb-6">
-          <h2 className="text-lg font-medium mb-4">
+          <h2 className="text-lg font-medium mb-4 text-black">
             {editingDocType ? 'Edit Document Type' : 'Create New Document Type'}
           </h2>
           
@@ -183,7 +183,7 @@ export default function DocumentTypesPage() {
                 name="type_name"
                 value={formData.type_name}
                 onChange={handleInputChange}
-                className="w-full border border-gray-300 rounded px-3 py-2"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-black"
                 required
               />
             </div>
@@ -195,7 +195,7 @@ export default function DocumentTypesPage() {
                 name="type_code"
                 value={formData.type_code}
                 onChange={handleInputChange}
-                className="w-full border border-gray-300 rounded px-3 py-2"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-black"
                 required
               />
             </div>
@@ -206,7 +206,7 @@ export default function DocumentTypesPage() {
                 name="description"
                 value={formData.description}
                 onChange={handleInputChange}
-                className="w-full border border-gray-300 rounded px-3 py-2"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-black"
                 rows={3}
               />
             </div>

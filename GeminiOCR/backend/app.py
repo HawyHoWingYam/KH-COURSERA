@@ -519,7 +519,7 @@ async def process_document(
             doc_type_id=doc_type_id,
             original_filename=document.filename,
             status="pending",
-            s3_pdf_path=file_path  # Add this line to fix the NOT NULL constraint
+            s3_pdf_path=file_path
         )
         
         db.add(job)
@@ -528,17 +528,18 @@ async def process_document(
         
         job_id = job.job_id
         
-        # Process document in background
+        # Start processing in background but return immediately
         background_tasks.add_task(
             process_document_task, 
             job_id, 
             file_path, 
-            config.prompt_path,  # Pass actual path from config
-            config.schema_path,  # Pass actual path from config
+            config.prompt_path,
+            config.schema_path,
             company.company_code,
             doc_type.type_code
         )
         
+        # Return immediately with job ID
         return {
             "job_id": job_id,
             "status": "pending",

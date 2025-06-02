@@ -185,7 +185,7 @@ export default function CompaniesPage() {
                 name="company_name"
                 value={formData.company_name}
                 onChange={handleInputChange}
-                className="w-full border border-gray-300 rounded px-3 py-2"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-black"
                 required
               />
             </div>
@@ -197,7 +197,7 @@ export default function CompaniesPage() {
                 name="company_code"
                 value={formData.company_code}
                 onChange={handleInputChange}
-                className="w-full border border-gray-300 rounded px-3 py-2"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-black"
                 required
               />
             </div>

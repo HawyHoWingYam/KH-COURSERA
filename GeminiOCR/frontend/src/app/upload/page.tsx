@@ -125,22 +125,37 @@ export default function Upload() {
       return;
     }
 
-    setIsLoading(true);
-    setError('');
-
     try {
+      // Create the FormData object
       const formData = new FormData();
-      //formData.append('file', file);
       formData.append('document', file);
       formData.append('doc_type_id', selectedType.toString());
       formData.append('company_id', selectedCompany.toString());
-      const job = await processDocument(formData);
-      router.push(`/jobs/${job.job_id}`);
+      
+      // Start the upload in the background without awaiting
+      processDocument(formData)
+        .then(result => {
+          console.log('Upload completed in background:', result);
+          // Could use this to update a notification system if needed
+        })
+        .catch(err => {
+          console.error('Background upload failed:', err);
+        });
+      
+      // Store upload info in sessionStorage for jobs page to display a notification
+      sessionStorage.setItem('pendingUpload', JSON.stringify({
+        fileName: file.name,
+        documentType: documentTypes.find(dt => dt.doc_type_id === selectedType)?.type_name || 'Unknown',
+        timestamp: new Date().toISOString()
+      }));
+      
+      // Navigate immediately to jobs page
+      router.push('/jobs');
+      
     } catch (err) {
-      setError('Failed to upload document. Please try again.');
+      // This should rarely happen since we're not awaiting the upload
+      setError('Failed to start upload');
       console.error(err);
-    } finally {
-      setIsLoading(false);
     }
   };
 
