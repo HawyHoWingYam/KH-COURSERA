@@ -53,6 +53,7 @@ export interface Job {
   error_message?: string;
   created_at: string;
   updated_at: string;
+  files?: FileInfo[];
 }
 
 // Base API URL and port from config

@@ -779,7 +779,7 @@ def get_job_status(job_id: int, db: Session = Depends(get_db)):
 
 # List jobs endpoint
 @app.get("/jobs", response_model=List[dict])
-def list_jobs(
+async def list_jobs(
     company_id: Optional[int] = None,
     doc_type_id: Optional[int] = None,
     status: Optional[str] = None,
@@ -787,37 +787,51 @@ def list_jobs(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
-    query = db.query(ProcessingJob)
+    # Create a regular function (not async) to run in the executor
+    def get_jobs():
+        # Create a new session to avoid sharing with busy sessions
+        with Session(engine) as session:
+            query = session.query(ProcessingJob)
 
-    if company_id is not None:
-        query = query.filter(ProcessingJob.company_id == company_id)
+            if company_id is not None:
+                query = query.filter(ProcessingJob.company_id == company_id)
 
-    if doc_type_id is not None:
-        query = query.filter(ProcessingJob.doc_type_id == doc_type_id)
+            if doc_type_id is not None:
+                query = query.filter(ProcessingJob.doc_type_id == doc_type_id)
 
-    if status is not None:
-        query = query.filter(ProcessingJob.status == status)
+            if status is not None:
+                query = query.filter(ProcessingJob.status == status)
 
-    # Order by most recent first
-    query = query.order_by(ProcessingJob.created_at.desc())
+            # Order by most recent first
+            query = query.order_by(ProcessingJob.created_at.desc())
 
-    # Apply pagination
-    jobs = query.offset(offset).limit(limit).all()
+            # Apply pagination
+            jobs = query.offset(offset).limit(limit).all()
 
-    return [
-        {
-            "job_id": job.job_id,
-            "company_id": job.company_id,
-            "company_name": job.company.company_name if job.company else None,
-            "doc_type_id": job.doc_type_id,
-            "type_name": job.document_type.type_name if job.document_type else None,
-            "status": job.status,
-            "original_filename": job.original_filename,
-            "created_at": job.created_at.isoformat(),
-            "updated_at": job.updated_at.isoformat(),
-        }
-        for job in jobs
-    ]
+            # Convert to dict before leaving the function to avoid session issues
+            result = []
+            for job in jobs:
+                result.append({
+                    "job_id": job.job_id,
+                    "company_id": job.company_id,
+                    "company_name": job.company.company_name if job.company else None,
+                    "doc_type_id": job.doc_type_id,
+                    "type_name": job.document_type.type_name if job.document_type else None,
+                    "status": job.status,
+                    "original_filename": job.original_filename,
+                    "created_at": job.created_at.isoformat(),
+                    "updated_at": job.updated_at.isoformat(),
+                })
+            return result
+    
+    # Run the database query in a separate thread using ThreadPoolExecutor
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    
+    executor = ThreadPoolExecutor()
+    result = await asyncio.get_event_loop().run_in_executor(executor, get_jobs)
+    
+    return result
 
 
 # Get file download endpoint
@@ -912,4 +926,11 @@ if __name__ == "__main__":
 
     with open("env/config.json") as f:
         config = json.load(f)
-    uvicorn.run(app, host="0.0.0.0", port=config["port"])
+    
+    # Use multiple workers to handle concurrent requests
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=config["port"],
+        workers=4  # Use multiple workers to handle concurrent requests
+    )
