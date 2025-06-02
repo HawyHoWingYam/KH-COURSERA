@@ -197,8 +197,13 @@ async def extract_text_from_image(
             ),
         )
         print(response.usage_metadata)
-        # Return the formatted JSON response
-        return response.text
+        
+        # Return both the text and token counts
+        return {
+            "text": response.text,
+            "input_tokens": response.usage_metadata.prompt_token_count,
+            "output_tokens": response.usage_metadata.candidates_token_count
+        }
     except Exception as e:
         print(f"Error generating content: {e}")
         # Try a fallback approach without the schema if there's an error
@@ -210,10 +215,18 @@ async def extract_text_from_image(
                     response_mime_type="application/json",
                 ),
             )
-            return fallback_response.text
+            return {
+                "text": fallback_response.text,
+                "input_tokens": 0,  # Default values for error case
+                "output_tokens": 0
+            }
         except Exception as f_e:
             print(f"Fallback also failed: {f_e}")
-            return f"Error: {e}"
+            return {
+                "text": f"Error: {e}",
+                "input_tokens": 0,
+                "output_tokens": 0
+            }
 
 
 async def extract_text_from_pdf(
@@ -254,8 +267,13 @@ async def extract_text_from_pdf(
             ),
         )
         print(response.usage_metadata)
-        # Return the formatted JSON response
-        return response.text
+        
+        # Return both the text and token counts
+        return {
+            "text": response.text,
+            "input_tokens": response.usage_metadata.prompt_token_count,
+            "output_tokens": response.usage_metadata.candidates_token_count
+        }
     except Exception as e:
         print(f"Error generating content from PDF: {e}")
         # Try a fallback approach without the schema if there's an error
@@ -270,10 +288,18 @@ async def extract_text_from_pdf(
                     response_mime_type="application/json",
                 ),
             )
-            return fallback_response.text
+            return {
+                "text": fallback_response.text,
+                "input_tokens": 0,
+                "output_tokens": 0
+            }
         except Exception as f_e:
             print(f"PDF processing fallback also failed: {f_e}")
-            return f"Error: {e}"
+            return {
+                "text": f"Error: {e}",
+                "input_tokens": 0,
+                "output_tokens": 0
+            }
 
 
 def main():

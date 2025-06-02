@@ -9,7 +9,9 @@ export async function GET(
   { params }: { params: { fileId: string } }
 ) {
   try {
-    const fileId = parseInt(params.fileId);
+    // Use await when accessing params
+    const fileIdParam = await params.fileId;
+    const fileId = parseInt(fileIdParam);
     
     if (isNaN(fileId)) {
       return NextResponse.json(

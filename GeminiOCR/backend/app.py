@@ -15,13 +15,14 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 import json
 import logging
 import asyncio
 import fitz  # PyMuPDF for PDF handling
 import google.generativeai as genai  # Correct import for Google's Generative AI
+from sqlalchemy import func
 
 from db.database import get_db, engine
 from db.models import (
@@ -32,6 +33,7 @@ from db.models import (
     ProcessingJob,
     File as DBFile,
     DocumentFile,
+    ApiUsage,
 )
 import main as ocr_processor
 from main import extract_text_from_image, extract_text_from_pdf
@@ -604,10 +606,16 @@ async def process_document_task(
         # Handle based on file type
         if file_extension in ['.jpg', '.jpeg', '.png']:
             # Process image directly
-            json_result = await extract_text_from_image(file_path, prompt_template, schema_json, api_key, model_name)
+            result = await extract_text_from_image(file_path, prompt_template, schema_json, api_key, model_name)
+            json_result = result["text"]
+            input_tokens = result["input_tokens"]
+            output_tokens = result["output_tokens"]
         elif file_extension == '.pdf':
-            # Process PDF directly using the new method
-            json_result = await extract_text_from_pdf(file_path, prompt_template, schema_json, api_key, model_name)
+            # Process PDF directly
+            result = await extract_text_from_pdf(file_path, prompt_template, schema_json, api_key, model_name)
+            json_result = result["text"]
+            input_tokens = result["input_tokens"]
+            output_tokens = result["output_tokens"]
         else:
             # Unsupported file type
             raise ValueError(f"Unsupported file type: {file_extension}")
@@ -676,6 +684,16 @@ async def process_document_task(
         )
 
         db.add(excel_doc_file)
+
+        # Record API usage in database
+        api_usage = ApiUsage(
+            job_id=job_id,
+            input_token_count=input_tokens,
+            output_token_count=output_tokens,
+            api_call_timestamp=datetime.now()
+        )
+        db.add(api_usage)
+        db.commit()
 
         # Update job status to success
         job.status = "success"
@@ -904,6 +922,71 @@ def get_companies_for_document_type(doc_type_id: int, db: Session = Depends(get_
             "updated_at": company.updated_at.isoformat(),
         }
         for company in companies_query
+    ]
+
+
+@app.get("/api/admin/usage/daily", response_model=List[dict])
+async def get_daily_usage(db: Session = Depends(get_db)):
+    """Get daily token usage for the last 30 days."""
+    # SQL query using SQLAlchemy to get daily usage
+    thirty_days_ago = datetime.now() - timedelta(days=30)
+    
+    query = db.query(
+        func.date_trunc('day', ApiUsage.api_call_timestamp).label('date'),
+        func.sum(ApiUsage.input_token_count).label('input_tokens'),
+        func.sum(ApiUsage.output_token_count).label('output_tokens'),
+        func.count(ApiUsage.usage_id).label('request_count')
+    ).filter(
+        ApiUsage.api_call_timestamp >= thirty_days_ago
+    ).group_by(
+        func.date_trunc('day', ApiUsage.api_call_timestamp)
+    ).order_by(
+        func.date_trunc('day', ApiUsage.api_call_timestamp)
+    )
+    
+    results = query.all()
+    
+    return [
+        {
+            "date": result.date.strftime("%Y-%m-%d"),
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "total_tokens": result.input_tokens + result.output_tokens,
+            "request_count": result.request_count
+        }
+        for result in results
+    ]
+
+@app.get("/api/admin/usage/monthly", response_model=List[dict])
+async def get_monthly_usage(db: Session = Depends(get_db)):
+    """Get monthly token usage for the last 12 months."""
+    # SQL query using SQLAlchemy to get monthly usage
+    twelve_months_ago = datetime.now() - timedelta(days=365)
+    
+    query = db.query(
+        func.date_trunc('month', ApiUsage.api_call_timestamp).label('month'),
+        func.sum(ApiUsage.input_token_count).label('input_tokens'),
+        func.sum(ApiUsage.output_token_count).label('output_tokens'),
+        func.count(ApiUsage.usage_id).label('request_count')
+    ).filter(
+        ApiUsage.api_call_timestamp >= twelve_months_ago
+    ).group_by(
+        func.date_trunc('month', ApiUsage.api_call_timestamp)
+    ).order_by(
+        func.date_trunc('month', ApiUsage.api_call_timestamp)
+    )
+    
+    results = query.all()
+    
+    return [
+        {
+            "month": result.month.strftime("%Y-%m"),
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "total_tokens": result.input_tokens + result.output_tokens,
+            "request_count": result.request_count
+        }
+        for result in results
     ]
 
 
