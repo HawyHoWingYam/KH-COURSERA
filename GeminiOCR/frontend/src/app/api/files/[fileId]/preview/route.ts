@@ -1,24 +1,9 @@
 import { NextResponse } from 'next/server';
-import { readFile } from 'fs/promises';
-import * as XLSX from 'xlsx';
 import path from 'path';
 import fs from 'fs/promises';
-import { Pool } from 'pg';
+import * as XLSX from 'xlsx';
 
-// Set up PostgreSQL connection pool
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:admin@localhost:5432/document_processing_platform',
-});
-
-// Define interfaces for database results
-interface FileRecord {
-  file_id: number;
-  file_name: string;
-  file_path: string;
-  file_size: number;
-  file_type: string;
-}
-
+// The route that handles file preview requests
 export async function GET(
   request: Request,
   { params }: { params: { fileId: string } }
@@ -35,72 +20,40 @@ export async function GET(
     
     console.log(`Processing preview request for file ID: ${fileId}`);
     
-    // Query database to get file information
-    let fileRecord: FileRecord | null = null;
+    // Get the actual file information from your backend
+    const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'}/files/${fileId}`);
     
-    try {
-      // Get file path from database
-      const client = await pool.connect();
-      try {
-        const result = await client.query(
-          `SELECT f.file_id, f.file_name, f.file_path, f.file_size, f.file_type
-           FROM files f
-           WHERE f.file_id = $1`,
-          [fileId]
-        );
-        
-        if (result.rows.length > 0) {
-          fileRecord = result.rows[0] as FileRecord;
-        }
-      } finally {
-        client.release();
-      }
-    } catch (dbError) {
-      console.error('Database error:', dbError);
+    if (!response.ok) {
       return NextResponse.json(
-        { error: 'Failed to query database' },
-        { status: 500 }
+        { error: `Failed to get file information: ${response.statusText}` },
+        { status: response.status }
       );
     }
     
-    if (!fileRecord) {
-      console.error(`File record not found for ID: ${fileId}`);
+    const fileInfo = await response.json();
+    console.log(`File info:`, fileInfo);
+    
+    // Now fetch the actual file content from your backend download endpoint
+    const fileResponse = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'}/download/${fileId}`);
+    
+    if (!fileResponse.ok) {
       return NextResponse.json(
-        { error: 'File record not found in database' },
-        { status: 404 }
+        { error: `Failed to download file: ${fileResponse.statusText}` },
+        { status: fileResponse.status }
       );
     }
-    
-    console.log(`File record found: ${JSON.stringify(fileRecord)}`);
-    
-    // Construct the full path to the file
-    // Adjust the path joining based on your actual file storage structure
-    const filePath = path.join(process.cwd(), '..', 'backend', fileRecord.file_path);
-    
-    console.log(`Attempting to read file at: ${filePath}`);
-    
-    // Check if file exists
-    try {
-      await fs.access(filePath);
-      console.log(`File found at: ${filePath}`);
-    } catch (e) {
-      console.error(`File not found at: ${filePath}`);
-      return NextResponse.json(
-        { error: `File not found at path: ${filePath}` },
-        { status: 404 }
-      );
-    }
-    
+
     // Process the file based on type
-    if (fileRecord.file_name.endsWith('.json')) {
-      const fileContent = await readFile(filePath, 'utf-8');
-      const jsonData = JSON.parse(fileContent);
+    if (fileInfo.file_name.endsWith('.json')) {
+      // For JSON files, just pass through the response
+      const jsonData = await fileResponse.json();
       return NextResponse.json(jsonData);
     }
     
-    if (fileRecord.file_name.endsWith('.xlsx') || fileRecord.file_name.endsWith('.xls')) {
-      const fileContent = await readFile(filePath);
-      const workbook = XLSX.read(fileContent, { type: 'buffer' });
+    if (fileInfo.file_name.endsWith('.xlsx') || fileInfo.file_name.endsWith('.xls')) {
+      // For Excel files, need to convert to a table format
+      const arrayBuffer = await fileResponse.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { type: 'array' });
       const sheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[sheetName];
       

@@ -604,10 +604,10 @@ async def process_document_task(
         # Handle based on file type
         if file_extension in ['.jpg', '.jpeg', '.png']:
             # Process image directly
-            json_result = extract_text_from_image(file_path, prompt_template, schema_json, api_key, model_name)
+            json_result = await extract_text_from_image(file_path, prompt_template, schema_json, api_key, model_name)
         elif file_extension == '.pdf':
             # Process PDF directly using the new method
-            json_result = extract_text_from_pdf(file_path, prompt_template, schema_json, api_key, model_name)
+            json_result = await extract_text_from_pdf(file_path, prompt_template, schema_json, api_key, model_name)
         else:
             # Unsupported file type
             raise ValueError(f"Unsupported file type: {file_extension}")

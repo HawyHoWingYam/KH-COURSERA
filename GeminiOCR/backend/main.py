@@ -10,6 +10,7 @@ import tempfile
 import json
 from datetime import datetime
 import pandas as pd
+import asyncio
 
 
 def preprocess_image(image_path):
@@ -163,15 +164,12 @@ def get_response_schema(doc_type, provider_name):
         return None
 
 
-def extract_text_from_image(
+async def extract_text_from_image(
     image_path, enhanced_prompt, response_schema, api_key, model_name
 ):
     """
-    Extract text from image using the enhanced pipeline.
+    Extract text from image using the enhanced pipeline (async version).
     """
-    # Preprocess the image to enhance text
-    # processed_image_path = preprocess_image(image_path)
-    # processed_image = PIL.Image.open(processed_image_path)
     processed_image = PIL.Image.open(image_path)
 
     # Configure Gemini API
@@ -180,18 +178,18 @@ def extract_text_from_image(
     # Configure the model
     model = genai.GenerativeModel(
         model_name=model_name,
-        ##model_name="gemini-2.5-flash",
         generation_config={
-            "temperature": 0.3,  # Lower temperature for more deterministic OCR results
+            "temperature": 0.3,
             "top_p": 0.95,
             "top_k": 40,
-            # "max_output_tokens": 8192,
         },
     )
 
     # Make API request with proper structure for response schema
     try:
-        response = model.generate_content(
+        # Use asyncio.to_thread to run the blocking API call in a separate thread
+        response = await asyncio.to_thread(
+            model.generate_content,
             contents=[enhanced_prompt, processed_image],
             generation_config=genai.GenerationConfig(
                 response_mime_type="application/json",
@@ -205,7 +203,8 @@ def extract_text_from_image(
         print(f"Error generating content: {e}")
         # Try a fallback approach without the schema if there's an error
         try:
-            fallback_response = model.generate_content(
+            fallback_response = await asyncio.to_thread(
+                model.generate_content,
                 contents=[enhanced_prompt, processed_image],
                 generation_config=genai.GenerationConfig(
                     response_mime_type="application/json",
@@ -217,11 +216,11 @@ def extract_text_from_image(
             return f"Error: {e}"
 
 
-def extract_text_from_pdf(
+async def extract_text_from_pdf(
     pdf_path, enhanced_prompt, response_schema, api_key, model_name
 ):
     """
-    Extract text directly from PDF using Gemini API.
+    Extract text directly from PDF using Gemini API (async version).
     """
     # Configure Gemini API
     genai.configure(api_key=api_key)
@@ -237,13 +236,14 @@ def extract_text_from_pdf(
             "temperature": 0.3,
             "top_p": 0.95,
             "top_k": 40,
-            # "max_output_tokens": 8192,
         },
     )
 
     # Make API request with PDF
     try:
-        response = model.generate_content(
+        # Use asyncio.to_thread to run the blocking API call in a separate thread
+        response = await asyncio.to_thread(
+            model.generate_content,
             contents=[
                 enhanced_prompt,
                 {"mime_type": "application/pdf", "data": pdf_data},
@@ -260,7 +260,8 @@ def extract_text_from_pdf(
         print(f"Error generating content from PDF: {e}")
         # Try a fallback approach without the schema if there's an error
         try:
-            fallback_response = model.generate_content(
+            fallback_response = await asyncio.to_thread(
+                model.generate_content,
                 contents=[
                     enhanced_prompt,
                     {"mime_type": "application/pdf", "data": pdf_data},
@@ -397,8 +398,10 @@ def main():
 
                 # Process the document
                 print(f"Processing {provider} {selected_doc_type}: {file_name}...")
-                extracted_text = extract_text_from_image(
-                    file_path, prompt, schema, API_KEY
+                extracted_text = asyncio.run(
+                    extract_text_from_image(
+                        file_path, prompt, schema, API_KEY
+                    )
                 )
 
                 # Create output directory if it doesn't exist
