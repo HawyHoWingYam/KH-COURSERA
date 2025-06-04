@@ -186,5 +186,16 @@ class ApiUsage(Base):
     input_token_count = Column(Integer, nullable=False)
     output_token_count = Column(Integer, nullable=False)
     api_call_timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    model = Column(String(255), nullable=False)
 
     job = relationship("ProcessingJob", back_populates="api_usages")
+
+
+class SystemSettings(Base):
+    __tablename__ = "system_settings"
+
+    setting_id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(255), unique=True, nullable=False)
+    value = Column(String(1000), nullable=False)
+    description = Column(String(500), nullable=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

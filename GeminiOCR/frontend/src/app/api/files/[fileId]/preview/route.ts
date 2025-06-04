@@ -9,13 +9,12 @@ export async function GET(
   { params }: { params: { fileId: string } }
 ) {
   try {
-    // Use await when accessing params
-    const fileIdParam = await params.fileId;
-    const fileId = parseInt(fileIdParam);
+    // Don't await params.fileId - it's not a Promise in App Router
+    const fileId = parseInt(params.fileId);
     
     if (isNaN(fileId)) {
       return NextResponse.json(
-        { error: 'Invalid file ID' },
+        { error: "Invalid file ID" },
         { status: 400 }
       );
     }

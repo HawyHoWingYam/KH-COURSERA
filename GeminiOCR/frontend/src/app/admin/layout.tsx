@@ -32,6 +32,12 @@ export default function AdminLayout({
             Configurations
           </Link>
           <Link 
+            href="/admin/config" 
+            className="block py-2 px-4 rounded hover:bg-slate-700"
+          >
+            System Settings
+          </Link>
+          <Link 
             href="/admin/usage" 
             className="block py-2 px-4 rounded hover:bg-slate-700"
           >

@@ -6,6 +6,10 @@ import AdminLayout from '@/components/admin/AdminLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts';
+import { DatePicker } from '@/components/ui/date-picker';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Button } from '@/components/ui/button';
+import { format } from 'date-fns';
 
 // Define types
 type UsageData = {
@@ -15,6 +19,12 @@ type UsageData = {
   output_tokens: number;
   total_tokens: number;
   request_count: number;
+  model?: string;
+};
+
+type ModelOption = {
+  value: string;
+  label: string;
 };
 
 export default function ApiUsagePage() {
@@ -23,7 +33,17 @@ export default function ApiUsagePage() {
   const [monthlyUsage, setMonthlyUsage] = useState<UsageData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-
+  
+  // New state for filters
+  const [startDate, setStartDate] = useState<Date | undefined>(
+    new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) // 30 days ago
+  );
+  const [endDate, setEndDate] = useState<Date | undefined>(new Date());
+  const [selectedModel, setSelectedModel] = useState<string>('all');
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([
+    { value: 'all', label: 'All Models' }
+  ]);
+  
   // Format number with commas
   const formatNumber = (num: number) => {
     return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -44,35 +64,55 @@ export default function ApiUsagePage() {
     );
   };
 
-  useEffect(() => {
-    const fetchDailyUsage = async () => {
-      try {
-        const data = await fetchApi<UsageData[]>('/admin/usage/daily');
-        setDailyUsage(data);
-      } catch (err) {
-        console.error('Error fetching daily usage:', err);
-        setError('Failed to load daily usage data');
-      }
-    };
+  // Fetch available models
+  const fetchModels = async () => {
+    try {
+      const models = await fetchApi<string[]>('/admin/models');
+      const options = [
+        { value: 'all', label: 'All Models' },
+        ...models.map(model => ({ value: model, label: model }))
+      ];
+      setModelOptions(options);
+    } catch (err) {
+      console.error('Error fetching models:', err);
+    }
+  };
 
-    const fetchMonthlyUsage = async () => {
-      try {
-        const data = await fetchApi<UsageData[]>('/admin/usage/monthly');
-        setMonthlyUsage(data);
-      } catch (err) {
-        console.error('Error fetching monthly usage:', err);
-        setError('Failed to load monthly usage data');
-      }
-    };
+  // Fetch usage data with filters
+  const fetchUsageData = async () => {
+    setIsLoading(true);
+    setError('');
 
-    const loadData = async () => {
-      setIsLoading(true);
-      setError('');
-      await Promise.all([fetchDailyUsage(), fetchMonthlyUsage()]);
+    try {
+      // Format dates for API
+      const formattedStartDate = startDate ? format(startDate, 'yyyy-MM-dd') : '';
+      const formattedEndDate = endDate ? format(endDate, 'yyyy-MM-dd') : '';
+      
+      // Build query params
+      const params = new URLSearchParams();
+      if (formattedStartDate) params.append('start_date', formattedStartDate);
+      if (formattedEndDate) params.append('end_date', formattedEndDate);
+      if (selectedModel !== 'all') params.append('model', selectedModel);
+
+      // Fetch daily data
+      const daily = await fetchApi<UsageData[]>(`/admin/usage/daily?${params.toString()}`);
+      setDailyUsage(daily);
+
+      // Fetch monthly data
+      const monthly = await fetchApi<UsageData[]>(`/admin/usage/monthly?${params.toString()}`);
+      setMonthlyUsage(monthly);
+    } catch (err) {
+      console.error('Error fetching usage data:', err);
+      setError('Failed to load usage data');
+    } finally {
       setIsLoading(false);
-    };
+    }
+  };
 
-    loadData();
+  // Initial load
+  useEffect(() => {
+    fetchModels();
+    fetchUsageData();
   }, []);
 
   // Get totals for current view
@@ -84,6 +124,46 @@ export default function ApiUsagePage() {
     <AdminLayout>
       <div className="container mx-auto px-4 py-8">
         <h1 className="text-3xl font-bold mb-8">Gemini API Usage Analytics</h1>
+        
+        {/* Filter Controls */}
+        <div className="mb-6 p-4 bg-white rounded-lg shadow grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
+            <DatePicker
+              date={startDate}
+              setDate={setStartDate}
+              className="w-full"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">End Date</label>
+            <DatePicker
+              date={endDate}
+              setDate={setEndDate}
+              className="w-full"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Model</label>
+            <Select value={selectedModel} onValueChange={setSelectedModel}>
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="Select model" />
+              </SelectTrigger>
+              <SelectContent>
+                {modelOptions.map(option => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-end">
+            <Button onClick={fetchUsageData} className="w-full">
+              Apply Filters
+            </Button>
+          </div>
+        </div>
         
         {isLoading ? (
           <div className="flex justify-center items-center h-64">

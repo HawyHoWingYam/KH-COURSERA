@@ -34,6 +34,7 @@ from db.models import (
     File as DBFile,
     DocumentFile,
     ApiUsage,
+    SystemSettings,
 )
 import main as ocr_processor
 from main import extract_text_from_image, extract_text_from_pdf
@@ -555,7 +556,15 @@ async def process_document(
         raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
 
 
-# Background processing task
+# Add a helper function to get settings
+def get_system_setting(db: Session, key: str, default: str = None):
+    """Get a system setting value by key."""
+    setting = db.query(SystemSettings).filter(SystemSettings.key == key).first()
+    if setting:
+        return setting.value
+    return default
+
+# Update the process_document_task function to use system settings
 async def process_document_task(
     job_id: int,
     file_path: str,
@@ -567,6 +576,16 @@ async def process_document_task(
     db = next(get_db())
 
     try:
+        # Get system settings
+        api_key = get_system_setting(db, 'gemini_api_key')
+        model_name = get_system_setting(db, 'default_model', 'gemini-1.5-pro')
+        temperature = float(get_system_setting(db, 'temperature', '0.3'))
+        top_p = float(get_system_setting(db, 'top_p', '0.95'))
+        top_k = int(get_system_setting(db, 'top_k', '40'))
+        
+        if not api_key:
+            raise ValueError("Gemini API key not configured in system settings")
+        
         # Update job status
         job = db.query(ProcessingJob).filter(ProcessingJob.job_id == job_id).first()
         if not job:
@@ -590,12 +609,6 @@ async def process_document_task(
         with open(schema_path, "r") as f:
             schema_json = json.load(f)
 
-        # Get API key from config
-        api_key = config.get("api_key")
-        model_name = config.get("model_name")
-        if not api_key:
-            raise ValueError("API key not found in config.json")
-
         await send_websocket_message(
             job_id, {"status": "processing", "message": "Extracting text from document..."}
         )
@@ -606,13 +619,31 @@ async def process_document_task(
         # Handle based on file type
         if file_extension in ['.jpg', '.jpeg', '.png']:
             # Process image directly
-            result = await extract_text_from_image(file_path, prompt_template, schema_json, api_key, model_name)
+            result = await extract_text_from_image(
+                file_path, 
+                prompt_template, 
+                schema_json, 
+                api_key, 
+                model_name,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k
+            )
             json_result = result["text"]
             input_tokens = result["input_tokens"]
             output_tokens = result["output_tokens"]
         elif file_extension == '.pdf':
             # Process PDF directly
-            result = await extract_text_from_pdf(file_path, prompt_template, schema_json, api_key, model_name)
+            result = await extract_text_from_pdf(
+                file_path, 
+                prompt_template, 
+                schema_json, 
+                api_key, 
+                model_name,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k
+            )
             json_result = result["text"]
             input_tokens = result["input_tokens"]
             output_tokens = result["output_tokens"]
@@ -685,12 +716,14 @@ async def process_document_task(
 
         db.add(excel_doc_file)
 
+        
         # Record API usage in database
         api_usage = ApiUsage(
             job_id=job_id,
             input_token_count=input_tokens,
             output_token_count=output_tokens,
-            api_call_timestamp=datetime.now()
+            api_call_timestamp=datetime.now(),
+            model=model_name
         )
         db.add(api_usage)
         db.commit()
@@ -925,70 +958,266 @@ def get_companies_for_document_type(doc_type_id: int, db: Session = Depends(get_
     ]
 
 
-@app.get("/api/admin/usage/daily", response_model=List[dict])
-async def get_daily_usage(db: Session = Depends(get_db)):
-    """Get daily token usage for the last 30 days."""
-    # SQL query using SQLAlchemy to get daily usage
-    thirty_days_ago = datetime.now() - timedelta(days=30)
-    
-    query = db.query(
-        func.date_trunc('day', ApiUsage.api_call_timestamp).label('date'),
-        func.sum(ApiUsage.input_token_count).label('input_tokens'),
-        func.sum(ApiUsage.output_token_count).label('output_tokens'),
-        func.count(ApiUsage.usage_id).label('request_count')
-    ).filter(
-        ApiUsage.api_call_timestamp >= thirty_days_ago
-    ).group_by(
-        func.date_trunc('day', ApiUsage.api_call_timestamp)
-    ).order_by(
-        func.date_trunc('day', ApiUsage.api_call_timestamp)
-    )
-    
-    results = query.all()
-    
-    return [
-        {
-            "date": result.date.strftime("%Y-%m-%d"),
-            "input_tokens": result.input_tokens,
-            "output_tokens": result.output_tokens,
-            "total_tokens": result.input_tokens + result.output_tokens,
-            "request_count": result.request_count
-        }
-        for result in results
-    ]
+@app.get("/admin/models")
+async def get_models(db: Session = Depends(get_db)):
+    """Get a list of all unique models used in API calls."""
+    try:
+        # Query for distinct models
+        result = db.query(ApiUsage.model).distinct().all()
+        models = [row[0] for row in result if row[0]]  # Filter out None values
+        return models
+    except Exception as e:
+        logger.error(f"Error fetching models: {str(e)}")
+        return []
 
-@app.get("/api/admin/usage/monthly", response_model=List[dict])
-async def get_monthly_usage(db: Session = Depends(get_db)):
-    """Get monthly token usage for the last 12 months."""
-    # SQL query using SQLAlchemy to get monthly usage
-    twelve_months_ago = datetime.now() - timedelta(days=365)
-    
-    query = db.query(
-        func.date_trunc('month', ApiUsage.api_call_timestamp).label('month'),
-        func.sum(ApiUsage.input_token_count).label('input_tokens'),
-        func.sum(ApiUsage.output_token_count).label('output_tokens'),
-        func.count(ApiUsage.usage_id).label('request_count')
-    ).filter(
-        ApiUsage.api_call_timestamp >= twelve_months_ago
-    ).group_by(
-        func.date_trunc('month', ApiUsage.api_call_timestamp)
-    ).order_by(
-        func.date_trunc('month', ApiUsage.api_call_timestamp)
-    )
-    
-    results = query.all()
-    
-    return [
-        {
-            "month": result.month.strftime("%Y-%m"),
-            "input_tokens": result.input_tokens,
-            "output_tokens": result.output_tokens,
-            "total_tokens": result.input_tokens + result.output_tokens,
-            "request_count": result.request_count
+@app.get("/admin/usage/daily")
+async def get_daily_usage(
+    start_date: str = None,
+    end_date: str = None,
+    model: str = None,
+    doc_type_id: int = None,
+    company_id: int = None,
+    db: Session = Depends(get_db)
+):
+    """Get daily token usage with optional filters."""
+    try:
+        # Parse date strings to datetime objects
+        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d") if start_date else datetime.now() - timedelta(days=30)
+        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d") if end_date else datetime.now()
+        
+        # Base query
+        query = db.query(
+            func.date_trunc('day', ApiUsage.api_call_timestamp).label('date'),
+            func.sum(ApiUsage.input_token_count).label('input_tokens'),
+            func.sum(ApiUsage.output_token_count).label('output_tokens'),
+            func.count(ApiUsage.usage_id).label('request_count')
+        )
+        
+        # Apply filters
+        query = query.filter(ApiUsage.api_call_timestamp >= start_date_obj)
+        
+        # Add one day to include the end date fully
+        query = query.filter(ApiUsage.api_call_timestamp < end_date_obj + timedelta(days=1))
+            
+        if model and model != 'all':
+            query = query.filter(ApiUsage.model == model)
+            
+        if doc_type_id:
+            query = query.filter(ApiUsage.doc_type_id == doc_type_id)
+            
+        if company_id:
+            query = query.filter(ApiUsage.company_id == company_id)
+        
+        # Group and order
+        query = query.group_by(
+            func.date_trunc('day', ApiUsage.api_call_timestamp)
+        ).order_by(
+            func.date_trunc('day', ApiUsage.api_call_timestamp)
+        )
+        
+        results = query.all()
+        
+        # Convert query results to a dictionary with date as key
+        results_dict = {
+            result.date.strftime("%Y-%m-%d"): {
+                "date": result.date.strftime("%Y-%m-%d"),
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "total_tokens": result.input_tokens + result.output_tokens,
+                "request_count": result.request_count
+            }
+            for result in results
         }
-        for result in results
-    ]
+        
+        # Create a list of all dates in the range
+        all_dates = []
+        current_date = start_date_obj
+        while current_date <= end_date_obj:
+            date_str = current_date.strftime("%Y-%m-%d")
+            all_dates.append(date_str)
+            current_date += timedelta(days=1)
+        
+        # Fill in missing dates with zero values
+        complete_results = []
+        for date_str in all_dates:
+            if date_str in results_dict:
+                complete_results.append(results_dict[date_str])
+            else:
+                complete_results.append({
+                    "date": date_str,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "request_count": 0
+                })
+        
+        return complete_results
+    except Exception as e:
+        logger.error(f"Error fetching daily usage: {str(e)}")
+        return []
 
+@app.get("/admin/usage/monthly")
+async def get_monthly_usage(
+    start_date: str = None,
+    end_date: str = None,
+    model: str = None,
+    doc_type_id: int = None,
+    company_id: int = None,
+    db: Session = Depends(get_db)
+):
+    """Get monthly token usage with optional filters."""
+    try:
+        # Parse date strings to datetime objects
+        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d") if start_date else datetime.now() - timedelta(days=365)
+        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d") if end_date else datetime.now()
+        
+        # Base query
+        query = db.query(
+            func.date_trunc('month', ApiUsage.api_call_timestamp).label('month'),
+            func.sum(ApiUsage.input_token_count).label('input_tokens'),
+            func.sum(ApiUsage.output_token_count).label('output_tokens'),
+            func.count(ApiUsage.usage_id).label('request_count')
+        )
+        
+        # Apply filters
+        if start_date:
+            query = query.filter(ApiUsage.api_call_timestamp >= start_date)
+        else:
+            # Default to last 12 months
+            twelve_months_ago = datetime.now() - timedelta(days=365)
+            query = query.filter(ApiUsage.api_call_timestamp >= twelve_months_ago)
+            
+        if end_date:
+            # Add one day to include the end date fully
+            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+            query = query.filter(ApiUsage.api_call_timestamp < end_date_obj)
+            
+        if model and model != 'all':
+            query = query.filter(ApiUsage.model == model)
+        
+        if doc_type_id:
+            query = query.filter(ApiUsage.doc_type_id == doc_type_id)
+            
+        if company_id:
+            query = query.filter(ApiUsage.company_id == company_id)
+        
+        # Group and order
+        query = query.group_by(
+            func.date_trunc('month', ApiUsage.api_call_timestamp)
+        ).order_by(
+            func.date_trunc('month', ApiUsage.api_call_timestamp)
+        )
+        
+        results = query.all()
+        
+        # Convert query results to a dictionary with month as key
+        results_dict = {
+            result.month.strftime("%Y-%m"): {
+                "month": result.month.strftime("%Y-%m"),
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "total_tokens": result.input_tokens + result.output_tokens,
+                "request_count": result.request_count
+            }
+            for result in results
+        }
+        
+        # Create a list of all months in the range
+        all_months = []
+        current_date = start_date_obj.replace(day=1)  # Start at first day of month
+        end_month = end_date_obj.replace(day=1)
+        
+        while current_date <= end_month:
+            month_str = current_date.strftime("%Y-%m")
+            all_months.append(month_str)
+            # Move to next month
+            if current_date.month == 12:
+                current_date = current_date.replace(year=current_date.year + 1, month=1)
+            else:
+                current_date = current_date.replace(month=current_date.month + 1)
+        
+        # Fill in missing months with zero values
+        complete_results = []
+        for month_str in all_months:
+            if month_str in results_dict:
+                complete_results.append(results_dict[month_str])
+            else:
+                complete_results.append({
+                    "month": month_str,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "request_count": 0
+                })
+        
+        return complete_results
+    except Exception as e:
+        logger.error(f"Error fetching monthly usage: {str(e)}")
+        return []
+
+@app.get("/admin/settings")
+async def get_settings(db: Session = Depends(get_db)):
+    """Get all system settings."""
+    try:
+        settings = db.query(SystemSettings).all()
+        return [
+            {
+                "key": setting.key,
+                "value": mask_sensitive_value(setting.key, setting.value),
+                "description": setting.description,
+                "updated_at": setting.updated_at.isoformat() if setting.updated_at else None
+            }
+            for setting in settings
+        ]
+    except Exception as e:
+        logger.error(f"Error fetching settings: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def mask_sensitive_value(key, value):
+    """Mask sensitive values like API keys."""
+    sensitive_keys = ['api_key', 'password', 'secret']
+    if any(sensitive_word in key.lower() for sensitive_word in sensitive_keys) and value:
+        # Show just the first and last 4 characters
+        if len(value) > 8:
+            return value[:4] + '*' * (len(value) - 8) + value[-4:]
+        else:
+            return '*' * len(value)
+    return value
+
+@app.put("/admin/settings/{key}")
+async def update_setting(key: str, update: dict, db: Session = Depends(get_db)):
+    """Update a system setting."""
+    try:
+        if 'value' not in update:
+            raise HTTPException(status_code=400, detail="Value is required")
+            
+        setting = db.query(SystemSettings).filter(SystemSettings.key == key).first()
+        if not setting:
+            # If setting doesn't exist, create it
+            setting = SystemSettings(key=key, value=update['value'])
+            db.add(setting)
+        else:
+            # Update existing setting
+            setting.value = update['value']
+            
+        db.commit()
+        
+        return {"message": f"Setting {key} updated successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating setting: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/settings/models")
+async def get_available_models():
+    """Get list of available Gemini models."""
+    return [
+        {"id": "gemini-1.0-pro", "name": "Gemini 1.0 Pro"},
+        {"id": "gemini-1.5-pro", "name": "Gemini 1.5 Pro"},
+        {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash"},
+        {"id": "gemini-1.5-pro-preview", "name": "Gemini 1.5 Pro Preview"}
+    ]
 
 if __name__ == "__main__":
     import uvicorn

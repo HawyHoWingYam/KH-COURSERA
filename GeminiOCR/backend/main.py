@@ -165,7 +165,14 @@ def get_response_schema(doc_type, provider_name):
 
 
 async def extract_text_from_image(
-    image_path, enhanced_prompt, response_schema, api_key, model_name
+    image_path, 
+    enhanced_prompt, 
+    response_schema, 
+    api_key, 
+    model_name,
+    temperature=0.3,
+    top_p=0.95,
+    top_k=40
 ):
     """
     Extract text from image using the enhanced pipeline (async version).
@@ -175,13 +182,13 @@ async def extract_text_from_image(
     # Configure Gemini API
     genai.configure(api_key=api_key)
 
-    # Configure the model
+    # Configure the model with passed parameters
     model = genai.GenerativeModel(
         model_name=model_name,
         generation_config={
-            "temperature": 0.3,
-            "top_p": 0.95,
-            "top_k": 40,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
         },
     )
 
