@@ -9,6 +9,7 @@ export default function Jobs() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   const [pendingUpload, setPendingUpload] = useState<any>(null);
+  const [currentUser, setCurrentUser] = useState<any>(null);
 
   useEffect(() => {
     // Check for pending uploads from sessionStorage
@@ -17,6 +18,16 @@ export default function Jobs() {
       setPendingUpload(JSON.parse(uploadInfo));
       // Clear it after displaying
       sessionStorage.removeItem('pendingUpload');
+    }
+
+    // Get current user from localStorage
+    const userStr = localStorage.getItem('user');
+    if (userStr) {
+      try {
+        setCurrentUser(JSON.parse(userStr));
+      } catch (e) {
+        console.error('Error parsing user data:', e);
+      }
     }
 
     // Load jobs with a timeout to avoid infinite loading
@@ -41,7 +52,9 @@ export default function Jobs() {
         .catch(err => console.error('Error refreshing jobs:', err));
     }, 300000);
 
-    return () => clearInterval(refreshInterval);
+    return () => {
+      clearInterval(refreshInterval);
+    };
   }, []);
 
   return (
@@ -98,6 +111,15 @@ export default function Jobs() {
                   STATUS
                 </th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  UPLOADER
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  DEPARTMENT
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  DOCUMENT TYPE
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   DATE
                 </th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -126,6 +148,15 @@ export default function Jobs() {
                     </span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                    {job.uploader?.name || 'Unknown'}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                    {job.department?.name || 'Unassigned'}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                    {job.document_type?.name || 'Unknown'}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-gray-500">
                     {new Date(job.created_at).toLocaleString()}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-blue-600 hover:text-blue-800">
@@ -145,7 +176,9 @@ export default function Jobs() {
               {!isLoading && jobs.length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-6 py-4 text-center text-sm text-gray-500">
-                    No jobs found.
+                    {currentUser?.role === 'admin' 
+                      ? 'No documents have been processed yet.' 
+                      : `No documents have been processed in ${currentUser?.department_id ? 'your department' : 'by you'} yet.`}
                   </td>
                 </tr>
               )}

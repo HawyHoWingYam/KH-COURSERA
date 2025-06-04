@@ -1,8 +1,24 @@
 'use client';
 
+import { useAuthCheck } from '@/hooks/useAuthCheck';
 import Link from 'next/link';
 
 export default function Home() {
+  const { isAuthenticated, isLoading } = useAuthCheck();
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    // This will not usually render as the hook will redirect
+    return null;
+  }
+
   return (
     <div className="min-h-screen">
       <div className="bg-white shadow-md rounded-lg p-6 max-w-2xl mx-auto mt-10">

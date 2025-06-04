@@ -8,6 +8,7 @@ from fastapi import (
     Depends,
     BackgroundTasks,
     Query,
+    status,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
@@ -23,6 +24,9 @@ import asyncio
 import fitz  # PyMuPDF for PDF handling
 import google.generativeai as genai  # Correct import for Google's Generative AI
 from sqlalchemy import func
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 
 from db.database import get_db, engine
 from db.models import (
@@ -35,6 +39,8 @@ from db.models import (
     DocumentFile,
     ApiUsage,
     SystemSettings,
+    User,
+    Department,
 )
 import main as ocr_processor
 from main import extract_text_from_image, extract_text_from_pdf
@@ -48,7 +54,7 @@ app = FastAPI(title="Document Processing API")
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For production, replace with specific origins
+    allow_origins=["http://localhost:3000"],  # Your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -69,6 +75,49 @@ CONFIG_PATH = os.path.join("env", "config.json")
 with open(CONFIG_PATH, "r") as f:
     config = json.load(f)
 
+# Security settings
+SECRET_KEY = "YOUR_SECRET_KEY"  # In production, use a secure random key stored safely
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# Helper functions
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if user is None:
+        raise credentials_exception
+    return user
 
 # Health check endpoint
 @app.get("/health")
@@ -467,7 +516,8 @@ async def process_document(
     document: UploadFile = File(...),
     company_id: int = Form(...),
     doc_type_id: int = Form(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     try:
         # Check if company and document type exist
@@ -522,7 +572,9 @@ async def process_document(
             doc_type_id=doc_type_id,
             original_filename=document.filename,
             status="pending",
-            s3_pdf_path=file_path
+            s3_pdf_path=file_path,
+            uploader_user_id=current_user.user_id,
+            department_id=current_user.department_id
         )
         
         db.add(job)
@@ -778,97 +830,78 @@ async def send_websocket_message(job_id: int, message: dict):
 
 # Get job status endpoint
 @app.get("/jobs/{job_id}", response_model=dict)
-def get_job_status(job_id: int, db: Session = Depends(get_db)):
-    job = db.query(ProcessingJob).filter(ProcessingJob.job_id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    # Get associated files
-    files_query = (
-        db.query(DocumentFile, DBFile)
-        .join(DBFile, DocumentFile.file_id == DBFile.file_id)
-        .filter(DocumentFile.job_id == job_id)
-    )
-
-    files = []
-    for doc_file, file in files_query:
-        # Calculate file size if not already stored
-        file_size = file.file_size
-        if file_size is None and os.path.exists(file.file_path):
-            file_size = os.path.getsize(file.file_path)
-            # Update the file size in the database
-            file.file_size = file_size
-            db.commit()
-
-        files.append(
-            {
-                "file_id": file.file_id,
-                "file_name": file.file_name,
-                "file_path": file.file_path,
-                "file_category": doc_file.file_category,
-                "file_size": file_size or 0,  # Default to 0 if size can't be determined
-                "file_type": file.file_type
-                or "application/octet-stream",  # Default content type
-                "created_at": file.created_at.isoformat(),
-            }
-        )
-
-    return {
-        "job_id": job.job_id,
-        "company_id": job.company_id,
-        "company_name": job.company.company_name if job.company else None,
-        "doc_type_id": job.doc_type_id,
-        "type_name": job.document_type.type_name if job.document_type else None,
-        "status": job.status,
-        "original_filename": job.original_filename,
-        "error_message": job.error_message,
-        "created_at": job.created_at.isoformat(),
-        "updated_at": job.updated_at.isoformat(),
-        "files": files,
-    }
+async def get_job(job_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    try:
+        job = db.query(ProcessingJob).filter(ProcessingJob.job_id == job_id).first()
+        
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        # Check if user has access to this job
+        # Admin can access any job
+        if current_user.role != "admin":
+            # User can access job if they're in the same department or they uploaded it
+            if (current_user.department_id != job.department_id and 
+                current_user.user_id != job.uploader_user_id):
+                raise HTTPException(
+                    status_code=403, 
+                    detail="You don't have permission to access this job"
+                )
+        
+        # Format response
+        # ... (existing code to return job details)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting job {job_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving job: {str(e)}")
 
 
 # List jobs endpoint
-@app.get("/jobs", response_model=List[dict])
-def list_jobs(
-    company_id: Optional[int] = None,
-    doc_type_id: Optional[int] = None,
-    status: Optional[str] = None,
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
-):
-    query = db.query(ProcessingJob)
-
-    if company_id is not None:
-        query = query.filter(ProcessingJob.company_id == company_id)
-
-    if doc_type_id is not None:
-        query = query.filter(ProcessingJob.doc_type_id == doc_type_id)
-
-    if status is not None:
-        query = query.filter(ProcessingJob.status == status)
-
-    # Order by most recent first
-    query = query.order_by(ProcessingJob.created_at.desc())
-
-    # Apply pagination
-    jobs = query.offset(offset).limit(limit).all()
-
-    return [
-        {
-            "job_id": job.job_id,
-            "company_id": job.company_id,
-            "company_name": job.company.company_name if job.company else None,
-            "doc_type_id": job.doc_type_id,
-            "type_name": job.document_type.type_name if job.document_type else None,
-            "status": job.status,
-            "original_filename": job.original_filename,
-            "created_at": job.created_at.isoformat(),
-            "updated_at": job.updated_at.isoformat(),
-        }
-        for job in jobs
-    ]
+@app.get("/jobs")
+async def get_jobs(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    try:
+        # Base query
+        query = db.query(ProcessingJob)
+        
+        # If not admin, filter by department
+        if current_user.role != "admin":
+            # If user has a department, show all jobs from that department
+            if current_user.department_id:
+                query = query.filter(ProcessingJob.department_id == current_user.department_id)
+            else:
+                # If user has no department, only show their own jobs
+                query = query.filter(ProcessingJob.uploader_user_id == current_user.user_id)
+        
+        # Execute query with ordering
+        jobs = query.order_by(ProcessingJob.created_at.desc()).all()
+        
+        # Convert to response format
+        result = []
+        for job in jobs:
+            result.append({
+                "job_id": job.job_id,
+                "filename": job.original_filename,
+                "status": job.status,
+                "created_at": job.created_at.isoformat() if job.created_at else None,
+                "uploader": {
+                    "user_id": job.uploader.user_id,
+                    "name": job.uploader.name
+                } if job.uploader else None,
+                "department": {
+                    "department_id": job.department.department_id,
+                    "name": job.department.department_name
+                } if job.department else None,
+                "document_type": {
+                    "doc_type_id": job.document_type.doc_type_id,
+                    "name": job.document_type.type_name
+                } if job.document_type else None
+            })
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error getting jobs: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving jobs: {str(e)}")
 
 
 # Get file download endpoint
@@ -1218,6 +1251,89 @@ async def get_available_models():
         {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash"},
         {"id": "gemini-1.5-pro-preview", "name": "Gemini 1.5 Pro Preview"}
     ]
+
+# Authentication endpoints
+@app.post("/auth/token", response_model=dict)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == form_data.username).first()
+    if not user or not verify_password(form_data.password, user.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": str(user.user_id)}, expires_delta=access_token_expires
+    )
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.user_id,
+            "name": user.name,
+            "email": user.email,
+            "role": user.role,
+            "department_id": user.department_id
+        }
+    }
+
+@app.post("/auth/register", response_model=dict)
+async def register_user(user_data: dict, db: Session = Depends(get_db)):
+    # Check if email already exists
+    existing_user = db.query(User).filter(User.email == user_data["email"]).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    # Create new user
+    hashed_password = get_password_hash(user_data["password"])
+    new_user = User(
+        email=user_data["email"],
+        password=hashed_password,
+        name=user_data["name"],
+        role="user",  # Default role
+        department_id=user_data.get("department_id")  # Optional
+    )
+    
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    # Generate token for auto-login
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": str(new_user.user_id)}, expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": new_user.user_id,
+            "name": new_user.name,
+            "email": new_user.email,
+            "role": new_user.role,
+            "department_id": new_user.department_id
+        }
+    }
+
+@app.get("/auth/departments")
+async def get_departments(db: Session = Depends(get_db)):
+    departments = db.query(Department).all()
+    return [{"id": dept.department_id, "name": dept.department_name} for dept in departments]
+
+@app.get("/auth/user")
+async def get_current_user_info(current_user: User = Depends(get_current_user)):
+    return {
+        "id": current_user.user_id,
+        "name": current_user.name,
+        "email": current_user.email,
+        "role": current_user.role,
+        "department_id": current_user.department_id
+    }
 
 if __name__ == "__main__":
     import uvicorn

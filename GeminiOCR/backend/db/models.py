@@ -38,23 +38,22 @@ class Department(Base):
         secondary="department_doc_type_access",
         back_populates="departments",
     )
+    jobs = relationship("ProcessingJob", back_populates="department")
 
 
 class User(Base):
     __tablename__ = "users"
 
-    user_id = Column(Integer, primary_key=True)
-    cognito_sub = Column(String(36), unique=True, nullable=False)
-    name = Column(String(255), nullable=False)
-    email = Column(String(255), unique=True, nullable=False)
-    role = Column(String(50), nullable=False, default="user")
-    department_id = Column(
-        Integer,
-        ForeignKey("departments.department_id", ondelete="SET NULL"),
-        nullable=True,
-    )
+    user_id = Column(Integer, primary_key=True, index=True)
+    password = Column(String, nullable=True)
+    cognito_sub = Column(String, unique=True, nullable=True)
+    name = Column(String, nullable=False)
+    email = Column(String, unique=True, nullable=False)
+    role = Column(String, nullable=False, default="user")
+    department_id = Column(Integer, ForeignKey("departments.department_id"), nullable=True)
 
     department = relationship("Department", back_populates="users")
+    jobs = relationship("ProcessingJob", back_populates="uploader")
 
 
 class DocumentType(Base):
@@ -141,21 +140,29 @@ class File(Base):
 class ProcessingJob(Base):
     __tablename__ = "processing_jobs"
 
-    job_id = Column(Integer, primary_key=True)
-    company_id = Column(Integer, ForeignKey("companies.company_id"), nullable=False)
-    doc_type_id = Column(
-        Integer, ForeignKey("document_types.doc_type_id"), nullable=False
-    )
-    s3_pdf_path = Column(String(255), nullable=True)
-    status = Column(String(20), nullable=False, default="pending")
-    original_filename = Column(String(255), nullable=False)
+    job_id = Column(Integer, primary_key=True, index=True)
+    original_filename = Column(String, nullable=False)
+    s3_pdf_path = Column(String, nullable=False)
+    s3_json_path = Column(String, nullable=True)
+    s3_excel_path = Column(String, nullable=True)
+    status = Column(String, nullable=False)
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
+    uploader_user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False)
+    doc_type_id = Column(Integer, ForeignKey("document_types.doc_type_id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    
+    department_id = Column(Integer, ForeignKey("departments.department_id"), nullable=True)
+    department = relationship("Department", back_populates="jobs")
+    
+    company_id = Column(Integer, ForeignKey("companies.company_id"), nullable=True)
     company = relationship("Company", back_populates="jobs")
+    
     document_type = relationship("DocumentType", back_populates="jobs")
-    files = relationship("DocumentFile", back_populates="job")
+    
+    uploader = relationship("User", back_populates="jobs")
+    
+    document_files = relationship("DocumentFile", back_populates="job")
+    db_files = relationship("DBFile", back_populates="job")
     api_usages = relationship("ApiUsage", back_populates="job")
 
 
@@ -163,12 +170,12 @@ class DocumentFile(Base):
     __tablename__ = "document_files"
 
     document_file_id = Column(Integer, primary_key=True)
-    job_id = Column(Integer, ForeignKey("processing_jobs.job_id"), nullable=False)
+    job_id = Column(Integer, ForeignKey("processing_jobs.job_id"), nullable=True)
     file_id = Column(Integer, ForeignKey("files.file_id"), nullable=False)
     file_category = Column(String(50), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    job = relationship("ProcessingJob", back_populates="files")
+    job = relationship("ProcessingJob", back_populates="document_files")
     file = relationship("File", back_populates="document_files")
 
     __table_args__ = (UniqueConstraint("job_id", "file_category"),)
@@ -199,3 +206,18 @@ class SystemSettings(Base):
     value = Column(String(1000), nullable=False)
     description = Column(String(500), nullable=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class DBFile(Base):
+    __tablename__ = "db_files"
+    
+    file_id = Column(Integer, primary_key=True, index=True)
+    file_path = Column(String(255), nullable=False, unique=True)
+    file_name = Column(String(255), nullable=False)
+    file_size = Column(Integer, nullable=True)
+    file_type = Column(String(50), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    job_id = Column(Integer, ForeignKey("processing_jobs.job_id"), nullable=True)
+    
+    job = relationship("ProcessingJob", back_populates="db_files")

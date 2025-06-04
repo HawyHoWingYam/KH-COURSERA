@@ -59,29 +59,28 @@ export interface Job {
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
 
 // Generic fetch function with error handling
-export async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
-  const fullUrl = `${API_BASE_URL}${url.startsWith('/') ? url : `/${url}`}`;
+export async function fetchApi<T>(url: string, options: RequestInit = {}): Promise<T> {
+  const apiUrl = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}${url.startsWith('/') ? url : `/${url}`}`;
   
-  console.log(`Fetching from: ${fullUrl}`);
+  // Get token from localStorage
+  const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
   
-  const response = await fetch(fullUrl, {
+  // Set authorization header if token exists
+  const headers = {
+    ...options.headers,
+    ...(token && { Authorization: `Bearer ${token}` }),
+  };
+  
+  const response = await fetch(apiUrl, {
     ...options,
-    headers: {
-      ...options?.headers,
-    },
+    headers,
   });
-
+  
   if (!response.ok) {
-    const errorText = await response.text();
-    console.error('API error:', errorText);
-    try {
-      const errorJson = JSON.parse(errorText);
-      throw new Error(errorJson.detail || 'API request failed');
-    } catch {
-      throw new Error(`API request failed: ${response.status} ${response.statusText}`);
-    }
+    const errorData = await response.json().catch(() => ({ detail: 'An error occurred' }));
+    throw new Error(errorData.detail || `API error: ${response.status}`);
   }
-
+  
   return response.json();
 }
 
