@@ -11,6 +11,7 @@ import json
 from datetime import datetime
 import pandas as pd
 import asyncio
+import time
 
 
 def preprocess_image(image_path):
@@ -234,6 +235,7 @@ async def extract_text_from_pdf(
 ):
     """
     Extract text directly from PDF using Gemini API (async version).
+    With timing and status tracking.
     """
     # Configure Gemini API
     genai.configure(api_key=api_key)
@@ -252,9 +254,17 @@ async def extract_text_from_pdf(
         },
     )
 
-    # Make API request with PDF
+    # Start timing
+    start_time = time.time()
+    status_updates = {}
+    status_updates["status"] = "processing"
+    status_updates["started_at"] = start_time
+    
     try:
-        # Use asyncio.to_thread to run the blocking API call in a separate thread
+        # Update status
+        status_updates["step"] = "calling_gemini_api"
+        print(f"Gemini API processing started at {start_time}")
+        # Make API request with PDF
         response = await asyncio.to_thread(
             model.generate_content,
             contents=[
@@ -263,21 +273,40 @@ async def extract_text_from_pdf(
             ],
             generation_config=genai.GenerationConfig(
                 response_mime_type="application/json",
-                response_schema=response_schema,
+                # response_schema=response_schema,
             ),
         )
-        print(response.usage_metadata)
         
-        # Return both the text and token counts
+        # Calculate processing time
+        processing_time = time.time() - start_time
+        status_updates["processing_time_seconds"] = processing_time
+        status_updates["status"] = "success"
+        
+        print(f"Gemini API processing completed in {processing_time:.2f} seconds")
+        print(response.usage_metadata)
+        print(response.text)
+        # Return both the text, token counts and timing metrics
         return {
             "text": response.text,
             "input_tokens": response.usage_metadata.prompt_token_count,
-            "output_tokens": response.usage_metadata.candidates_token_count
+            "output_tokens": response.usage_metadata.candidates_token_count,
+            "processing_time": processing_time,
+            "status_updates": status_updates
         }
     except Exception as e:
-        print(f"Error generating content from PDF: {e}")
+        # Calculate time until error
+        error_time = time.time() - start_time
+        status_updates["processing_time_seconds"] = error_time
+        status_updates["status"] = "error"
+        status_updates["error_message"] = str(e)
+        
+        print(f"Error generating content from PDF after {error_time:.2f} seconds: {e}")
+        
         # Try a fallback approach without the schema if there's an error
         try:
+            fallback_start = time.time()
+            status_updates["step"] = "fallback_attempt"
+            
             fallback_response = await asyncio.to_thread(
                 model.generate_content,
                 contents=[
@@ -288,17 +317,38 @@ async def extract_text_from_pdf(
                     response_mime_type="application/json",
                 ),
             )
+            
+            fallback_time = time.time() - fallback_start
+            total_time = time.time() - start_time
+            status_updates["fallback_time_seconds"] = fallback_time
+            status_updates["total_processing_time_seconds"] = total_time
+            status_updates["status"] = "success_with_fallback"
+            
+            print(f"Fallback succeeded in {fallback_time:.2f} seconds (total: {total_time:.2f}s)")
+            
             return {
                 "text": fallback_response.text,
-                "input_tokens": 0,
-                "output_tokens": 0
+                "input_tokens": fallback_response.usage_metadata.prompt_token_count if hasattr(fallback_response, 'usage_metadata') else 0,
+                "output_tokens": fallback_response.usage_metadata.candidates_token_count if hasattr(fallback_response, 'usage_metadata') else 0,
+                "processing_time": total_time,
+                "status_updates": status_updates
             }
         except Exception as f_e:
-            print(f"PDF processing fallback also failed: {f_e}")
+            fallback_error_time = time.time() - fallback_start
+            total_time = time.time() - start_time
+            status_updates["fallback_time_seconds"] = fallback_error_time
+            status_updates["total_processing_time_seconds"] = total_time
+            status_updates["status"] = "failed"
+            status_updates["fallback_error"] = str(f_e)
+            
+            print(f"PDF processing fallback also failed after {total_time:.2f}s: {f_e}")
+            
             return {
                 "text": f"Error: {e}",
                 "input_tokens": 0,
-                "output_tokens": 0
+                "output_tokens": 0,
+                "processing_time": total_time,
+                "status_updates": status_updates
             }
 
 

@@ -23,6 +23,7 @@ import asyncio
 import fitz  # PyMuPDF for PDF handling
 import google.generativeai as genai  # Correct import for Google's Generative AI
 from sqlalchemy import func
+import time
 
 from db.database import get_db, engine
 from db.models import (
@@ -573,9 +574,11 @@ async def process_document_task(
             logger.error(f"Job {job_id} not found")
             return
 
-        # Update the s3_pdf_path to fix the NOT NULL constraint
+        # Update only existing columns
         job.s3_pdf_path = file_path
         job.status = "processing"
+        # Comment out the timing fields until database is updated
+        # job.processing_started_at = datetime.now()
         db.commit()
 
         # Send WebSocket notification
@@ -603,22 +606,48 @@ async def process_document_task(
         # Process the document based on file type
         file_extension = os.path.splitext(file_path)[1].lower()
         
+        process_start_time = time.time()
+        
         # Handle based on file type
         if file_extension in ['.jpg', '.jpeg', '.png']:
             # Process image directly
+            await send_websocket_message(
+                job_id, {"status": "processing", "message": "Processing image with Gemini API..."}
+            )
             result = await extract_text_from_image(file_path, prompt_template, schema_json, api_key, model_name)
-            json_result = result["text"]
-            input_tokens = result["input_tokens"]
-            output_tokens = result["output_tokens"]
         elif file_extension == '.pdf':
             # Process PDF directly
+            await send_websocket_message(
+                job_id, {"status": "processing", "message": "Processing PDF with Gemini API..."}
+            )
             result = await extract_text_from_pdf(file_path, prompt_template, schema_json, api_key, model_name)
-            json_result = result["text"]
-            input_tokens = result["input_tokens"]
-            output_tokens = result["output_tokens"]
         else:
             # Unsupported file type
             raise ValueError(f"Unsupported file type: {file_extension}")
+
+        # Extract results
+        json_result = result["text"]
+        input_tokens = result["input_tokens"]
+        output_tokens = result["output_tokens"]
+        processing_time = result["processing_time"]
+        
+        # Update WebSocket with processing time
+        await send_websocket_message(
+            job_id, {"status": "processing", "message": f"API processing completed in {processing_time:.2f} seconds"}
+        )
+
+        # Record API usage with timing metrics
+        api_usage = ApiUsage(
+            job_id=job_id,
+            input_token_count=input_tokens,
+            output_token_count=output_tokens,
+            api_call_timestamp=datetime.now(),
+            model=model_name,
+            processing_time_seconds=processing_time,
+            status=result["status_updates"]["status"]
+        )
+        db.add(api_usage)
+        db.commit()
 
         # Generate output files
         output_dir = os.path.join("uploads", company_code, doc_type_code, str(job_id))
@@ -685,26 +714,20 @@ async def process_document_task(
 
         db.add(excel_doc_file)
 
-        # Record API usage in database
-        api_usage = ApiUsage(
-            job_id=job_id,
-            input_token_count=input_tokens,
-            output_token_count=output_tokens,
-            api_call_timestamp=datetime.now()
-        )
-        db.add(api_usage)
-        db.commit()
-
-        # Update job status to success
+        # Update job completion info
         job.status = "success"
+        # Comment out these lines
+        # job.processing_completed_at = datetime.now()
+        # job.processing_time_seconds = time.time() - process_start_time
         db.commit()
 
-        # Send WebSocket notification
+        # Send WebSocket notification with timing info
         await send_websocket_message(
             job_id,
             {
                 "status": "success",
-                "message": "Document processing completed",
+                "message": f"Document processing completed in {processing_time:.2f} seconds",
+                "processing_time": processing_time,
                 "files": [
                     {
                         "id": json_file.file_id,
@@ -723,10 +746,14 @@ async def process_document_task(
     except Exception as e:
         logger.error(f"Error in background processing task for job {job_id}: {str(e)}")
 
-        # Update job status to error
+        # Update job status to error with timing info
         if job:
             job.status = "error"
             job.error_message = str(e)
+            # Comment out these lines
+            # job.processing_completed_at = datetime.now()
+            # if hasattr(job, 'processing_started_at') and job.processing_started_at:
+            #     job.processing_time_seconds = (datetime.now() - job.processing_started_at).total_seconds()
             db.commit()
 
         # Send WebSocket notification
