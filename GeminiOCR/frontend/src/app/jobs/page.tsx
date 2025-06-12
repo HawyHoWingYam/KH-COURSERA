@@ -31,12 +31,12 @@ export default function Jobs() {
         setIsLoading(false);
       });
 
-    // Set up an interval to refresh job data every 10 seconds
+    // Set up an interval to refresh job data every 300 seconds
     const refreshInterval = setInterval(() => {
       fetchJobs()
         .then(updatedJobs => setJobs(updatedJobs))
         .catch(err => console.error('Error refreshing jobs:', err));
-    }, 10000);
+    }, 300000);
 
     return () => clearInterval(refreshInterval);
   }, []);

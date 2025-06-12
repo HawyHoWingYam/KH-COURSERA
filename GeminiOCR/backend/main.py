@@ -10,6 +10,8 @@ import tempfile
 import json
 from datetime import datetime
 import pandas as pd
+import asyncio
+import time
 
 
 def preprocess_image(image_path):
@@ -163,15 +165,12 @@ def get_response_schema(doc_type, provider_name):
         return None
 
 
-def extract_text_from_image(
+async def extract_text_from_image(
     image_path, enhanced_prompt, response_schema, api_key, model_name
 ):
     """
-    Extract text from image using the enhanced pipeline.
+    Extract text from image using the enhanced pipeline (async version).
     """
-    # Preprocess the image to enhance text
-    # processed_image_path = preprocess_image(image_path)
-    # processed_image = PIL.Image.open(processed_image_path)
     processed_image = PIL.Image.open(image_path)
 
     # Configure Gemini API
@@ -180,18 +179,18 @@ def extract_text_from_image(
     # Configure the model
     model = genai.GenerativeModel(
         model_name=model_name,
-        ##model_name="gemini-2.5-flash",
         generation_config={
-            "temperature": 0.3,  # Lower temperature for more deterministic OCR results
+            "temperature": 0.3,
             "top_p": 0.95,
             "top_k": 40,
-            # "max_output_tokens": 8192,
         },
     )
 
     # Make API request with proper structure for response schema
     try:
-        response = model.generate_content(
+        # Use asyncio.to_thread to run the blocking API call in a separate thread
+        response = await asyncio.to_thread(
+            model.generate_content,
             contents=[enhanced_prompt, processed_image],
             generation_config=genai.GenerationConfig(
                 response_mime_type="application/json",
@@ -199,29 +198,44 @@ def extract_text_from_image(
             ),
         )
         print(response.usage_metadata)
-        # Return the formatted JSON response
-        return response.text
+        
+        # Return both the text and token counts
+        return {
+            "text": response.text,
+            "input_tokens": response.usage_metadata.prompt_token_count,
+            "output_tokens": response.usage_metadata.candidates_token_count
+        }
     except Exception as e:
         print(f"Error generating content: {e}")
         # Try a fallback approach without the schema if there's an error
         try:
-            fallback_response = model.generate_content(
+            fallback_response = await asyncio.to_thread(
+                model.generate_content,
                 contents=[enhanced_prompt, processed_image],
                 generation_config=genai.GenerationConfig(
                     response_mime_type="application/json",
                 ),
             )
-            return fallback_response.text
+            return {
+                "text": fallback_response.text,
+                "input_tokens": 0,  # Default values for error case
+                "output_tokens": 0
+            }
         except Exception as f_e:
             print(f"Fallback also failed: {f_e}")
-            return f"Error: {e}"
+            return {
+                "text": f"Error: {e}",
+                "input_tokens": 0,
+                "output_tokens": 0
+            }
 
 
-def extract_text_from_pdf(
+async def extract_text_from_pdf(
     pdf_path, enhanced_prompt, response_schema, api_key, model_name
 ):
     """
-    Extract text directly from PDF using Gemini API.
+    Extract text directly from PDF using Gemini API (async version).
+    With timing and status tracking.
     """
     # Configure Gemini API
     genai.configure(api_key=api_key)
@@ -237,30 +251,64 @@ def extract_text_from_pdf(
             "temperature": 0.3,
             "top_p": 0.95,
             "top_k": 40,
-            # "max_output_tokens": 8192,
         },
     )
 
-    # Make API request with PDF
+    # Start timing
+    start_time = time.time()
+    status_updates = {}
+    status_updates["status"] = "processing"
+    status_updates["started_at"] = start_time
+    
     try:
-        response = model.generate_content(
+        # Update status
+        status_updates["step"] = "calling_gemini_api"
+        print(f"Gemini API processing started at {start_time}")
+        # Make API request with PDF
+        response = await asyncio.to_thread(
+            model.generate_content,
             contents=[
                 enhanced_prompt,
                 {"mime_type": "application/pdf", "data": pdf_data},
             ],
             generation_config=genai.GenerationConfig(
                 response_mime_type="application/json",
-                response_schema=response_schema,
+                # response_schema=response_schema,
             ),
         )
+        
+        # Calculate processing time
+        processing_time = time.time() - start_time
+        status_updates["processing_time_seconds"] = processing_time
+        status_updates["status"] = "success"
+        
+        print(f"Gemini API processing completed in {processing_time:.2f} seconds")
         print(response.usage_metadata)
-        # Return the formatted JSON response
-        return response.text
+        print(response.text)
+        # Return both the text, token counts and timing metrics
+        return {
+            "text": response.text,
+            "input_tokens": response.usage_metadata.prompt_token_count,
+            "output_tokens": response.usage_metadata.candidates_token_count,
+            "processing_time": processing_time,
+            "status_updates": status_updates
+        }
     except Exception as e:
-        print(f"Error generating content from PDF: {e}")
+        # Calculate time until error
+        error_time = time.time() - start_time
+        status_updates["processing_time_seconds"] = error_time
+        status_updates["status"] = "error"
+        status_updates["error_message"] = str(e)
+        
+        print(f"Error generating content from PDF after {error_time:.2f} seconds: {e}")
+        
         # Try a fallback approach without the schema if there's an error
         try:
-            fallback_response = model.generate_content(
+            fallback_start = time.time()
+            status_updates["step"] = "fallback_attempt"
+            
+            fallback_response = await asyncio.to_thread(
+                model.generate_content,
                 contents=[
                     enhanced_prompt,
                     {"mime_type": "application/pdf", "data": pdf_data},
@@ -269,10 +317,39 @@ def extract_text_from_pdf(
                     response_mime_type="application/json",
                 ),
             )
-            return fallback_response.text
+            
+            fallback_time = time.time() - fallback_start
+            total_time = time.time() - start_time
+            status_updates["fallback_time_seconds"] = fallback_time
+            status_updates["total_processing_time_seconds"] = total_time
+            status_updates["status"] = "success_with_fallback"
+            
+            print(f"Fallback succeeded in {fallback_time:.2f} seconds (total: {total_time:.2f}s)")
+            
+            return {
+                "text": fallback_response.text,
+                "input_tokens": fallback_response.usage_metadata.prompt_token_count if hasattr(fallback_response, 'usage_metadata') else 0,
+                "output_tokens": fallback_response.usage_metadata.candidates_token_count if hasattr(fallback_response, 'usage_metadata') else 0,
+                "processing_time": total_time,
+                "status_updates": status_updates
+            }
         except Exception as f_e:
-            print(f"PDF processing fallback also failed: {f_e}")
-            return f"Error: {e}"
+            fallback_error_time = time.time() - fallback_start
+            total_time = time.time() - start_time
+            status_updates["fallback_time_seconds"] = fallback_error_time
+            status_updates["total_processing_time_seconds"] = total_time
+            status_updates["status"] = "failed"
+            status_updates["fallback_error"] = str(f_e)
+            
+            print(f"PDF processing fallback also failed after {total_time:.2f}s: {f_e}")
+            
+            return {
+                "text": f"Error: {e}",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "processing_time": total_time,
+                "status_updates": status_updates
+            }
 
 
 def main():
@@ -397,8 +474,10 @@ def main():
 
                 # Process the document
                 print(f"Processing {provider} {selected_doc_type}: {file_name}...")
-                extracted_text = extract_text_from_image(
-                    file_path, prompt, schema, API_KEY
+                extracted_text = asyncio.run(
+                    extract_text_from_image(
+                        file_path, prompt, schema, API_KEY
+                    )
                 )
 
                 # Create output directory if it doesn't exist

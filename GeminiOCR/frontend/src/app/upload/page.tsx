@@ -19,6 +19,8 @@ export default function Upload() {
   const [zoomLevel, setZoomLevel] = useState(1);
   const fileUrlRef = useRef<string | null>(null);
 
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB in bytes
+
   // Fetch document types on mount
   useEffect(() => {
     const loadDocumentTypes = async () => {
@@ -75,28 +77,33 @@ export default function Upload() {
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setError(null);
-    // Clean up previous URL if exists
-    if (fileUrlRef.current) {
-      URL.revokeObjectURL(fileUrlRef.current);
-    }
-    
     const selectedFile = e.target.files?.[0];
-    if (selectedFile) {
-      setFile(selectedFile);
-      
-      // Create object URL for preview
-      const fileUrl = URL.createObjectURL(selectedFile);
-      setPreviewUrl(fileUrl);
-      fileUrlRef.current = fileUrl;
-      
-      // Reset zoom level for new file
-      setZoomLevel(1);
-    } else {
+
+    // Clear previous errors
+    setError('');
+
+    // Check if file exists
+    if (!selectedFile) {
       setFile(null);
-      setPreviewUrl(null);
-      fileUrlRef.current = null;
+      return;
     }
+
+    // Check file size
+    if (selectedFile.size > MAX_FILE_SIZE) {
+      setError(`File size (${formatFileSize(selectedFile.size)}) exceeds the ${formatFileSize(MAX_FILE_SIZE)} limit`);
+      setFile(null);
+      // Reset the file input
+      e.target.value = '';
+      return;
+    }
+
+    setFile(selectedFile);
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return bytes + ' bytes';
+    else if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    else return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   };
 
   // Function to determine if file is PDF
@@ -108,11 +115,11 @@ export default function Upload() {
   const zoomIn = () => {
     setZoomLevel(prev => Math.min(prev + 0.25, 3)); // Max zoom 3x
   };
-  
+
   const zoomOut = () => {
     setZoomLevel(prev => Math.max(prev - 0.25, 0.5)); // Min zoom 0.5x
   };
-  
+
   const resetZoom = () => {
     setZoomLevel(1);
   };
@@ -132,21 +139,26 @@ export default function Upload() {
       formData.append('doc_type_id', selectedType.toString());
       formData.append('company_id', selectedCompany.toString());
       
-      // Store file info in sessionStorage for notification
+      // Start the upload in the background without awaiting
+      processDocument(formData)
+        .then(result => {
+          console.log('Upload completed in background:', result);
+          // Could use this to update a notification system if needed
+        })
+        .catch(err => {
+          console.error('Background upload failed:', err);
+        });
+      
+      // Store upload info in sessionStorage for jobs page to display a notification
       sessionStorage.setItem('pendingUpload', JSON.stringify({
         fileName: file.name,
         documentType: documentTypes.find(dt => dt.doc_type_id === selectedType)?.type_name || 'Unknown',
         timestamp: new Date().toISOString()
       }));
       
-      // Start the upload process in the background WITHOUT awaiting it
-      // This is the key change - we don't wait for the response
-      processDocument(formData)
-        .then(result => console.log('Upload completed in background:', result))
-        .catch(err => console.error('Background upload failed:', err));
-      
-      // Immediately navigate to jobs page
+      // Navigate immediately to jobs page
       router.push('/jobs');
+      
     } catch (err) {
       setError('Failed to start upload');
       console.error(err);
@@ -219,7 +231,7 @@ export default function Upload() {
             <div className="flex justify-between items-center mb-2">
               <h3 className="text-lg font-medium">File Preview</h3>
               <div className="flex items-center space-x-2">
-                <button 
+                <button
                   type="button"
                   onClick={zoomOut}
                   className="p-2 rounded-full bg-gray-100 hover:bg-gray-200"
@@ -230,7 +242,7 @@ export default function Upload() {
                 <span className="text-sm font-medium">
                   {Math.round(zoomLevel * 100)}%
                 </span>
-                <button 
+                <button
                   type="button"
                   onClick={zoomIn}
                   className="p-2 rounded-full bg-gray-100 hover:bg-gray-200"
@@ -238,7 +250,7 @@ export default function Upload() {
                 >
                   <MdZoomIn size={18} />
                 </button>
-                <button 
+                <button
                   type="button"
                   onClick={resetZoom}
                   className="p-2 rounded-full bg-gray-100 hover:bg-gray-200 ml-2"
@@ -248,12 +260,12 @@ export default function Upload() {
                 </button>
               </div>
             </div>
-            
+
             <div className="border rounded-md overflow-hidden max-h-[500px]">
               {isPDF(file.name) ? (
                 <div>
                   <object
-                    data={`${previewUrl}#zoom=${zoomLevel * 100}`} 
+                    data={`${previewUrl}#zoom=${zoomLevel * 100}`}
                     type="application/pdf"
                     className="w-full h-[500px]"
                   >
@@ -265,16 +277,16 @@ export default function Upload() {
                 </div>
               ) : (
                 <div className="overflow-auto max-h-[500px] max-w-full" style={{ position: 'relative' }}>
-                  <div style={{ 
+                  <div style={{
                     minHeight: '100%',
                     minWidth: '100%',
                     display: 'flex',
                     justifyContent: 'center',
                     alignItems: 'center'
                   }}>
-                    <img 
-                      src={previewUrl} 
-                      alt="File preview" 
+                    <img
+                      src={previewUrl}
+                      alt="File preview"
                       style={{
                         transform: `scale(${zoomLevel})`,
                         transformOrigin: 'center center',

@@ -9,6 +9,7 @@ from sqlalchemy import (
     BigInteger,
     Enum,
     UniqueConstraint,
+    Float,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -153,6 +154,11 @@ class ProcessingJob(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Add timing fields
+    processing_started_at = Column(DateTime, nullable=True)
+    processing_completed_at = Column(DateTime, nullable=True)
+    processing_time_seconds = Column(Float, nullable=True)
+
     company = relationship("Company", back_populates="jobs")
     document_type = relationship("DocumentType", back_populates="jobs")
     files = relationship("DocumentFile", back_populates="job")
@@ -177,14 +183,16 @@ class DocumentFile(Base):
 class ApiUsage(Base):
     __tablename__ = "api_usage"
 
-    usage_id = Column(Integer, primary_key=True)
-    job_id = Column(
-        Integer,
-        ForeignKey("processing_jobs.job_id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    usage_id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(Integer, ForeignKey("processing_jobs.job_id"), nullable=False)
     input_token_count = Column(Integer, nullable=False)
     output_token_count = Column(Integer, nullable=False)
-    api_call_timestamp = Column(DateTime(timezone=True), server_default=func.now())
-
+    api_call_timestamp = Column(DateTime, default=datetime.now, nullable=False)
+    model = Column(String(255), nullable=False)
+    
+    # Add new fields for timing
+    processing_time_seconds = Column(Float, nullable=True)
+    status = Column(String(50), nullable=True)  # success, error, success_with_fallback, etc.
+    
+    # Existing relationships
     job = relationship("ProcessingJob", back_populates="api_usages")

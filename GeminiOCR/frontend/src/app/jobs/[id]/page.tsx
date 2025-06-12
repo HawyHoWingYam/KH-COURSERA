@@ -162,13 +162,19 @@ export default function JobDetails() {
     // If opening preview and we don't have the data yet, fetch it
     if (!previewStates[fileId] && !filePreviewData[fileId]) {
       try {
-        // Fix the path to match your Next.js route structure
+        console.log(`Fetching preview for file ${fileId}`);
+        
+        // This URL should work with your Next.js rewrites
         const response = await fetch(`/files/${fileId}/preview`);
         console.log(`Preview request status: ${response.status}`);
         
-        if (!response.ok) throw new Error(`Failed to load preview (${response.status})`);
+        if (!response.ok) {
+          throw new Error(`Failed to load preview (${response.status})`);
+        }
         
         const data = await response.json();
+        console.log('Preview data received:', data);
+        
         setFilePreviewData(prev => ({
           ...prev,
           [fileId]: data
