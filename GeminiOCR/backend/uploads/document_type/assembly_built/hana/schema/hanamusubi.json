@@ -33,6 +33,10 @@
                             "description": "A string of the 1RAW code",
                             "type": "string"
                         },
+                        "weight_per_pack": {
+                            "description": "A string of the weight per pack, default unit is G",
+                            "type": "string"
+                        },
                         "preopen_left": {
                             "description": "A string that the number in left side of preopen column",
                             "type": "string"

@@ -5,7 +5,7 @@ You are an expert AI assistant specialized in extracting structured data from ha
 **Detailed Extraction Instructions:**
 
 **1. Document-Level Information:**
-* **`remark.date`**: Extract the order date from the top right of the page.
+* **`remark.date`**: Extract the order date from the top right of the page, should be in DD/MM/YYYY format.
 * **`remark.staff`**: Extract the staff count ("人數") from the top far right.
 
 **2. Grouping Logic:**
@@ -18,6 +18,7 @@ You are an expert AI assistant specialized in extracting structured data from ha
 * **`working_in_progress.item_name`**: From the "原料名稱" column for the "2WIP" row.
 * **`raw_material.item_code`**: From the "原料編號" column for each "1RAW" row.
 * **`raw_material.item_name`**: From the "原料名稱" column for each "1RAW" row.
+* **`raw_material.weight_per_pack`**: From the column between "原料名稱" and "預開(包)" for each "1RAW" row.
 * **`raw_material.preopen_left` / `preopen_right`**: From the "預開(包)" column, which is split. Map the left-side number to `preopen_left` and the right-side number to `preopen_right`.
 * **`raw_material.replenishment_left` / `replenishment_right`**: From the "補充(包)" column, split into `replenishment_left` and `replenishment_right`.
 * **`raw_material.additional_left` / `additional_right`**: From the "額外加開(G)" column, split into `additional_left` and `additional_right`.

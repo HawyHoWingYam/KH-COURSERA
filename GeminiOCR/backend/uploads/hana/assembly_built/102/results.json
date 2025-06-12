@@ -1,0 +1,577 @@
+{
+  "remark": {
+    "date": "15/06/2025",
+    "staff": "27"
+  },
+  "groups": [
+    {
+      "working_in_progress": {
+        "item_code": "2WIP000004",
+        "item_name": "[御結]明太子沙律餡料"
+      },
+      "raw_material": [
+        {
+          "item_code": "1RAW000742",
+          "item_name": "辛口明太子OK5(新)",
+          "preopen_left": "",
+          "preopen_right": "64",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "9",
+          "dispose": "1",
+          "dispose_reason": "A"
+        },
+        {
+          "item_code": "1RAW000507",
+          "item_name": "新厚燒玉子(15切御結用)",
+          "preopen_left": "1520",
+          "preopen_right": "52",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "9",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000080",
+          "item_name": "HB沙律醬(業務用)",
+          "preopen_left": "100",
+          "preopen_right": "33",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "100",
+          "dispose": "2",
+          "dispose_reason": ""
+        }
+      ]
+    },
+    {
+      "working_in_progress": {
+        "item_code": "2WIP000006",
+        "item_name": "三文魚腩餡料(撈)"
+      },
+      "raw_material": [
+        {
+          "item_code": "1RAW000253",
+          "item_name": "三文魚腩(御結用)",
+          "preopen_left": "8",
+          "preopen_right": "2",
+          "replenishment_left": "77",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "11",
+          "dispose": "1",
+          "dispose_reason": "B"
+        },
+        {
+          "item_code": "1RAW000754",
+          "item_name": "燒鰻魚醬",
+          "preopen_left": "1",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "17",
+          "additional_right": "",
+          "remaining": "12",
+          "dispose": "2",
+          "dispose_reason": ""
+        }
+      ]
+    },
+    {
+      "working_in_progress": {
+        "item_code": "2WIP000040",
+        "item_name": "紅雪蟹肉沙律餡料"
+      },
+      "raw_material": [
+        {
+          "item_code": "1RAW000746",
+          "item_name": "新紅雪蟹肉A",
+          "preopen_left": "4",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "15",
+          "dispose": "5",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000080",
+          "item_name": "HB沙律醬(業務用)",
+          "preopen_left": "2",
+          "preopen_right": "",
+          "replenishment_left": "29",
+          "replenishment_right": "30",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "104",
+          "dispose": "4",
+          "dispose_reason": "C"
+        }
+      ]
+    },
+    {
+      "working_in_progress": {
+        "item_code": "2WIP001003",
+        "item_name": "OMU吞拿魚沙律拌料"
+      },
+      "raw_material": [
+        {
+          "item_code": "1RAW000750",
+          "item_name": "SAFCOL大豆油浸吞拿魚",
+          "preopen_left": "1",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "8",
+          "additional_right": "",
+          "remaining": "1128",
+          "dispose": "10",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000705",
+          "item_name": "高級濃麵汁",
+          "preopen_left": "1",
+          "preopen_right": "",
+          "replenishment_left": "7",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "7",
+          "dispose": "1",
+          "dispose_reason": "E"
+        },
+        {
+          "item_code": "1RAW000080",
+          "item_name": "HB沙律醬(業務用)",
+          "preopen_left": "2",
+          "preopen_right": "",
+          "replenishment_left": "2",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "9",
+          "dispose": "9",
+          "dispose_reason": ""
+        }
+      ]
+    },
+    {
+      "working_in_progress": {
+        "item_code": "2WIP001017",
+        "item_name": "吞拿魚沙律拌料(添加劑)"
+      },
+      "raw_material": [
+        {
+          "item_code": "1RAW000750",
+          "item_name": "SAFCOL大豆油浸吞拿魚碎",
+          "preopen_left": "6",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "16",
+          "additional_right": "",
+          "remaining": "5",
+          "dispose": "5",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000080",
+          "item_name": "HB沙律醬(業務用)",
+          "preopen_left": "2",
+          "preopen_right": "",
+          "replenishment_left": "4",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "201",
+          "dispose": "200",
+          "dispose_reason": "B"
+        },
+        {
+          "item_code": "1RAW000275",
+          "item_name": "照燒汁(Jumbo 用)",
+          "preopen_left": "3",
+          "preopen_right": "",
+          "replenishment_left": "14",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "3",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000699",
+          "item_name": "九州濃厚甜醬油",
+          "preopen_left": "3",
+          "preopen_right": "",
+          "replenishment_left": "3",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "6",
+          "dispose": "6",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000707",
+          "item_name": "食品增粘劑ES#a",
+          "preopen_left": "7",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "24",
+          "additional_right": "",
+          "remaining": "7",
+          "dispose": "",
+          "dispose_reason": ""
+        }
+      ]
+    },
+    {
+      "working_in_progress": {
+        "item_code": "2WIP001021",
+        "item_name": "OMU紅蟹蝦沙律拌料"
+      },
+      "raw_material": [
+        {
+          "item_code": "1RAW000625",
+          "item_name": "和風蝦沙律",
+          "preopen_left": "9",
+          "preopen_right": "",
+          "replenishment_left": "29",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "10",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000746",
+          "item_name": "新紅雪蟹肉A",
+          "preopen_left": "10",
+          "preopen_right": "",
+          "replenishment_left": "27",
+          "replenishment_right": "12",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "12",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000731",
+          "item_name": "金印芥末醬油漬",
+          "preopen_left": "18",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "22",
+          "additional_right": "13",
+          "remaining": "100",
+          "dispose": "5",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000735",
+          "item_name": "PLUS TIME Z-200(改)",
+          "preopen_left": "7",
+          "preopen_right": "",
+          "replenishment_left": "8",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "107",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000771",
+          "item_name": "頂好沙律醬",
+          "preopen_left": "60",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "300",
+          "dispose": "",
+          "dispose_reason": ""
+        }
+      ]
+    },
+    {
+      "working_in_progress": {
+        "item_code": "2WIP001029",
+        "item_name": "紫菜流心蛋黃醬拌料"
+      },
+      "raw_material": [
+        {
+          "item_code": "1RAW000464",
+          "item_name": "新蛋黃醬",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000789",
+          "item_name": "地雞昆布白湯汁",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000707",
+          "item_name": "食品增粘劑ES#a",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        }
+      ]
+    },
+    {
+      "working_in_progress": {
+        "item_code": "2WIP001034",
+        "item_name": "柚香炙燒鯖魚餡"
+      },
+      "raw_material": [
+        {
+          "item_code": "1RAW000817",
+          "item_name": "炙燒鯖魚碎",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000794",
+          "item_name": "乾柚子碎粒",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000808",
+          "item_name": "高知柚子醬油醋",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000275",
+          "item_name": "照燒汁(Jumbo用)",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        }
+      ]
+    },
+    {
+      "working_in_progress": {
+        "item_code": "2WIP001047",
+        "item_name": "豬肉鬆牛蒡"
+      },
+      "raw_material": [
+        {
+          "item_code": "1RAW000829",
+          "item_name": "豬肉鬆",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000092",
+          "item_name": "金平牛蒡",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        }
+      ]
+    },
+    {
+      "working_in_progress": {
+        "item_code": "2WIP001050",
+        "item_name": "柚子火腿蛋沙律拌料"
+      },
+      "raw_material": [
+        {
+          "item_code": "1RAW000836",
+          "item_name": "煙燻火腿粒",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000080",
+          "item_name": "HB沙律醬(業務用)",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        }
+      ]
+    },
+    {
+      "working_in_progress": {
+        "item_code": "",
+        "item_name": "柚子豚肉拌料"
+      },
+      "raw_material": [
+        {
+          "item_code": "1RAW000999",
+          "item_name": "熟豬頸肉切片1KG",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000794",
+          "item_name": "乾柚子碎粒",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000808",
+          "item_name": "高知柚子醬油醋",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000754",
+          "item_name": "燒鰻魚醬",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000707",
+          "item_name": "食品增粘劑ES#a",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        },
+        {
+          "item_code": "1RAW000735",
+          "item_name": "PLUS TIME Z-200(改)",
+          "preopen_left": "",
+          "preopen_right": "",
+          "replenishment_left": "",
+          "replenishment_right": "",
+          "additional_left": "",
+          "additional_right": "",
+          "remaining": "",
+          "dispose": "",
+          "dispose_reason": ""
+        }
+      ]
+    }
+  ]
+}
