@@ -629,7 +629,7 @@ async def process_document_task(
         json_result = result["text"]
         input_tokens = result["input_tokens"]
         output_tokens = result["output_tokens"]
-        processing_time = result["processing_time"]
+        processing_time = time.time() - process_start_time
         
         # Update WebSocket with processing time
         await send_websocket_message(
@@ -644,7 +644,7 @@ async def process_document_task(
             api_call_timestamp=datetime.now(),
             model=model_name,
             processing_time_seconds=processing_time,
-            status=result["status_updates"]["status"]
+            status="success"
         )
         db.add(api_usage)
         db.commit()
