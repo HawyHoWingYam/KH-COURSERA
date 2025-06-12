@@ -7,7 +7,7 @@ Please analyze the provided food retail shop invoice image and extract the follo
 1.  **Handwritten Annotations (手写文字 - 额外资料):**
     * Location: Usually at the very top, above or around the logo.
     * Content: Scan for any handwritten text. This might include:
-        * Customer Contact (客人联络方式) - (Handwritten Text)
+        * Customer Contact (客人联络方式) - must be telephone in 8 numbers (Handwritten Text)
         * Customer Name (客人名字) - (Handwritten Text)
         * Shop Code (店铺shop code, mostly should be abbreviations in 3 charaters) - (Handwritten Text)
         * Relevant Amounts (相关的金额) - (Handwritten Text)

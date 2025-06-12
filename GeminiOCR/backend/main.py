@@ -198,12 +198,12 @@ async def extract_text_from_image(
             ),
         )
         print(response.usage_metadata)
-        
+
         # Return both the text and token counts
         return {
             "text": response.text,
             "input_tokens": response.usage_metadata.prompt_token_count,
-            "output_tokens": response.usage_metadata.candidates_token_count
+            "output_tokens": response.usage_metadata.candidates_token_count,
         }
     except Exception as e:
         print(f"Error generating content: {e}")
@@ -219,15 +219,11 @@ async def extract_text_from_image(
             return {
                 "text": fallback_response.text,
                 "input_tokens": 0,  # Default values for error case
-                "output_tokens": 0
+                "output_tokens": 0,
             }
         except Exception as f_e:
             print(f"Fallback also failed: {f_e}")
-            return {
-                "text": f"Error: {e}",
-                "input_tokens": 0,
-                "output_tokens": 0
-            }
+            return {"text": f"Error: {e}", "input_tokens": 0, "output_tokens": 0}
 
 
 async def extract_text_from_pdf(
@@ -259,7 +255,7 @@ async def extract_text_from_pdf(
     status_updates = {}
     status_updates["status"] = "processing"
     status_updates["started_at"] = start_time
-    
+
     try:
         # Update status
         status_updates["step"] = "calling_gemini_api"
@@ -273,15 +269,15 @@ async def extract_text_from_pdf(
             ],
             generation_config=genai.GenerationConfig(
                 response_mime_type="application/json",
-                # response_schema=response_schema,
+                response_schema=response_schema,
             ),
         )
-        
+
         # Calculate processing time
         processing_time = time.time() - start_time
         status_updates["processing_time_seconds"] = processing_time
         status_updates["status"] = "success"
-        
+
         print(f"Gemini API processing completed in {processing_time:.2f} seconds")
         print(response.usage_metadata)
         print(response.text)
@@ -291,7 +287,7 @@ async def extract_text_from_pdf(
             "input_tokens": response.usage_metadata.prompt_token_count,
             "output_tokens": response.usage_metadata.candidates_token_count,
             "processing_time": processing_time,
-            "status_updates": status_updates
+            "status_updates": status_updates,
         }
     except Exception as e:
         # Calculate time until error
@@ -299,14 +295,14 @@ async def extract_text_from_pdf(
         status_updates["processing_time_seconds"] = error_time
         status_updates["status"] = "error"
         status_updates["error_message"] = str(e)
-        
+
         print(f"Error generating content from PDF after {error_time:.2f} seconds: {e}")
-        
+
         # Try a fallback approach without the schema if there's an error
         try:
             fallback_start = time.time()
             status_updates["step"] = "fallback_attempt"
-            
+
             fallback_response = await asyncio.to_thread(
                 model.generate_content,
                 contents=[
@@ -317,21 +313,31 @@ async def extract_text_from_pdf(
                     response_mime_type="application/json",
                 ),
             )
-            
+
             fallback_time = time.time() - fallback_start
             total_time = time.time() - start_time
             status_updates["fallback_time_seconds"] = fallback_time
             status_updates["total_processing_time_seconds"] = total_time
             status_updates["status"] = "success_with_fallback"
-            
-            print(f"Fallback succeeded in {fallback_time:.2f} seconds (total: {total_time:.2f}s)")
-            
+
+            print(
+                f"Fallback succeeded in {fallback_time:.2f} seconds (total: {total_time:.2f}s)"
+            )
+
             return {
                 "text": fallback_response.text,
-                "input_tokens": fallback_response.usage_metadata.prompt_token_count if hasattr(fallback_response, 'usage_metadata') else 0,
-                "output_tokens": fallback_response.usage_metadata.candidates_token_count if hasattr(fallback_response, 'usage_metadata') else 0,
+                "input_tokens": (
+                    fallback_response.usage_metadata.prompt_token_count
+                    if hasattr(fallback_response, "usage_metadata")
+                    else 0
+                ),
+                "output_tokens": (
+                    fallback_response.usage_metadata.candidates_token_count
+                    if hasattr(fallback_response, "usage_metadata")
+                    else 0
+                ),
                 "processing_time": total_time,
-                "status_updates": status_updates
+                "status_updates": status_updates,
             }
         except Exception as f_e:
             fallback_error_time = time.time() - fallback_start
@@ -340,15 +346,15 @@ async def extract_text_from_pdf(
             status_updates["total_processing_time_seconds"] = total_time
             status_updates["status"] = "failed"
             status_updates["fallback_error"] = str(f_e)
-            
+
             print(f"PDF processing fallback also failed after {total_time:.2f}s: {f_e}")
-            
+
             return {
                 "text": f"Error: {e}",
                 "input_tokens": 0,
                 "output_tokens": 0,
                 "processing_time": total_time,
-                "status_updates": status_updates
+                "status_updates": status_updates,
             }
 
 
@@ -475,9 +481,7 @@ def main():
                 # Process the document
                 print(f"Processing {provider} {selected_doc_type}: {file_name}...")
                 extracted_text = asyncio.run(
-                    extract_text_from_image(
-                        file_path, prompt, schema, API_KEY
-                    )
+                    extract_text_from_image(file_path, prompt, schema, API_KEY)
                 )
 
                 # Create output directory if it doesn't exist

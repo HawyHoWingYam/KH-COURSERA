@@ -98,10 +98,49 @@ def normalize_table_data(table_data: List[Dict]) -> pd.DataFrame:
 def json_to_excel(
     json_datas: Union[Dict, List], output_path: str, doc_type_code: str = None
 ) -> str:
-    # Create a single DataFrame from the data
-
+    # 確保json_datas是列表
+    if isinstance(json_datas, dict):
+        json_datas = [json_datas]
+    
+    # 創建主DataFrame
     main_df = None
+    
     for json_data in json_datas:
+       
+        # 處理單個對象的情況 - 將整個對象視為一行數據
+        if isinstance(json_data, dict):
+            # 扁平化嵌套字典
+            flat_data = {}
+            for key, value in json_data.items():
+                if isinstance(value, dict):
+                    # 處理嵌套字典
+                    nested_flat = flatten_dict(value, key)
+                    flat_data.update(nested_flat)
+                elif isinstance(value, str) and value.startswith('{') and value.endswith('}'):
+                    # 嘗試解析JSON字符串
+                    try:
+                        json_value = json.loads(value)
+                        if isinstance(json_value, dict):
+                            nested_flat = flatten_dict(json_value, key)
+                            flat_data.update(nested_flat)
+                        else:
+                            flat_data[key] = value
+                    except:
+                        flat_data[key] = value
+                else:
+                    # 一般值
+                    flat_data[key] = value
+            
+            # 創建單行DataFrame
+            row_df = pd.DataFrame([flat_data])
+            
+            # 合併到主DataFrame
+            if main_df is None:
+                main_df = row_df
+            else:
+                main_df = pd.concat([main_df, row_df], ignore_index=True)
+        
+        # 原有的表格處理邏輯
         sub_df = None
         for key, value in json_data.items():
             if (
@@ -109,58 +148,31 @@ def json_to_excel(
                 and value
                 and all(isinstance(x, dict) for x in value)
             ):
-                # Found a table, use this as the main structure
+                # 找到表格結構
                 table_df = normalize_table_data(value)
                 if not table_df.empty:
                     sub_df = table_df
                     break
-
-        # If no tables were found, create an empty DataFrame
-        if sub_df is None:
-            sub_df = pd.DataFrame()
-
-        # Inject metadata as columns
-        for key, value in json_data.items():
-            if isinstance(value, list) and all(isinstance(x, dict) for x in value):
-                # Skip tables
-                continue
-
-            # Handle simple values and text extraction
-            if isinstance(value, dict):
-                extracted_value = extract_text_value(value)
-                if extracted_value != value and not isinstance(extracted_value, dict):
-                    # Simple text extraction
-                    col_name = format_key_for_display(key)
-                    sub_df[col_name] = extracted_value
-                else:
-                    # Flatten nested dictionaries
-                    flattened = flatten_dict(value)
-                    for sub_key, sub_value in flattened.items():
-                        full_key = f"{key}_{sub_key}" if sub_key else key
-                        col_name = format_key_for_display(full_key)
-                        sub_df[col_name] = sub_value
-            else:
-                # Simple metadata field
-                col_name = format_key_for_display(key)
-                sub_df[col_name] = value
-
-        if sub_df is not None:
+        
+        # 如果找到表格結構，合併到主DataFrame
+        if sub_df is not None and not sub_df.empty:
             if main_df is None:
                 main_df = sub_df
             else:
                 main_df = pd.concat([main_df, sub_df], ignore_index=True)
-
-    # Write to Excel
+    
+   
+    # 寫入Excel的代碼保持不變
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         sheet_name = doc_type_code[:30] if doc_type_code else "Data"
 
-        if main_df.empty:
-            # If we have no data, create a simple placeholder
+        if main_df is None or main_df.empty:
+            # 如果沒有數據，創建一個簡單的佔位符
             main_df = pd.DataFrame(
                 {"No Data": ["No structured data found in the input JSON"]}
             )
 
-        # Write main dataframe
+        # 寫入主DataFrame
         main_df.to_excel(writer, sheet_name=sheet_name, index=False)
 
         # Auto-adjust column widths
