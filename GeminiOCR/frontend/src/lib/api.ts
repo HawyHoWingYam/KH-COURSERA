@@ -59,15 +59,15 @@ export interface Job {
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
 
 // Generic fetch function with error handling
-async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const url = `${API_BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
+export async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
+  const fullUrl = `${API_BASE_URL}${url.startsWith('/') ? url : `/${url}`}`;
   
-  console.log(`Fetching from: ${url}`);
+  console.log(`Fetching from: ${fullUrl}`);
   
-  const response = await fetch(url, {
+  const response = await fetch(fullUrl, {
     ...options,
     headers: {
-      ...options.headers,
+      ...options?.headers,
     },
   });
 

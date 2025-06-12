@@ -1,0 +1,516 @@
+{
+  "order_date": "16/2025",
+  "number_of_people": 27,
+  "categories": [
+    {
+      "category_id": "2WIP000004",
+      "category_name": "[御結]明太子沙律餡料",
+      "items": [
+        {
+          "material_no": "1RAW000742",
+          "material_name": "辛口明太子OK5(新)",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": 1000,
+          "replenishment_packs": 5,
+          "additional_opening_g": 64,
+          "remaining_balance_g": 9,
+          "ten_thirty_count_packs": 1,
+          "discarded_gpc": null,
+          "discard_reason": "A"
+        },
+        {
+          "material_no": "1RAW000507",
+          "material_name": "新厚燒玉子(15切御結用)",
+          "weight_per_pack_gpc": 15,
+          "pre_opened_packs": 1520,
+          "replenishment_packs": 52,
+          "additional_opening_g": 9,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000080",
+          "material_name": "HB沙律醬(業務用)",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": 100,
+          "replenishment_packs": 33,
+          "additional_opening_g": null,
+          "remaining_balance_g": 100,
+          "ten_thirty_count_packs": 2,
+          "discarded_gpc": null,
+          "discard_reason": null
+        }
+      ]
+    },
+    {
+      "category_id": "2WIP000006",
+      "category_name": "三文魚腩餡料(撈)",
+      "items": [
+        {
+          "material_no": "1RAW000253",
+          "material_name": "三文魚腩(御結用)",
+          "weight_per_pack_gpc": 440,
+          "pre_opened_packs": 8,
+          "replenishment_packs": 2,
+          "additional_opening_g": 77,
+          "remaining_balance_g": 11,
+          "ten_thirty_count_packs": 1,
+          "discarded_gpc": 2,
+          "discard_reason": "B"
+        },
+        {
+          "material_no": "1RAW000754",
+          "material_name": "燒鰻魚醬",
+          "weight_per_pack_gpc": 2000,
+          "pre_opened_packs": 1,
+          "replenishment_packs": null,
+          "additional_opening_g": 17,
+          "remaining_balance_g": 12,
+          "ten_thirty_count_packs": 2,
+          "discarded_gpc": null,
+          "discard_reason": null
+        }
+      ]
+    },
+    {
+      "category_id": "2WIP000040",
+      "category_name": "紅雪蟹肉沙律餡料",
+      "items": [
+        {
+          "material_no": "1RAW000746",
+          "material_name": "新紅雪蟹肉A",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": 4,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": 15,
+          "ten_thirty_count_packs": 5,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000080",
+          "material_name": "HB沙律醬(業務用)",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": 2,
+          "replenishment_packs": 29,
+          "additional_opening_g": 30,
+          "remaining_balance_g": 104,
+          "ten_thirty_count_packs": 4,
+          "discarded_gpc": 3,
+          "discard_reason": "C"
+        }
+      ]
+    },
+    {
+      "category_id": "2WIP001003",
+      "category_name": "OMU吞拿魚沙律拌料",
+      "items": [
+        {
+          "material_no": "1RAW000750",
+          "material_name": "SAFCOL大豆油浸吞拿魚",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": 1,
+          "replenishment_packs": null,
+          "additional_opening_g": 8,
+          "remaining_balance_g": 1128,
+          "ten_thirty_count_packs": 10,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000705",
+          "material_name": "高級濃麵汁",
+          "weight_per_pack_gpc": 2000,
+          "pre_opened_packs": 1,
+          "replenishment_packs": 7,
+          "additional_opening_g": null,
+          "remaining_balance_g": 7,
+          "ten_thirty_count_packs": 1,
+          "discarded_gpc": 1,
+          "discard_reason": "E"
+        },
+        {
+          "material_no": "1RAW000080",
+          "material_name": "HB沙律醬(業務用)",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": 2,
+          "replenishment_packs": 2,
+          "additional_opening_g": null,
+          "remaining_balance_g": 9,
+          "ten_thirty_count_packs": 9,
+          "discarded_gpc": null,
+          "discard_reason": null
+        }
+      ]
+    },
+    {
+      "category_id": "2WIP001017",
+      "category_name": "吞拿魚沙律拌料(添加劑)",
+      "items": [
+        {
+          "material_no": "1RAW000750",
+          "material_name": "SAFCOL大豆油浸吞拿魚碎",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": 6,
+          "replenishment_packs": null,
+          "additional_opening_g": 16,
+          "remaining_balance_g": 5,
+          "ten_thirty_count_packs": 5,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000080",
+          "material_name": "HB沙律醬(業務用)",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": 2,
+          "replenishment_packs": 4,
+          "additional_opening_g": null,
+          "remaining_balance_g": 201,
+          "ten_thirty_count_packs": 200,
+          "discarded_gpc": 2,
+          "discard_reason": "B"
+        },
+        {
+          "material_no": "1RAW000275",
+          "material_name": "照燒汁(Jumbo 用)",
+          "weight_per_pack_gpc": 2000,
+          "pre_opened_packs": 3,
+          "replenishment_packs": 14,
+          "additional_opening_g": null,
+          "remaining_balance_g": 3,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000699",
+          "material_name": "九州濃厚甜醬油",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": 3,
+          "replenishment_packs": 3,
+          "additional_opening_g": null,
+          "remaining_balance_g": 6,
+          "ten_thirty_count_packs": 6,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000707",
+          "material_name": "食品增粘劑ES#a",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": 7,
+          "replenishment_packs": null,
+          "additional_opening_g": 24,
+          "remaining_balance_g": 7,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        }
+      ]
+    },
+    {
+      "category_id": "2WIP001021",
+      "category_name": "OMU紅蟹蝦沙律拌料",
+      "items": [
+        {
+          "material_no": "1RAW000625",
+          "material_name": "和風蝦沙律",
+          "weight_per_pack_gpc": 250,
+          "pre_opened_packs": 9,
+          "replenishment_packs": 29,
+          "additional_opening_g": null,
+          "remaining_balance_g": 10,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000746",
+          "material_name": "新紅雪蟹肉A",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": 10,
+          "replenishment_packs": 27,
+          "additional_opening_g": 12,
+          "remaining_balance_g": 12,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000731",
+          "material_name": "金印芥末醬油漬",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": 18,
+          "replenishment_packs": null,
+          "additional_opening_g": 22,
+          "remaining_balance_g": 13,
+          "ten_thirty_count_packs": 100,
+          "discarded_gpc": 5,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000735",
+          "material_name": "PLUS TIME Z-200(改)",
+          "weight_per_pack_gpc": 10000,
+          "pre_opened_packs": 7,
+          "replenishment_packs": 8,
+          "additional_opening_g": null,
+          "remaining_balance_g": 107,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000771",
+          "material_name": "頂好沙律醬",
+          "weight_per_pack_gpc": 3000,
+          "pre_opened_packs": 60,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": 300,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        }
+      ]
+    },
+    {
+      "category_id": "2WIP001029",
+      "category_name": "紫菜流心蛋黃醬拌料",
+      "items": [
+        {
+          "material_no": "1RAW000464",
+          "material_name": "新蛋黃醬",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000789",
+          "material_name": "地雞昆布白湯汁",
+          "weight_per_pack_gpc": 1800,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000707",
+          "material_name": "食品增粘劑ES#a",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        }
+      ]
+    },
+    {
+      "category_id": "2WIP001034",
+      "category_name": "柚香炙燒鯖魚餡",
+      "items": [
+        {
+          "material_no": "1RAW000817",
+          "material_name": "炙燒鯖魚碎",
+          "weight_per_pack_gpc": 500,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000794",
+          "material_name": "乾柚子碎粒",
+          "weight_per_pack_gpc": 60,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000808",
+          "material_name": "高知柚子醬油醋",
+          "weight_per_pack_gpc": 1800,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000275",
+          "material_name": "照燒汁(Jumbo 用)",
+          "weight_per_pack_gpc": 2000,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        }
+      ]
+    },
+    {
+      "category_id": "2WIP001047",
+      "category_name": "豬肉鬆牛蒡",
+      "items": [
+        {
+          "material_no": "1RAW000829",
+          "material_name": "豬肉鬆",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000092",
+          "material_name": "金平牛蒡",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        }
+      ]
+    },
+    {
+      "category_id": "2WIP001050",
+      "category_name": "柚子火腿蛋沙律拌料",
+      "items": [
+        {
+          "material_no": "1RAW000836",
+          "material_name": "煙燻火腿粒",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000080",
+          "material_name": "HB沙律醬(業務用)",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        }
+      ]
+    },
+    {
+      "category_id": null,
+      "category_name": "柚子豚肉拌料",
+      "items": [
+        {
+          "material_no": "1RAW000999",
+          "material_name": "熟豬頸肉切片1KG",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000794",
+          "material_name": "乾柚子碎粒",
+          "weight_per_pack_gpc": 60,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000808",
+          "material_name": "高知柚子醬油醋",
+          "weight_per_pack_gpc": 1800,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000754",
+          "material_name": "燒鰻魚醬",
+          "weight_per_pack_gpc": 2000,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000707",
+          "material_name": "食品增粘劑ES#a",
+          "weight_per_pack_gpc": 1000,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        },
+        {
+          "material_no": "1RAW000735",
+          "material_name": "PLUS TIME Z-200(改)",
+          "weight_per_pack_gpc": 10000,
+          "pre_opened_packs": null,
+          "replenishment_packs": null,
+          "additional_opening_g": null,
+          "remaining_balance_g": null,
+          "ten_thirty_count_packs": null,
+          "discarded_gpc": null,
+          "discard_reason": null
+        }
+      ]
+    }
+  ]
+}
