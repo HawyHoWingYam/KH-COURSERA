@@ -1470,6 +1470,52 @@ def list_batch_jobs(
     ]
 
 
+@app.get("/download-by-path")
+def download_file_by_path(path: str):
+    """Download a file by its full path."""
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"File not found on disk: {path}")
+    
+    # Get the filename from the path
+    filename = os.path.basename(path)
+    
+    # Determine content type based on file extension
+    file_extension = os.path.splitext(filename)[1].lower()
+    content_type = "application/octet-stream"  # Default content type
+    
+    if file_extension == ".json":
+        content_type = "application/json"
+    elif file_extension == ".xlsx":
+        content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif file_extension == ".pdf":
+        content_type = "application/pdf"
+    elif file_extension in [".jpg", ".jpeg"]:
+        content_type = "image/jpeg"
+    elif file_extension == ".png":
+        content_type = "image/png"
+    
+    return FileResponse(
+        path=path,
+        filename=filename,
+        media_type=content_type,
+    )
+
+
+@app.get("/files")
+def get_file_by_path(path: str, db: Session = Depends(get_db)):
+    """Get file information by path."""
+    file = db.query(DBFile).filter(DBFile.file_path == path).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    return {
+        "file_id": file.file_id,
+        "file_name": file.file_name,
+        "file_path": file.file_path,
+        "file_type": file.file_type,
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 

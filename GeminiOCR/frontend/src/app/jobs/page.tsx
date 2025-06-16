@@ -11,6 +11,7 @@ export default function Jobs() {
   const [error, setError] = useState('');
   const [pendingUpload, setPendingUpload] = useState<any>(null);
   const [showBatchJobs, setShowBatchJobs] = useState<boolean>(true);
+  const [viewBatchJobs, setViewBatchJobs] = useState(false);
 
   useEffect(() => {
     // Check for pending uploads from sessionStorage
@@ -96,14 +97,14 @@ export default function Jobs() {
 
       <div className="flex justify-end mb-4">
         <button 
-          onClick={toggleJobView}
+          onClick={() => setViewBatchJobs(!viewBatchJobs)}
           className="px-4 py-2 bg-blue-500 text-white rounded"
         >
-          Show {showBatchJobs ? 'Individual Jobs' : 'Batch Jobs'}
+          Show {viewBatchJobs ? 'Individual Jobs' : 'Batch Jobs'}
         </button>
       </div>
 
-      {showBatchJobs ? (
+      {viewBatchJobs ? (
         <table className="w-full">
           <thead>
             <tr>

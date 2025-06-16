@@ -63,6 +63,8 @@ export interface BatchJob {
   doc_type_id: number;
   type_name?: string;
   zip_filename: string;
+  s3_zipfile_path?: string;
+  original_zipfile?: string;
   total_files: number;
   processed_files: number;
   status: string;
@@ -71,6 +73,8 @@ export interface BatchJob {
   excel_output_path?: string;
   created_at: string;
   updated_at: string;
+  uploader_user_id?: number;
+  uploader_name?: string;
 }
 
 // Base API URL and port from config
