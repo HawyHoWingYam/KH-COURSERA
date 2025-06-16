@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { fetchDocumentTypes, fetchCompaniesForDocType, processDocument } from '@/lib/api';
+import { fetchDocumentTypes, fetchCompaniesForDocType, processDocument, processZipFile } from '@/lib/api';
 import type { DocumentType, Company } from '@/lib/api';
 import { MdZoomIn, MdZoomOut, MdRefresh } from 'react-icons/md';
 
@@ -135,32 +135,52 @@ export default function Upload() {
     try {
       // Create the FormData object
       const formData = new FormData();
-      formData.append('document', file);
       formData.append('doc_type_id', selectedType.toString());
       formData.append('company_id', selectedCompany.toString());
+      
+      // Check if file is a ZIP (batch job) or individual file
+      if (file.type === 'application/zip' || file.name.toLowerCase().endsWith('.zip')) {
+        formData.append('zip_file', file);
+        
+        // Process as ZIP batch
+        processZipFile(formData)
+          .then(result => {
+            console.log('ZIP upload completed in background:', result);
+          })
+          .catch(err => {
+            console.error('Background ZIP upload failed:', err);
+          });
+        
+        // Store batch upload info
+        sessionStorage.setItem('pendingBatchUpload', JSON.stringify({
+          fileName: file.name,
+          documentType: documentTypes.find(dt => dt.doc_type_id === selectedType)?.type_name || 'Unknown',
+          timestamp: new Date().toISOString()
+        }));
+      } else {
+        // Process as single document (existing code)
+        formData.append('document', file);
+        
+        processDocument(formData)
+          .then(result => {
+            console.log('Upload completed in background:', result);
+          })
+          .catch(err => {
+            console.error('Background upload failed:', err);
+          });
+        
+        // Store upload info for jobs page
+        sessionStorage.setItem('pendingUpload', JSON.stringify({
+          fileName: file.name,
+          documentType: documentTypes.find(dt => dt.doc_type_id === selectedType)?.type_name || 'Unknown',
+          timestamp: new Date().toISOString()
+        }));
+      }
 
-      // Start the upload in the background without awaiting
-      processDocument(formData)
-        .then(result => {
-          console.log('Upload completed in background:', result);
-          // Could use this to update a notification system if needed
-        })
-        .catch(err => {
-          console.error('Background upload failed:', err);
-        });
-
-      // Store upload info in sessionStorage for jobs page to display a notification
-      sessionStorage.setItem('pendingUpload', JSON.stringify({
-        fileName: file.name,
-        documentType: documentTypes.find(dt => dt.doc_type_id === selectedType)?.type_name || 'Unknown',
-        timestamp: new Date().toISOString()
-      }));
-
-      // Navigate immediately to jobs page
+      // Navigate to jobs page
       router.push('/jobs');
 
     } catch (err) {
-      // This should rarely happen since we're not awaiting the upload
       setError('Failed to start upload');
       console.error(err);
     }
@@ -216,13 +236,13 @@ export default function Upload() {
           <label className="block text-gray-700 mb-2">Document File</label>
           <input
             type="file"
-            accept="image/jpeg,image/png,application/pdf"
+            accept="image/jpeg,image/png,application/pdf,application/zip,.zip"
             onChange={handleFileChange}
             className="w-full"
             required
           />
           <p className="text-sm text-gray-500 mt-1">
-            Supported formats: JPEG, JPG, PNG, PDF
+            Supported formats: JPEG, JPG, PNG, PDF, ZIP (contains multiple images)
           </p>
         </div>
 

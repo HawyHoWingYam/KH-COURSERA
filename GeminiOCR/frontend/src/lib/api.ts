@@ -55,6 +55,24 @@ export interface Job {
   updated_at: string;
 }
 
+// Add this interface for batch jobs
+export interface BatchJob {
+  batch_id: number;
+  company_id: number;
+  company_name?: string;
+  doc_type_id: number;
+  type_name?: string;
+  zip_filename: string;
+  total_files: number;
+  processed_files: number;
+  status: string;
+  error_message?: string;
+  json_output_path?: string;
+  excel_output_path?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 // Base API URL and port from config
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
 
@@ -257,4 +275,36 @@ export async function fetchJobs(
   const endpoint = `/jobs${queryString ? `?${queryString}` : ''}`;
   
   return fetchApi<Job[]>(endpoint);
+}
+
+// Add function to process ZIP files
+export async function processZipFile(formData: FormData): Promise<{ batch_id: number; status: string; message: string }> {
+  console.log('Processing ZIP file:', formData);
+  
+  return fetchApi<{ batch_id: number; status: string; message: string }>('/process-zip', {
+    method: 'POST',
+    body: formData,
+  });
+}
+
+// Add functions for batch job management
+export async function fetchBatchJobStatus(batchId: number): Promise<BatchJob> {
+  return fetchApi<BatchJob>(`/batch-jobs/${batchId}`);
+}
+
+export async function fetchBatchJobs(
+  params: { company_id?: number; doc_type_id?: number; status?: string; limit?: number; offset?: number } = {}
+): Promise<BatchJob[]> {
+  const queryParams = new URLSearchParams();
+  
+  if (params.company_id) queryParams.append('company_id', params.company_id.toString());
+  if (params.doc_type_id) queryParams.append('doc_type_id', params.doc_type_id.toString());
+  if (params.status) queryParams.append('status', params.status);
+  if (params.limit) queryParams.append('limit', params.limit.toString());
+  if (params.offset) queryParams.append('offset', params.offset.toString());
+  
+  const queryString = queryParams.toString();
+  const endpoint = `/batch-jobs${queryString ? `?${queryString}` : ''}`;
+  
+  return fetchApi<BatchJob[]>(endpoint);
 } 

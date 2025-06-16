@@ -280,7 +280,7 @@ async def extract_text_from_pdf(
 
         print(f"Gemini API processing completed in {processing_time:.2f} seconds")
         print(response.usage_metadata)
-        print(response.text)
+        # print(response.text)
         # Return both the text, token counts and timing metrics
         return {
             "text": response.text,

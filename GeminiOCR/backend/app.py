@@ -35,6 +35,7 @@ from db.models import (
     File as DBFile,
     DocumentFile,
     ApiUsage,
+    BatchJob,
 )
 import main as ocr_processor
 from main import extract_text_from_image, extract_text_from_pdf
@@ -1014,6 +1015,317 @@ async def get_monthly_usage(db: Session = Depends(get_db)):
             "request_count": result.request_count
         }
         for result in results
+    ]
+
+
+@app.post("/process-zip", response_model=dict)
+async def process_zip_file(
+    background_tasks: BackgroundTasks,
+    zip_file: UploadFile = File(...),
+    company_id: int = Form(...),
+    doc_type_id: int = Form(...),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Check if company and document type exist
+        company = db.query(Company).filter(Company.company_id == company_id).first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Company not found")
+        
+        doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+        if not doc_type:
+            raise HTTPException(status_code=404, detail="Document type not found")
+            
+        # Check if configuration exists
+        config = db.query(CompanyDocumentConfig).filter(
+            CompanyDocumentConfig.company_id == company_id,
+            CompanyDocumentConfig.doc_type_id == doc_type_id,
+            CompanyDocumentConfig.active == True
+        ).first()
+        
+        if not config:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No active configuration found for company ID {company_id} and document type ID {doc_type_id}"
+            )
+            
+        # Verify prompt_path and schema_path exist
+        if not config.prompt_path or not os.path.exists(config.prompt_path):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Prompt template not found: {config.prompt_path}"
+            )
+            
+        if not config.schema_path or not os.path.exists(config.schema_path):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Schema file not found: {config.schema_path}"
+            )
+        
+        # Save the uploaded zip file
+        upload_dir = os.path.join("uploads", company.company_code, doc_type.type_code, "batch_jobs")
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        # Generate a unique filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_path = os.path.join(upload_dir, f"{timestamp}_{zip_file.filename}")
+        
+        # Save file to disk
+        with open(zip_path, "wb") as buffer:
+            shutil.copyfileobj(zip_file.file, buffer)
+        
+        # Create a new batch job
+        batch_job = BatchJob(
+            company_id=company_id,
+            doc_type_id=doc_type_id,
+            zip_filename=zip_file.filename,
+            status="pending"
+        )
+        
+        db.add(batch_job)
+        db.commit()
+        db.refresh(batch_job)
+        
+        batch_id = batch_job.batch_id
+        
+        # Start processing in background but return immediately
+        background_tasks.add_task(
+            process_zip_task, 
+            batch_id, 
+            zip_path, 
+            config.prompt_path,
+            config.schema_path,
+            company.company_code,
+            doc_type.type_code
+        )
+        
+        # Return immediately with batch ID
+        return {
+            "batch_id": batch_id,
+            "status": "pending",
+            "message": "ZIP file processing started"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing ZIP file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing ZIP file: {str(e)}")
+
+
+# Add the process_zip_task function
+async def process_zip_task(
+    batch_id: int,
+    zip_path: str,
+    prompt_path: str,
+    schema_path: str,
+    company_code: str,
+    doc_type_code: str,
+):
+    db = next(get_db())
+    import zipfile
+    import tempfile
+
+    try:
+        # Update batch job status
+        batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
+        if not batch_job:
+            logger.error(f"Batch job {batch_id} not found")
+            return
+
+        batch_job.status = "processing"
+        db.commit()
+
+        # Create output directory for extracted files and results
+        output_dir = os.path.join("uploads", company_code, doc_type_code, f"batch_{batch_id}")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Extract zip file
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            # First, count the number of valid image files
+            image_files = [f for f in zip_ref.namelist() 
+                          if f.lower().endswith(('.jpg', '.jpeg', '.png')) and not f.startswith('__MACOSX')]
+            
+            batch_job.total_files = len(image_files)
+            batch_job.processed_files = 0
+            db.commit()
+            
+            if batch_job.total_files == 0:
+                batch_job.status = "failed"
+                batch_job.error_message = "No valid image files found in ZIP"
+                db.commit()
+                return
+                
+            # Extract files to temp directory
+            with tempfile.TemporaryDirectory() as temp_dir:
+                zip_ref.extractall(temp_dir)
+                
+                # Load prompt and schema
+                with open(prompt_path, "r") as f:
+                    prompt_template = f.read()
+                
+                with open(schema_path, "r") as f:
+                    schema_json = json.load(f)
+                    
+                # Get API key from config
+                api_key = config.get("api_key")
+                model_name = config.get("model_name", "gemini-1.5-pro-vision")
+                
+                if not api_key:
+                    raise ValueError("API key not found in config.json")
+                
+                # Prepare the results file
+                all_results = []
+                
+                # Process each image
+                for image_path_rel in image_files:
+                    image_path = os.path.join(temp_dir, image_path_rel)
+                    if not os.path.exists(image_path) or os.path.isdir(image_path):
+                        continue
+                        
+                    # Create a job record for this image
+                    job = ProcessingJob(
+                        company_id=batch_job.company_id,
+                        doc_type_id=batch_job.doc_type_id,
+                        batch_id=batch_id,
+                        original_filename=os.path.basename(image_path),
+                        status="processing",
+                        s3_pdf_path=image_path  # Reusing PDF field for image path
+                    )
+                    
+                    db.add(job)
+                    db.commit()
+                    db.refresh(job)
+                    
+                    try:
+                        # Process the image
+                        result = await extract_text_from_image(image_path, prompt_template, schema_json, api_key, model_name)
+                        
+                        # Parse the JSON result
+                        json_data = json.loads(result["text"])
+                        
+                        # Add filename to the result
+                        json_data["__filename"] = os.path.basename(image_path)
+                        
+                        # Add to results list
+                        all_results.append(json_data)
+                        
+                        # Record API usage
+                        api_usage = ApiUsage(
+                            job_id=job.job_id,
+                            input_token_count=result["input_tokens"],
+                            output_token_count=result["output_tokens"],
+                            api_call_timestamp=datetime.now(),
+                            model=model_name,
+                            status="success"
+                        )
+                        db.add(api_usage)
+                        
+                        # Update job status
+                        job.status = "success"
+                        db.commit()
+                        
+                    except Exception as e:
+                        job.status = "failed"
+                        job.error_message = str(e)
+                        db.commit()
+                        logger.error(f"Error processing image {image_path}: {str(e)}")
+                    
+                    # Update batch job progress
+                    batch_job.processed_files += 1
+                    db.commit()
+                
+                # Save all results to a single JSON file
+                json_output_path = os.path.join(output_dir, "batch_results.json")
+                with open(json_output_path, "w") as f:
+                    json.dump(all_results, f, indent=2)
+                    
+                # Convert to Excel
+                excel_output_path = os.path.join(output_dir, "batch_results.xlsx")
+                await asyncio.to_thread(json_to_excel, all_results, excel_output_path)
+                
+                # Update batch job with output paths and complete status
+                batch_job.json_output_path = json_output_path
+                batch_job.excel_output_path = excel_output_path
+                batch_job.status = "success"
+                db.commit()
+                
+    except Exception as e:
+        logger.error(f"Error in batch processing: {str(e)}")
+        try:
+            batch_job.status = "failed"
+            batch_job.error_message = str(e)
+            db.commit()
+        except Exception:
+            pass
+
+
+# Add new endpoints to get batch job status and list batch jobs
+
+@app.get("/batch-jobs/{batch_id}", response_model=dict)
+def get_batch_job_status(batch_id: int, db: Session = Depends(get_db)):
+    batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
+    if not batch_job:
+        raise HTTPException(status_code=404, detail="Batch job not found")
+
+    return {
+        "batch_id": batch_job.batch_id,
+        "company_id": batch_job.company_id,
+        "company_name": batch_job.company.company_name if batch_job.company else None,
+        "doc_type_id": batch_job.doc_type_id,
+        "type_name": batch_job.document_type.type_name if batch_job.document_type else None,
+        "zip_filename": batch_job.zip_filename,
+        "total_files": batch_job.total_files,
+        "processed_files": batch_job.processed_files,
+        "status": batch_job.status,
+        "error_message": batch_job.error_message,
+        "json_output_path": batch_job.json_output_path,
+        "excel_output_path": batch_job.excel_output_path,
+        "created_at": batch_job.created_at.isoformat(),
+        "updated_at": batch_job.updated_at.isoformat(),
+    }
+
+@app.get("/batch-jobs", response_model=List[dict])
+def list_batch_jobs(
+    company_id: Optional[int] = None,
+    doc_type_id: Optional[int] = None,
+    status: Optional[str] = None,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    query = db.query(BatchJob)
+
+    if company_id is not None:
+        query = query.filter(BatchJob.company_id == company_id)
+
+    if doc_type_id is not None:
+        query = query.filter(BatchJob.doc_type_id == doc_type_id)
+
+    if status is not None:
+        query = query.filter(BatchJob.status == status)
+
+    # Order by most recent first
+    query = query.order_by(BatchJob.created_at.desc())
+
+    # Apply pagination
+    batch_jobs = query.offset(offset).limit(limit).all()
+
+    return [
+        {
+            "batch_id": job.batch_id,
+            "company_id": job.company_id,
+            "company_name": job.company.company_name if job.company else None,
+            "doc_type_id": job.doc_type_id,
+            "type_name": job.document_type.type_name if job.document_type else None,
+            "zip_filename": job.zip_filename,
+            "total_files": job.total_files,
+            "processed_files": job.processed_files,
+            "status": job.status,
+            "created_at": job.created_at.isoformat(),
+            "updated_at": job.updated_at.isoformat(),
+        }
+        for job in batch_jobs
     ]
 
 
