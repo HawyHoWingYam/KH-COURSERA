@@ -1282,16 +1282,30 @@ async def process_zip_task(
                             # Parse the JSON string
                             json_data = json.loads(json_text)
 
-                            # Handle case where the parsed JSON is a list (like in the error example)
-                            if isinstance(json_data, list) and len(json_data) > 0:
-                                # Take the first item if it's a list
-                                json_data = json_data[0]
-
-                            # Add filename to the result
-                            json_data["__filename"] = os.path.basename(image_path)
-
-                            # Add to results list
-                            all_results.append(json_data)
+                            # Handle case where the parsed JSON is a list
+                            if isinstance(json_data, list):
+                                # Process all items in the list
+                                processed_results = []
+                                
+                                for item in json_data:
+                                    # Add filename to each item
+                                    if isinstance(item, dict):
+                                        item["__filename"] = os.path.basename(image_path)
+                                        processed_results.append(item)
+                                    else:
+                                        # Handle non-dict items
+                                        processed_results.append({
+                                            "__filename": os.path.basename(image_path),
+                                            "value": item,
+                                            "__non_dict_item": True
+                                        })
+                                
+                                # Add all processed items to the results
+                                all_results.extend(processed_results)
+                            else:
+                                # Handle single object case (original behavior)
+                                json_data["__filename"] = os.path.basename(image_path)
+                                all_results.append(json_data)
                         except (
                             json.JSONDecodeError,
                             TypeError,
