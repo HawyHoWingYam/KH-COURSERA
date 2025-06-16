@@ -75,6 +75,7 @@ class DocumentType(Base):
     )
     configs = relationship("CompanyDocumentConfig", back_populates="document_type")
     jobs = relationship("ProcessingJob", back_populates="document_type")
+    batch_jobs = relationship("BatchJob", back_populates="document_type")
 
 
 class DepartmentDocTypeAccess(Base):
@@ -104,6 +105,7 @@ class Company(Base):
 
     configs = relationship("CompanyDocumentConfig", back_populates="company")
     jobs = relationship("ProcessingJob", back_populates="company")
+    batch_jobs = relationship("BatchJob", back_populates="company")
 
 
 class CompanyDocumentConfig(Base):
@@ -163,6 +165,8 @@ class ProcessingJob(Base):
     document_type = relationship("DocumentType", back_populates="jobs")
     files = relationship("DocumentFile", back_populates="job")
     api_usages = relationship("ApiUsage", back_populates="job")
+    batch_id = Column(Integer, ForeignKey("batch_jobs.batch_id"), nullable=True)
+    batch_job = relationship("BatchJob", back_populates="jobs")
 
 
 class DocumentFile(Base):
@@ -189,10 +193,40 @@ class ApiUsage(Base):
     output_token_count = Column(Integer, nullable=False)
     api_call_timestamp = Column(DateTime, default=datetime.now, nullable=False)
     model = Column(String(255), nullable=False)
-    
+
     # Add new fields for timing
     processing_time_seconds = Column(Float, nullable=True)
-    status = Column(String(50), nullable=True)  # success, error, success_with_fallback, etc.
-    
+    status = Column(
+        String(50), nullable=True
+    )  # success, error, success_with_fallback, etc.
+
     # Existing relationships
     job = relationship("ProcessingJob", back_populates="api_usages")
+
+
+class BatchJob(Base):
+    __tablename__ = "batch_jobs"
+
+    batch_id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey("companies.company_id"), nullable=False)
+    doc_type_id = Column(
+        Integer, ForeignKey("document_types.doc_type_id"), nullable=False
+    )
+    uploader_user_id = Column(Integer, ForeignKey("users.user_id"), nullable=True)
+    zip_filename = Column(String(255), nullable=True)
+    s3_zipfile_path = Column(String(255), nullable=True)
+    original_zipfile = Column(String(255), nullable=True)
+    total_files = Column(Integer, default=0)
+    processed_files = Column(Integer, default=0)
+    status = Column(String(20), nullable=False, default="pending")
+    error_message = Column(Text, nullable=True)
+    json_output_path = Column(String(255), nullable=True)
+    excel_output_path = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    company = relationship("Company", back_populates="batch_jobs")
+    document_type = relationship("DocumentType", back_populates="batch_jobs")
+    jobs = relationship("ProcessingJob", back_populates="batch_job")
+    uploader = relationship("User", backref="batch_jobs")

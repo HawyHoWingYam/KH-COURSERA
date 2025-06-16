@@ -141,6 +141,7 @@ export default function Upload() {
       // Check if file is a ZIP (batch job) or individual file
       if (file.type === 'application/zip' || file.name.toLowerCase().endsWith('.zip')) {
         formData.append('zip_file', file);
+        formData.append('uploader_user_id', '1');
         
         // Process as ZIP batch
         processZipFile(formData)

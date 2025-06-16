@@ -281,6 +281,11 @@ export async function fetchJobs(
 export async function processZipFile(formData: FormData): Promise<{ batch_id: number; status: string; message: string }> {
   console.log('Processing ZIP file:', formData);
   
+  // Log the form data contents for debugging
+  for (const [key, value] of formData.entries()) {
+    console.log(`${key}: ${value instanceof File ? value.name : value}`);
+  }
+  
   return fetchApi<{ batch_id: number; status: string; message: string }>('/process-zip', {
     method: 'POST',
     body: formData,

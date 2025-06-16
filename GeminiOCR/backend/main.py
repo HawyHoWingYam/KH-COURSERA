@@ -185,9 +185,18 @@ async def extract_text_from_image(
             "top_k": 40,
         },
     )
+    # Start timing
+    start_time = time.time()
+    status_updates = {}
+    status_updates["status"] = "processing"
+    status_updates["started_at"] = start_time
 
-    # Make API request with proper structure for response schema
     try:
+        # Update status
+        status_updates["step"] = "calling_gemini_api"
+        print(f"Gemini API processing started at {start_time}")
+        # Make API request with proper structure for response schema
+
         # Use asyncio.to_thread to run the blocking API call in a separate thread
         response = await asyncio.to_thread(
             model.generate_content,
@@ -197,13 +206,21 @@ async def extract_text_from_image(
                 response_schema=response_schema,
             ),
         )
-        print(response.usage_metadata)
+        # Calculate processing time
+        processing_time = time.time() - start_time
+        status_updates["processing_time_seconds"] = processing_time
+        status_updates["status"] = "success"
 
+        print(f"Gemini API processing completed in {processing_time:.2f} seconds")
+        print(response.usage_metadata)
+        # print(response.text)
         # Return both the text and token counts
         return {
             "text": response.text,
             "input_tokens": response.usage_metadata.prompt_token_count,
             "output_tokens": response.usage_metadata.candidates_token_count,
+            "processing_time": processing_time,
+            "status_updates": status_updates,
         }
     except Exception as e:
         print(f"Error generating content: {e}")
