@@ -792,6 +792,7 @@ async def process_document_task(
         )
     finally:
         db.close()
+        db = next(get_db())
 
 
 # WebSocket message sender
@@ -1117,21 +1118,23 @@ async def process_zip_file(
         with open(zip_path, "wb") as buffer:
             shutil.copyfileobj(zip_file.file, buffer)
 
-        # Create a new batch job
+        logger.info(f"Zip file saved to: {zip_file.filename}")
+    
         batch_job = BatchJob(
+            # uploader_user_id=3,
             company_id=company_id,
             doc_type_id=doc_type_id,
-            # uploader_user_id=uploader_user_id,
             zip_filename=zip_file.filename,
             s3_zipfile_path=zip_path,
             original_zipfile=zip_path,
-            status="pending",
+            status="pending"
         )
-
+        logger.info(f"batch_job: {str(batch_job.__dict__)}")
+    
         db.add(batch_job)
         db.commit()
         db.refresh(batch_job)
-
+        logger.info(f"Batch job created: {batch_job.batch_id}")
         batch_id = batch_job.batch_id
 
         # Start processing in background but return immediately
