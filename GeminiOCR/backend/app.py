@@ -35,6 +35,8 @@ from db.models import (
     File as DBFile,
     DocumentFile,
     ApiUsage,
+    BatchJob,
+    User,
 )
 import main as ocr_processor
 from main import extract_text_from_image, extract_text_from_pdf
@@ -467,93 +469,104 @@ async def process_document(
     document: UploadFile = File(...),
     company_id: int = Form(...),
     doc_type_id: int = Form(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     try:
         # Check if company and document type exist
         company = db.query(Company).filter(Company.company_id == company_id).first()
         if not company:
             raise HTTPException(status_code=404, detail="Company not found")
-        
-        doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+
+        doc_type = (
+            db.query(DocumentType)
+            .filter(DocumentType.doc_type_id == doc_type_id)
+            .first()
+        )
         if not doc_type:
             raise HTTPException(status_code=404, detail="Document type not found")
-            
+
         # Check if configuration exists
-        config = db.query(CompanyDocumentConfig).filter(
-            CompanyDocumentConfig.company_id == company_id,
-            CompanyDocumentConfig.doc_type_id == doc_type_id,
-            CompanyDocumentConfig.active == True
-        ).first()
-        
+        config = (
+            db.query(CompanyDocumentConfig)
+            .filter(
+                CompanyDocumentConfig.company_id == company_id,
+                CompanyDocumentConfig.doc_type_id == doc_type_id,
+                CompanyDocumentConfig.active == True,
+            )
+            .first()
+        )
+
         if not config:
             raise HTTPException(
-                status_code=404, 
-                detail=f"No active configuration found for company ID {company_id} and document type ID {doc_type_id}"
+                status_code=404,
+                detail=f"No active configuration found for company ID {company_id} and document type ID {doc_type_id}",
             )
-            
+
         # Verify prompt_path and schema_path exist
         if not config.prompt_path or not os.path.exists(config.prompt_path):
             raise HTTPException(
                 status_code=500,
-                detail=f"Prompt template not found: {config.prompt_path}"
+                detail=f"Prompt template not found: {config.prompt_path}",
             )
-            
+
         if not config.schema_path or not os.path.exists(config.schema_path):
             raise HTTPException(
-                status_code=500,
-                detail=f"Schema file not found: {config.schema_path}"
+                status_code=500, detail=f"Schema file not found: {config.schema_path}"
             )
-        
+
         # Save the uploaded file
-        upload_dir = os.path.join("uploads", company.company_code, doc_type.type_code, "jobs")
+        upload_dir = os.path.join(
+            "uploads", company.company_code, doc_type.type_code, "jobs"
+        )
         os.makedirs(upload_dir, exist_ok=True)
-        
+
         # Generate a unique filename
         file_path = os.path.join(upload_dir, document.filename)
-        
+
         # Save file to disk
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(document.file, buffer)
-        
+
         # Create a new processing job
         job = ProcessingJob(
             company_id=company_id,
             doc_type_id=doc_type_id,
             original_filename=document.filename,
             status="pending",
-            s3_pdf_path=file_path
+            s3_pdf_path=file_path,
         )
-        
+
         db.add(job)
         db.commit()
         db.refresh(job)
-        
+
         job_id = job.job_id
-        
+
         # Start processing in background but return immediately
         background_tasks.add_task(
-            process_document_task, 
-            job_id, 
-            file_path, 
+            process_document_task,
+            job_id,
+            file_path,
             config.prompt_path,
             config.schema_path,
             company.company_code,
-            doc_type.type_code
+            doc_type.type_code,
         )
-        
+
         # Return immediately with job ID
         return {
             "job_id": job_id,
             "status": "pending",
-            "message": "Document processing started"
+            "message": "Document processing started",
         }
-    
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error processing document: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error processing document: {str(e)}"
+        )
 
 
 # Background processing task
@@ -589,7 +602,7 @@ async def process_document_task(
         # Load prompt and schema
         with open(prompt_path, "r") as f:
             prompt_template = f.read()
-        
+
         with open(schema_path, "r") as f:
             schema_json = json.load(f)
 
@@ -600,27 +613,40 @@ async def process_document_task(
             raise ValueError("API key not found in config.json")
 
         await send_websocket_message(
-            job_id, {"status": "processing", "message": "Extracting text from document..."}
+            job_id,
+            {"status": "processing", "message": "Extracting text from document..."},
         )
 
         # Process the document based on file type
         file_extension = os.path.splitext(file_path)[1].lower()
-        
+
         process_start_time = time.time()
-        
+
         # Handle based on file type
-        if file_extension in ['.jpg', '.jpeg', '.png']:
+        if file_extension in [".jpg", ".jpeg", ".png"]:
             # Process image directly
             await send_websocket_message(
-                job_id, {"status": "processing", "message": "Processing image with Gemini API..."}
+                job_id,
+                {
+                    "status": "processing",
+                    "message": "Processing image with Gemini API...",
+                },
             )
-            result = await extract_text_from_image(file_path, prompt_template, schema_json, api_key, model_name)
-        elif file_extension == '.pdf':
+            result = await extract_text_from_image(
+                file_path, prompt_template, schema_json, api_key, model_name
+            )
+        elif file_extension == ".pdf":
             # Process PDF directly
             await send_websocket_message(
-                job_id, {"status": "processing", "message": "Processing PDF with Gemini API..."}
+                job_id,
+                {
+                    "status": "processing",
+                    "message": "Processing PDF with Gemini API...",
+                },
             )
-            result = await extract_text_from_pdf(file_path, prompt_template, schema_json, api_key, model_name)
+            result = await extract_text_from_pdf(
+                file_path, prompt_template, schema_json, api_key, model_name
+            )
         else:
             # Unsupported file type
             raise ValueError(f"Unsupported file type: {file_extension}")
@@ -630,10 +656,14 @@ async def process_document_task(
         input_tokens = result["input_tokens"]
         output_tokens = result["output_tokens"]
         processing_time = time.time() - process_start_time
-        
+
         # Update WebSocket with processing time
         await send_websocket_message(
-            job_id, {"status": "processing", "message": f"API processing completed in {processing_time:.2f} seconds"}
+            job_id,
+            {
+                "status": "processing",
+                "message": f"API processing completed in {processing_time:.2f} seconds",
+            },
         )
 
         # Record API usage with timing metrics
@@ -644,7 +674,7 @@ async def process_document_task(
             api_call_timestamp=datetime.now(),
             model=model_name,
             processing_time_seconds=processing_time,
-            status="success"
+            status="success",
         )
         db.add(api_usage)
         db.commit()
@@ -664,7 +694,7 @@ async def process_document_task(
                 result_obj = json.loads(json_result)
             else:
                 # Otherwise, dump the object as JSON
-                json.dump(json_result, f, indent=2)
+                json.dump(json_result, f, indent=2, ensure_ascii=False)
                 result_obj = json_result
 
         # Get JSON file size
@@ -688,11 +718,11 @@ async def process_document_task(
         )
 
         db.add(json_doc_file)
-        
+
         # Generate Excel file dynamically
         excel_output_path = os.path.join(output_dir, "results.xlsx")
         json_to_excel(result_obj, excel_output_path, doc_type_code)
-        
+
         # Get Excel file size
         excel_file_size = os.path.getsize(excel_output_path)
 
@@ -762,6 +792,7 @@ async def process_document_task(
         )
     finally:
         db.close()
+        db = next(get_db())
 
 
 # WebSocket message sender
@@ -971,64 +1002,549 @@ async def get_daily_usage(db: Session = Depends(get_db)):
     """Get daily token usage for the last 30 days."""
     # SQL query using SQLAlchemy to get daily usage
     thirty_days_ago = datetime.now() - timedelta(days=30)
-    
-    query = db.query(
-        func.date_trunc('day', ApiUsage.api_call_timestamp).label('date'),
-        func.sum(ApiUsage.input_token_count).label('input_tokens'),
-        func.sum(ApiUsage.output_token_count).label('output_tokens'),
-        func.count(ApiUsage.usage_id).label('request_count')
-    ).filter(
-        ApiUsage.api_call_timestamp >= thirty_days_ago
-    ).group_by(
-        func.date_trunc('day', ApiUsage.api_call_timestamp)
-    ).order_by(
-        func.date_trunc('day', ApiUsage.api_call_timestamp)
+
+    query = (
+        db.query(
+            func.date_trunc("day", ApiUsage.api_call_timestamp).label("date"),
+            func.sum(ApiUsage.input_token_count).label("input_tokens"),
+            func.sum(ApiUsage.output_token_count).label("output_tokens"),
+            func.count(ApiUsage.usage_id).label("request_count"),
+        )
+        .filter(ApiUsage.api_call_timestamp >= thirty_days_ago)
+        .group_by(func.date_trunc("day", ApiUsage.api_call_timestamp))
+        .order_by(func.date_trunc("day", ApiUsage.api_call_timestamp))
     )
-    
+
     results = query.all()
-    
+
     return [
         {
             "date": result.date.strftime("%Y-%m-%d"),
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
             "total_tokens": result.input_tokens + result.output_tokens,
-            "request_count": result.request_count
+            "request_count": result.request_count,
         }
         for result in results
     ]
+
 
 @app.get("/api/admin/usage/monthly", response_model=List[dict])
 async def get_monthly_usage(db: Session = Depends(get_db)):
     """Get monthly token usage for the last 12 months."""
     # SQL query using SQLAlchemy to get monthly usage
     twelve_months_ago = datetime.now() - timedelta(days=365)
-    
-    query = db.query(
-        func.date_trunc('month', ApiUsage.api_call_timestamp).label('month'),
-        func.sum(ApiUsage.input_token_count).label('input_tokens'),
-        func.sum(ApiUsage.output_token_count).label('output_tokens'),
-        func.count(ApiUsage.usage_id).label('request_count')
-    ).filter(
-        ApiUsage.api_call_timestamp >= twelve_months_ago
-    ).group_by(
-        func.date_trunc('month', ApiUsage.api_call_timestamp)
-    ).order_by(
-        func.date_trunc('month', ApiUsage.api_call_timestamp)
+
+    query = (
+        db.query(
+            func.date_trunc("month", ApiUsage.api_call_timestamp).label("month"),
+            func.sum(ApiUsage.input_token_count).label("input_tokens"),
+            func.sum(ApiUsage.output_token_count).label("output_tokens"),
+            func.count(ApiUsage.usage_id).label("request_count"),
+        )
+        .filter(ApiUsage.api_call_timestamp >= twelve_months_ago)
+        .group_by(func.date_trunc("month", ApiUsage.api_call_timestamp))
+        .order_by(func.date_trunc("month", ApiUsage.api_call_timestamp))
     )
-    
+
     results = query.all()
-    
+
     return [
         {
             "month": result.month.strftime("%Y-%m"),
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
             "total_tokens": result.input_tokens + result.output_tokens,
-            "request_count": result.request_count
+            "request_count": result.request_count,
         }
         for result in results
     ]
+
+
+@app.post("/process-zip", response_model=dict)
+async def process_zip_file(
+    background_tasks: BackgroundTasks,
+    zip_file: UploadFile = File(...),
+    company_id: int = Form(...),
+    doc_type_id: int = Form(...),
+    # uploader_user_id: int = Form(...),
+    db: Session = Depends(get_db),
+):
+    try:
+        # Check if company and document type exist
+        company = db.query(Company).filter(Company.company_id == company_id).first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Company not found")
+
+        doc_type = (
+            db.query(DocumentType)
+            .filter(DocumentType.doc_type_id == doc_type_id)
+            .first()
+        )
+        if not doc_type:
+            raise HTTPException(status_code=404, detail="Document type not found")
+
+        # Check if user exists
+        # user = db.query(User).filter(User.user_id == uploader_user_id).first()
+        # if not user:
+        #     raise HTTPException(status_code=404, detail="User not found")
+
+        # Check if configuration exists
+        config = (
+            db.query(CompanyDocumentConfig)
+            .filter(
+                CompanyDocumentConfig.company_id == company_id,
+                CompanyDocumentConfig.doc_type_id == doc_type_id,
+                CompanyDocumentConfig.active == True,
+            )
+            .first()
+        )
+
+        if not config:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No active configuration found for company ID {company_id} and document type ID {doc_type_id}",
+            )
+
+        # Verify prompt_path and schema_path exist
+        if not config.prompt_path or not os.path.exists(config.prompt_path):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Prompt template not found: {config.prompt_path}",
+            )
+
+        if not config.schema_path or not os.path.exists(config.schema_path):
+            raise HTTPException(
+                status_code=500, detail=f"Schema file not found: {config.schema_path}"
+            )
+
+        # Save the uploaded zip file
+        upload_dir = os.path.join(
+            "uploads", company.company_code, doc_type.type_code, "batch_jobs"
+        )
+        os.makedirs(upload_dir, exist_ok=True)
+
+        # Generate a unique filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_path = os.path.join(upload_dir, f"{timestamp}_{zip_file.filename}")
+
+        # Save file to disk
+        with open(zip_path, "wb") as buffer:
+            shutil.copyfileobj(zip_file.file, buffer)
+
+        logger.info(f"Zip file saved to: {zip_file.filename}")
+    
+        batch_job = BatchJob(
+            # uploader_user_id=3,
+            company_id=company_id,
+            doc_type_id=doc_type_id,
+            zip_filename=zip_file.filename,
+            s3_zipfile_path=zip_path,
+            original_zipfile=zip_path,
+            status="pending"
+        )
+        logger.info(f"batch_job: {str(batch_job.__dict__)}")
+    
+        db.add(batch_job)
+        db.commit()
+        db.refresh(batch_job)
+        logger.info(f"Batch job created: {batch_job.batch_id}")
+        batch_id = batch_job.batch_id
+
+        # Start processing in background but return immediately
+        background_tasks.add_task(
+            process_zip_task,
+            batch_id,
+            zip_path,
+            config.prompt_path,
+            config.schema_path,
+            company.company_code,
+            doc_type.type_code,
+        )
+
+        # Return immediately with batch ID
+        return {
+            "batch_id": batch_id,
+            "status": "pending",
+            "message": "ZIP file processing started",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing ZIP file: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error processing ZIP file: {str(e)}"
+        )
+
+
+# Add the process_zip_task function
+async def process_zip_task(
+    batch_id: int,
+    zip_path: str,
+    prompt_path: str,
+    schema_path: str,
+    company_code: str,
+    doc_type_code: str,
+):
+    db = next(get_db())
+    import zipfile
+    import tempfile
+
+    try:
+        # Update batch job status
+        batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
+        if not batch_job:
+            logger.error(f"Batch job {batch_id} not found")
+            return
+
+        batch_job.status = "processing"
+        db.commit()
+
+        # Create output directory for extracted files and results
+        output_dir = os.path.join(
+            "uploads", company_code, doc_type_code, f"batch_{batch_id}"
+        )
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Extract zip file
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            # First, count the number of valid image files
+            image_files = [
+                f
+                for f in zip_ref.namelist()
+                if f.lower().endswith((".jpg", ".jpeg", ".png"))
+                and not f.startswith("__MACOSX")
+            ]
+
+            batch_job.total_files = len(image_files)
+            batch_job.processed_files = 0
+            db.commit()
+
+            if batch_job.total_files == 0:
+                batch_job.status = "failed"
+                batch_job.error_message = "No valid image files found in ZIP"
+                db.commit()
+                return
+
+            # Extract files to temp directory
+            with tempfile.TemporaryDirectory() as temp_dir:
+                zip_ref.extractall(temp_dir)
+
+                # Load prompt and schema
+                with open(prompt_path, "r") as f:
+                    prompt_template = f.read()
+
+                with open(schema_path, "r") as f:
+                    schema_json = json.load(f)
+
+                # Get API key from config
+                api_key = config.get("api_key")
+                model_name = config.get("model_name", "gemini-1.5-pro-vision")
+
+                if not api_key:
+                    raise ValueError("API key not found in config.json")
+
+                # Prepare the results file
+                all_results = []
+
+                # Process each image
+                for image_path_rel in image_files:
+                    image_path = os.path.join(temp_dir, image_path_rel)
+                    if not os.path.exists(image_path) or os.path.isdir(image_path):
+                        continue
+
+                    # Create a job record for this image
+                    job = ProcessingJob(
+                        company_id=batch_job.company_id,
+                        doc_type_id=batch_job.doc_type_id,
+                        batch_id=batch_id,
+                        original_filename=os.path.basename(image_path),
+                        status="processing",
+                        s3_pdf_path=image_path,  # Reusing PDF field for image path
+                    )
+
+                    db.add(job)
+                    db.commit()
+                    db.refresh(job)
+
+                    try:
+                        # Process the image
+                        result = await extract_text_from_image(
+                            image_path,
+                            prompt_template,
+                            schema_json,
+                            api_key,
+                            model_name,
+                        )
+
+                        # Parse the JSON result with better error handling
+                        try:
+                            # First check if result is a dictionary with the expected keys
+                            if not isinstance(result, dict):
+                                raise TypeError(
+                                    f"Expected dict result, got {type(result)}"
+                                )
+
+                            if "text" not in result:
+                                raise KeyError(f"Result missing 'text' key")
+
+                            # Now handle the text content - always parse it as JSON string first
+                            json_text = result["text"]
+                            if not isinstance(json_text, str):
+                                json_text = str(
+                                    json_text
+                                )  # Convert to string if it's not already
+
+                            # Parse the JSON string
+                            json_data = json.loads(json_text)
+
+                            # Handle case where the parsed JSON is a list
+                            if isinstance(json_data, list):
+                                # Process all items in the list
+                                processed_results = []
+                                
+                                for item in json_data:
+                                    # Add filename to each item
+                                    if isinstance(item, dict):
+                                        item["__filename"] = os.path.basename(image_path)
+                                        processed_results.append(item)
+                                    else:
+                                        # Handle non-dict items
+                                        processed_results.append({
+                                            "__filename": os.path.basename(image_path),
+                                            "value": item,
+                                            "__non_dict_item": True
+                                        })
+                                
+                                # Add all processed items to the results
+                                all_results.extend(processed_results)
+                            else:
+                                # Handle single object case (original behavior)
+                                json_data["__filename"] = os.path.basename(image_path)
+                                all_results.append(json_data)
+                        except (
+                            json.JSONDecodeError,
+                            TypeError,
+                            KeyError,
+                            IndexError,
+                        ) as json_err:
+                            logger.error(
+                                f"Error parsing JSON result for {image_path}: {str(json_err)}"
+                            )
+                            logger.error(f"Raw result type: {type(result)}")
+                            if isinstance(result, dict) and "text" in result:
+                                logger.error(f"Raw text type: {type(result['text'])}")
+                                logger.error(
+                                    f"Raw text content: {str(result['text'])[:500]}"
+                                )
+
+                            # Create a simple JSON with error info instead
+                            json_data = {
+                                "__filename": os.path.basename(image_path),
+                                "__error": f"Failed to parse result: {str(json_err)}",
+                                "__raw_text": str(result)[
+                                    :500
+                                ],  # Include first 500 chars of raw result
+                            }
+                            all_results.append(json_data)
+
+                        # Record API usage with safer access to token counts
+                        api_usage = ApiUsage(
+                            job_id=job.job_id,
+                            input_token_count=result.get("input_tokens", 0),
+                            output_token_count=result.get("output_tokens", 0),
+                            api_call_timestamp=datetime.now(),
+                            model=model_name,
+                            status=(
+                                "success" if "__error" not in json_data else "failed"
+                            ),
+                        )
+                        db.add(api_usage)
+
+                        # Update job status
+                        if "__error" not in json_data:
+                            job.status = "success"
+                        else:
+                            job.status = "failed"
+                            job.error_message = json_data["__error"]
+                        db.commit()
+
+                    except Exception as e:
+                        job.status = "failed"
+                        job.error_message = str(e)
+                        db.commit()
+                        logger.error(f"Error processing image {image_path}: {str(e)}")
+                        # Still add a placeholder in results so we know which file failed
+                        all_results.append(
+                            {
+                                "__filename": os.path.basename(image_path),
+                                "__error": f"Processing failed: {str(e)}",
+                            }
+                        )
+
+                    # Update batch job progress
+                    batch_job.processed_files += 1
+                    db.commit()
+
+                # Save all results to a single JSON file
+                json_output_path = os.path.join(output_dir, "batch_results.json")
+                with open(json_output_path, "w") as f:
+                    json.dump(all_results, f, indent=2, ensure_ascii=False)
+
+                # Convert to Excel
+                excel_output_path = os.path.join(output_dir, "batch_results.xlsx")
+                await asyncio.to_thread(json_to_excel, all_results, excel_output_path)
+
+                # Update batch job with output paths and complete status
+                batch_job.json_output_path = json_output_path
+                batch_job.excel_output_path = excel_output_path
+                batch_job.status = "success"
+                db.commit()
+
+    except Exception as e:
+        logger.error(f"Error in batch processing: {str(e)}")
+        try:
+            batch_job.status = "failed"
+            batch_job.error_message = str(e)
+            db.commit()
+        except Exception:
+            pass
+
+
+# Add new endpoints to get batch job status and list batch jobs
+@app.get("/batch-jobs/{batch_id}", response_model=dict)
+def get_batch_job_status(batch_id: int, db: Session = Depends(get_db)):
+    batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
+    if not batch_job:
+        raise HTTPException(status_code=404, detail="Batch job not found")
+
+    return {
+        "batch_id": batch_job.batch_id,
+        "company_id": batch_job.company_id,
+        "company_name": batch_job.company.company_name if batch_job.company else None,
+        "doc_type_id": batch_job.doc_type_id,
+        "type_name": (
+            batch_job.document_type.type_name if batch_job.document_type else None
+        ),
+        "uploader_user_id": (
+            batch_job.uploader_user_id
+            if hasattr(batch_job, "uploader_user_id")
+            else None
+        ),
+        "uploader_name": (
+            batch_job.uploader.name
+            if hasattr(batch_job, "uploader") and batch_job.uploader
+            else None
+        ),
+        "zip_filename": batch_job.zip_filename,
+        "s3_zipfile_path": batch_job.s3_zipfile_path,
+        "total_files": batch_job.total_files,
+        "processed_files": batch_job.processed_files,
+        "status": batch_job.status,
+        "error_message": batch_job.error_message,
+        "json_output_path": batch_job.json_output_path,
+        "excel_output_path": batch_job.excel_output_path,
+        "created_at": batch_job.created_at.isoformat(),
+        "updated_at": batch_job.updated_at.isoformat(),
+    }
+
+
+@app.get("/batch-jobs", response_model=List[dict])
+def list_batch_jobs(
+    company_id: Optional[int] = None,
+    doc_type_id: Optional[int] = None,
+    status: Optional[str] = None,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    query = db.query(BatchJob)
+
+    if company_id is not None:
+        query = query.filter(BatchJob.company_id == company_id)
+
+    if doc_type_id is not None:
+        query = query.filter(BatchJob.doc_type_id == doc_type_id)
+
+    if status is not None:
+        query = query.filter(BatchJob.status == status)
+
+    # Order by most recent first
+    query = query.order_by(BatchJob.created_at.desc())
+
+    # Apply pagination
+    batch_jobs = query.offset(offset).limit(limit).all()
+
+    return [
+        {
+            "batch_id": job.batch_id,
+            "company_id": job.company_id,
+            "company_name": job.company.company_name if job.company else None,
+            "doc_type_id": job.doc_type_id,
+            "type_name": job.document_type.type_name if job.document_type else None,
+            "uploader_user_id": (
+                job.uploader_user_id if hasattr(job, "uploader_user_id") else None
+            ),
+            "uploader_name": (
+                job.uploader.name if hasattr(job, "uploader") and job.uploader else None
+            ),
+            "zip_filename": job.zip_filename,
+            "s3_zipfile_path": job.s3_zipfile_path,
+            "total_files": job.total_files,
+            "processed_files": job.processed_files,
+            "status": job.status,
+            "created_at": job.created_at.isoformat(),
+            "updated_at": job.updated_at.isoformat(),
+        }
+        for job in batch_jobs
+    ]
+
+
+@app.get("/download-by-path")
+def download_file_by_path(path: str):
+    """Download a file by its full path."""
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"File not found on disk: {path}")
+    
+    # Get the filename from the path
+    filename = os.path.basename(path)
+    
+    # Determine content type based on file extension
+    file_extension = os.path.splitext(filename)[1].lower()
+    content_type = "application/octet-stream"  # Default content type
+    
+    if file_extension == ".json":
+        content_type = "application/json"
+    elif file_extension == ".xlsx":
+        content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif file_extension == ".pdf":
+        content_type = "application/pdf"
+    elif file_extension in [".jpg", ".jpeg"]:
+        content_type = "image/jpeg"
+    elif file_extension == ".png":
+        content_type = "image/png"
+    
+    return FileResponse(
+        path=path,
+        filename=filename,
+        media_type=content_type,
+    )
+
+
+@app.get("/files")
+def get_file_by_path(path: str, db: Session = Depends(get_db)):
+    """Get file information by path."""
+    file = db.query(DBFile).filter(DBFile.file_path == path).first()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    return {
+        "file_id": file.file_id,
+        "file_name": file.file_name,
+        "file_path": file.file_path,
+        "file_type": file.file_type,
+    }
 
 
 if __name__ == "__main__":

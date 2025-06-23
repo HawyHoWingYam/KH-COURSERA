@@ -4,7 +4,6 @@
 4. Contrast Adjustment/Normalization
 5. Brightness Correction
 6. Grayscaling
-7. Deskewing/Rotation Correction
-8. Perspective Correction
-9. Dilation>Erosion, Erosion>Dilation
-10. Deblurring
+7. Deskewing/Rotation/Perspective Correction
+8. Dilation>Erosion, Erosion>Dilation
+9. Deblurring

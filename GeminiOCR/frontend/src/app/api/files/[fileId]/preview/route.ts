@@ -6,11 +6,12 @@ import * as XLSX from 'xlsx';
 // The route that handles file preview requests
 export async function GET(
   request: Request,
-  { params }: { params: { fileId: string } }
+  context: { params: { fileId: string } }
 ) {
+  const { fileId } = context.params;
   try {
     // Use await when accessing params
-    const fileIdParam = await params.fileId;
+    const fileIdParam = await fileId;
     const fileId = parseInt(fileIdParam);
     
     if (isNaN(fileId)) {
@@ -23,7 +24,7 @@ export async function GET(
     console.log(`Processing preview request for file ID: ${fileId}`);
     
     // Get the actual file information from your backend
-    const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'}/files/${fileId}`);
+    const response = await fetch(`${process.env.API_BASE_URL || 'http://localhost:8000'}/files/${fileId}`);
     
     if (!response.ok) {
       return NextResponse.json(
@@ -36,7 +37,7 @@ export async function GET(
     console.log(`File info:`, fileInfo);
     
     // Now fetch the actual file content from your backend download endpoint
-    const fileResponse = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'}/download/${fileId}`);
+    const fileResponse = await fetch(`${process.env.API_BASE_URL || 'http://localhost:8000'}/download/${fileId}`);
     
     if (!fileResponse.ok) {
       return NextResponse.json(

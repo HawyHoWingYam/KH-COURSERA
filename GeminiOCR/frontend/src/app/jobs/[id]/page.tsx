@@ -164,11 +164,16 @@ export default function JobDetails() {
       try {
         console.log(`Fetching preview for file ${fileId}`);
         
-        // This URL should work with your Next.js rewrites
-        const response = await fetch(`/files/${fileId}/preview`);
+        // Use absolute URL to bypass Next.js routing for debugging
+        const previewUrl = `http://52.220.245.213:8000/files/${fileId}`;
+        console.log(`Trying to fetch from: ${previewUrl}`);
+        
+        const response = await fetch(previewUrl);
         console.log(`Preview request status: ${response.status}`);
         
         if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`Server error response: ${errorText}`);
           throw new Error(`Failed to load preview (${response.status})`);
         }
         
@@ -334,14 +339,14 @@ export default function JobDetails() {
                       </p>
                     </div>
                     <div className="flex space-x-2">
-                      {(file.file_name.endsWith('.json') || file.file_name.endsWith('.xlsx') || file.file_name.endsWith('.xls')) && (
+                      {/* {(file.file_name.endsWith('.json') || file.file_name.endsWith('.xlsx') || file.file_name.endsWith('.xls')) && (
                         <button
                           onClick={() => togglePreview(file.file_id, file.file_type)}
                           className="bg-gray-100 text-gray-700 py-2 px-4 rounded hover:bg-gray-200"
                         >
                           {previewStates[file.file_id] ? 'Hide Preview' : 'Show Preview'}
                         </button>
-                      )}
+                      )} */}
                       <a
                         href={getFileDownloadUrl(file.file_id)}
                         target="_blank"

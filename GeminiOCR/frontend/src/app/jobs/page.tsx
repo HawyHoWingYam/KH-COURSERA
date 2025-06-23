@@ -2,16 +2,19 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { fetchJobs, Job } from '@/lib/api';
+import { fetchJobs, fetchBatchJobs, Job, BatchJob } from '@/lib/api';
 
 export default function Jobs() {
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [batchJobs, setBatchJobs] = useState<BatchJob[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   const [pendingUpload, setPendingUpload] = useState<any>(null);
+  const [showBatchJobs, setShowBatchJobs] = useState<boolean>(true);
+  const [viewBatchJobs, setViewBatchJobs] = useState(false);
 
   useEffect(() => {
-    // Check for pending uploads from sessionStorage first - do this immediately
+    // Check for pending uploads from sessionStorage
     const uploadInfo = sessionStorage.getItem('pendingUpload');
     if (uploadInfo) {
       setPendingUpload(JSON.parse(uploadInfo));
@@ -19,17 +22,25 @@ export default function Jobs() {
       sessionStorage.removeItem('pendingUpload');
     }
 
-    // Load jobs in the background
-    fetchJobs()
-      .then(jobsData => {
+    // Load jobs with a timeout to avoid infinite loading
+    const loadData = async () => {
+      setIsLoading(true);
+      try {
+        const [jobsData, batchJobsData] = await Promise.all([
+          fetchJobs(),
+          fetchBatchJobs()
+        ]);
         setJobs(jobsData);
+        setBatchJobs(batchJobsData);
+      } catch (error) {
+        console.error('Error fetching jobs:', error);
+        setError('Failed to load jobs');
+      } finally {
         setIsLoading(false);
-      })
-      .catch(err => {
-        console.error('Failed to load jobs:', err);
-        setError('Failed to load jobs. Please try again.');
-        setIsLoading(false);
-      });
+      }
+    };
+
+    loadData();
 
     // Set up an interval to refresh job data every 300 seconds
     const refreshInterval = setInterval(() => {
@@ -38,8 +49,14 @@ export default function Jobs() {
         .catch(err => console.error('Error refreshing jobs:', err));
     }, 300000);
 
-    return () => clearInterval(refreshInterval);
+    return () => {
+      clearInterval(refreshInterval);
+    };
   }, []);
+
+  const toggleJobView = () => {
+    setShowBatchJobs(!showBatchJobs);
+  };
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -78,80 +95,142 @@ export default function Jobs() {
         </div>
       )}
 
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
+      <div className="flex justify-end mb-4">
+        <button 
+          onClick={() => setViewBatchJobs(!viewBatchJobs)}
+          className="px-4 py-2 bg-blue-500 text-white rounded"
+        >
+          Show {viewBatchJobs ? 'Individual Jobs' : 'Batch Jobs'}
+        </button>
+      </div>
+
+      {viewBatchJobs ? (
+        <table className="w-full">
+          <thead>
             <tr>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                JOB ID
-              </th>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                FILENAME
-              </th>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                STATUS
-              </th>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                DATE
-              </th>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                ACTIONS
-              </th>
+              <th>Batch ID</th>
+              <th>File Name</th>
+              <th>Document Type</th>
+              <th>Company</th>
+              <th>Status</th>
+              <th>Progress</th>
+              <th>Date</th>
+              <th>Actions</th>
             </tr>
           </thead>
-          <tbody className="bg-white divide-y divide-gray-200 text-black">
-            {jobs.map((job) => (
-              <tr key={job.job_id}>
-                <td className="px-6 py-4 whitespace-nowrap text-black">
-                  {job.job_id}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-black">
-                  {job.original_filename}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
+          <tbody>
+            {batchJobs.map((batchJob) => (
+              <tr key={batchJob.batch_id}>
+                <td>{batchJob.batch_id}</td>
+                <td>{batchJob.zip_filename}</td>
+                <td>{batchJob.type_name}</td>
+                <td>{batchJob.company_name}</td>
+                <td>
                   <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full 
-                    ${job.status === 'success' || job.status === 'complete'
+                    ${batchJob.status === 'success' || batchJob.status === 'complete'
                         ? 'bg-green-100 text-green-800'
-                        : job.status === 'processing'
+                        : batchJob.status === 'processing'
                           ? 'bg-blue-100 text-blue-800'
                           : 'bg-red-100 text-red-800'
                       }`}>
-                    {job.status}
+                    {batchJob.status}
                   </span>
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  {new Date(job.created_at).toLocaleString()}
+                <td>
+                  {batchJob.processed_files}/{batchJob.total_files}
+                  {batchJob.status === 'processing' && (
+                    <div className="w-full bg-gray-200 rounded-full h-2.5">
+                      <div 
+                        className="bg-blue-600 h-2.5 rounded-full" 
+                        style={{ width: `${(batchJob.processed_files / Math.max(1, batchJob.total_files)) * 100}%` }}
+                      ></div>
+                    </div>
+                  )}
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-blue-600 hover:text-blue-800">
-                  <Link href={`/jobs/${job.job_id}`}>
-                    View
+                <td>{new Date(batchJob.created_at).toLocaleString()}</td>
+                <td>
+                  <Link href={`/batch-jobs/${batchJob.batch_id}`}>
+                    <span className="text-blue-500 cursor-pointer">View Details</span>
                   </Link>
                 </td>
               </tr>
             ))}
-            {isLoading && (
-              <tr>
-                <td colSpan={5} className="px-6 py-4 text-center text-sm text-gray-500">
-                  <div className="flex justify-center items-center space-x-2">
-                    <svg className="animate-spin h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    <span>Loading jobs...</span>
-                  </div>
-                </td>
-              </tr>
-            )}
-            {!isLoading && jobs.length === 0 && (
-              <tr>
-                <td colSpan={5} className="px-6 py-4 text-center text-sm text-gray-500">
-                  No jobs found. Your new jobs will appear here when processing begins.
-                </td>
-              </tr>
-            )}
           </tbody>
         </table>
-      </div>
+      ) : (
+        <div className="bg-white rounded-lg shadow overflow-hidden">
+          {isLoading && jobs.length === 0 ? (
+            <div className="text-center py-10">Loading jobs...</div>
+          ) : (
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    JOB ID
+                  </th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    FILENAME
+                  </th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    STATUS
+                  </th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    DATE
+                  </th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    ACTIONS
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {jobs.map((job) => (
+                  <tr key={job.job_id}>
+                    <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                      {job.job_id}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                      {job.original_filename}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full 
+                        ${job.status === 'success' || job.status === 'complete'
+                            ? 'bg-green-100 text-green-800'
+                            : job.status === 'processing'
+                              ? 'bg-blue-100 text-blue-800'
+                              : 'bg-red-100 text-red-800'
+                          }`}>
+                        {job.status}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                      {new Date(job.created_at).toLocaleString()}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-blue-600 hover:text-blue-800">
+                      <Link href={`/jobs/${job.job_id}`}>
+                        View
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+                {isLoading && (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-4 text-center text-sm text-gray-500">
+                      Loading additional jobs...
+                    </td>
+                  </tr>
+                )}
+                {!isLoading && jobs.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-4 text-center text-sm text-gray-500">
+                      No jobs found.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
     </div>
   );
 }
