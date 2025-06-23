@@ -1,7 +1,6 @@
 paradise-nursery/node_modules/
 paradise-nursery/build/
-SG-20250512-VM.pem
 SG-VM-SSH.pem
 GeminiOCR/backend/__pycache__/
 /GeminiOCR/backend/__pycache__
-/GeminiOCR/backend/__pycache__
+.cursor/.DS_Store
