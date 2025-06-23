@@ -1,20 +1,3 @@
-<no message>
-
-Read file: README.md
-
-Ran tool
-
-Read file: /Users/hawyho/Documents/GitHub/KH-COURSERA/GeminiOCR/frontend/README.md
-<no message>
-
-Read file: /Users/hawyho/Documents/GitHub/KH-COURSERA/GeminiOCR/backend/app.py
-<no message>
-
-Read file: /Users/hawyho/Documents/GitHub/KH-COURSERA/GeminiOCR/frontend/package.json
-Here's a detailed README.md for your GeminiOCR project:
-
-# GeminiOCR: Document Processing Platform
-
 A comprehensive document processing platform built with FastAPI (backend) and Next.js (frontend) that leverages Google's Gemini AI for OCR and data extraction.
 
 ## Table of Contents
