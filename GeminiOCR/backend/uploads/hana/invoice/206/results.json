@@ -1,0 +1,34 @@
+[
+  {
+    "discount": 0.00,
+    "issue_info": {
+      "brand": "華御結",
+      "issue_datetime": "12/06/2025 07:39:48",
+      "issue_number": "KOB120620250739484",
+      "pos_terminal": "POS-1",
+      "shop_address": "九龍灣港鐵站KOB 9A號舖 (近B出口)",
+      "shop_code": "KOB",
+      "shop_telephone": "62331827"
+    },
+    "payment": "八達通付款",
+    "remark": "{\"handwritten_top\": \"9345 0534\"}",
+    "subtotal": 22.00,
+    "total_amount": 22.00
+  },
+  {
+    "discount": -12.00,
+    "issue_info": {
+      "brand": "華御結",
+      "issue_datetime": "12/06/2025 07:45:06",
+      "issue_number": "KOB120620250745069",
+      "pos_terminal": "POS-1",
+      "shop_address": "九龍灣港鐵站KOB 9A號舖 (近B出口)",
+      "shop_code": "KOB",
+      "shop_telephone": "62331827"
+    },
+    "payment": "八達通付款",
+    "remark": "{\"handwritten_top\": \"9465 2540\"}",
+    "subtotal": 51.00,
+    "total_amount": 39.00
+  }
+]

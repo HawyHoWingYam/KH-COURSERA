@@ -17,8 +17,10 @@ interface ConfigType {
     type_name?: string;     // Joined from document_types
 }
 // Get base URL and port from config
-const API_BASE_URL = `http://${process.env.API_BASE_URL || 'localhost'}:${process.env.PORT || 8000}`;
-
+const API_BASE_URL = process.env.NODE_ENV === 'production' 
+  ? 'http://52.220.245.213:8000' 
+  : 'http://localhost:8000';
+  
 // Extended API methods for admin functions
 async function fetchConfigs(): Promise<ConfigType[]> {
     const res = await fetch(`${API_BASE_URL}/configs`);
@@ -340,7 +342,7 @@ export default function ConfigsPage() {
                         </div>
 
                         <div>
-                            <label className="block text-gray-700 mb-2">Prompt File</label>
+                            <label className="block text-gray-700 mb-2">Prompt File(txt)</label>
                             {editingConfig && !promptFile ? (
                                 <div className="flex items-center mb-2">
                                     <span className="text-gray-600 mr-2">{formData.prompt_path}</span>
@@ -371,7 +373,7 @@ export default function ConfigsPage() {
                         </div>
 
                         <div>
-                            <label className="block text-gray-700 mb-2">Schema File</label>
+                            <label className="block text-gray-700 mb-2">Schema File(json)</label>
                             {editingConfig && !schemaFile ? (
                                 <div className="flex items-center mb-2">
                                     <span className="text-gray-600 mr-2">{formData.schema_path}</span>

@@ -69,7 +69,7 @@ export default function BatchJobDetails() {
   // Add a new function to get file ID by path
   const getFileIdByPath = async (path: string): Promise<number | null> => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'}/files?path=${encodeURIComponent(path)}`);
+      const response = await fetch(`${process.env.API_BASE_URL || 'http://localhost:8000'}/files?path=${encodeURIComponent(path)}`);
       if (!response.ok) return null;
       
       const data = await response.json();
@@ -85,7 +85,7 @@ export default function BatchJobDetails() {
     if (!path) return;
     
     // Create a direct download URL to the backend API using the file path
-    const downloadUrl = `${process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'}/download-by-path?path=${encodeURIComponent(path)}`;
+    const downloadUrl = `${process.env.API_BASE_URL || 'http://52.220.245.213:8000'}/download-by-path?path=${encodeURIComponent(path)}`;
     
     // Open the download URL in a new tab
     window.open(downloadUrl, '_blank');
