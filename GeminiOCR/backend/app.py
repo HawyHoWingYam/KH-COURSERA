@@ -162,6 +162,29 @@ def health_check():
         if health_status["status"] == "healthy":
             health_status["status"] = "degraded"
     
+    # 檢查 WebSocket 連接狀態
+    try:
+        websocket_status = {
+            "active_connections": len(active_connections),
+            "connection_ids": list(active_connections.keys())
+        }
+        
+        health_status["services"]["websocket"] = {
+            "status": "healthy",
+            "info": websocket_status,
+            "message": f"{len(active_connections)} active WebSocket connections"
+        }
+        
+        health_status["websocket"] = websocket_status
+        
+    except Exception as e:
+        health_status["services"]["websocket"] = {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+        if health_status["status"] == "healthy":
+            health_status["status"] = "degraded"
+    
     # 設置適當的 HTTP 狀態碼
     status_code = 200
     if health_status["status"] == "unhealthy":
@@ -542,18 +565,43 @@ async def upload_file(file: UploadFile = File(...), path: str = Form(...)):
 # WebSocket connection
 @app.websocket("/ws/{job_id}")
 async def websocket_endpoint(websocket: WebSocket, job_id: str):
-    await websocket.accept()
-    active_connections[job_id] = websocket
-
     try:
-        while True:
-            # Keep the connection alive
-            await websocket.receive_text()
-    except Exception as e:
-        logger.info(f"WebSocket closed for job_id {job_id}: {str(e)}")
+        await websocket.accept()
+        active_connections[job_id] = websocket
+        logger.info(f"✅ WebSocket connection established for job_id: {job_id}")
+        
+        # Send initial connection confirmation
+        await websocket.send_json({
+            "type": "connection_established",
+            "job_id": job_id,
+            "message": "WebSocket connection established successfully"
+        })
+
+        try:
+            while True:
+                # Keep the connection alive and handle any incoming messages
+                try:
+                    data = await websocket.receive_text()
+                    logger.debug(f"Received WebSocket message for job {job_id}: {data}")
+                    
+                    # Handle ping messages to keep connection alive
+                    if data == "ping":
+                        await websocket.send_json({"type": "pong", "job_id": job_id})
+                        
+                except asyncio.TimeoutError:
+                    # Send periodic ping to keep connection alive
+                    await websocket.send_json({"type": "ping", "job_id": job_id})
+                    
+        except Exception as connection_error:
+            logger.warning(f"WebSocket connection error for job_id {job_id}: {str(connection_error)}")
+            
+    except Exception as accept_error:
+        logger.error(f"❌ Failed to accept WebSocket connection for job_id {job_id}: {str(accept_error)}")
+        
     finally:
         if job_id in active_connections:
             del active_connections[job_id]
+            logger.info(f"🔌 WebSocket connection closed for job_id: {job_id}")
 
 
 # Process document endpoint
@@ -891,9 +939,37 @@ async def process_document_task(
 
 
 # WebSocket message sender
+# Enhanced WebSocket message sender with error handling
 async def send_websocket_message(job_id: int, message: dict):
-    if str(job_id) in active_connections:
-        await active_connections[str(job_id)].send_json(message)
+    """Send WebSocket message with improved error handling"""
+    job_id_str = str(job_id)
+    
+    if job_id_str not in active_connections:
+        logger.debug(f"No WebSocket connection found for job_id: {job_id}")
+        return False
+        
+    try:
+        websocket = active_connections[job_id_str]
+        
+        # Add metadata to message
+        enhanced_message = {
+            **message,
+            "job_id": job_id,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        await websocket.send_json(enhanced_message)
+        logger.debug(f"✅ WebSocket message sent for job_id {job_id}: {message.get('status', 'unknown')}")
+        return True
+        
+    except Exception as e:
+        logger.warning(f"⚠️  Failed to send WebSocket message for job_id {job_id}: {str(e)}")
+        
+        # Remove the broken connection
+        if job_id_str in active_connections:
+            del active_connections[job_id_str]
+            
+        return False
 
 
 # Get job status endpoint
