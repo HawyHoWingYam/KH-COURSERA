@@ -1,0 +1,320 @@
+version: '3.8'
+
+# ==============================================
+# GeminiOCR 生产环境配置 - 使用 AWS RDS
+# ==============================================
+# 此配置文件用于生产环境，使用AWS RDS而不是容器化PostgreSQL
+
+services:
+  # 后端服务
+  backend:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+      args:
+        - BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+        - VCS_REF=$(git rev-parse --short HEAD)
+    container_name: gemini-backend-prod
+    restart: unless-stopped
+    volumes:
+      - ./backend/env:/app/env:ro
+      - uploads_data:/app/uploads
+      - logs_data:/app/logs
+    environment:
+      # AWS RDS数据库连接
+      - DATABASE_URL=${AWS_RDS_DATABASE_URL}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - ENVIRONMENT=production
+      
+      # AWS服务配置
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-southeast-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      
+      # 可选: 使用AWS Secrets Manager
+      - AWS_SECRET_NAME=${AWS_SECRET_NAME}
+      
+      # 应用配置
+      - USE_S3_STORAGE=true
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 90s  # RDS连接可能需要更长时间
+    networks:
+      - gemini-prod-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # Redis 缓存服务
+  redis:
+    image: redis:7-alpine
+    container_name: gemini-redis-prod
+    restart: unless-stopped
+    command: >
+      redis-server 
+      --appendonly yes 
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - gemini-prod-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.2'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 前端服务
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend.Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+        - BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+        - VCS_REF=$(git rev-parse --short HEAD)
+    container_name: gemini-frontend-prod
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    networks:
+      - gemini-prod-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # Nginx 反向代理和负载均衡
+  nginx:
+    image: nginx:alpine
+    container_name: gemini-nginx-prod
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+      - nginx_cache:/var/cache/nginx
+      - nginx_logs:/var/log/nginx
+    environment:
+      - NGINX_HOST=${NGINX_HOST}
+      - NGINX_SERVER_NAME=${NGINX_SERVER_NAME:-_}
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - gemini-prod-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.2'
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 数据库迁移服务 (一次性运行)
+  db-migrate:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    container_name: gemini-db-migrate
+    restart: "no"
+    command: ["python", "/app/init_db.py"]
+    volumes:
+      - ./backend/env:/app/env:ro
+    environment:
+      - DATABASE_URL=${AWS_RDS_DATABASE_URL}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    networks:
+      - gemini-prod-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "1"
+
+  # 定时健康检查服务
+  healthcheck:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    container_name: gemini-healthcheck
+    restart: unless-stopped
+    command: ["sh", "-c", "while true; do python /app/check_db.py; sleep 1800; done"]  # 每30分钟检查一次
+    volumes:
+      - ./backend/env:/app/env:ro
+    environment:
+      - DATABASE_URL=${AWS_RDS_DATABASE_URL}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    networks:
+      - gemini-prod-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # 备份服务 (定期备份到S3)
+  backup:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    container_name: gemini-backup
+    restart: unless-stopped
+    command: ["sh", "-c", "/app/scripts/backup.sh"]
+    volumes:
+      - ./backend/env:/app/env:ro
+      - ./scripts:/app/scripts:ro
+      - backup_temp:/tmp/backups
+    environment:
+      - DATABASE_URL=${AWS_RDS_DATABASE_URL}
+      - AWS_S3_BACKUP_BUCKET=${AWS_S3_BACKUP_BUCKET}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-0 2 * * *}  # 默认每天凌晨2点
+    networks:
+      - gemini-prod-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    profiles:
+      - backup  # 只有在指定backup profile时才启动
+
+  # 监控和日志聚合 (可选)
+  monitoring:
+    image: prom/prometheus:latest
+    container_name: gemini-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - gemini-prod-network
+    profiles:
+      - monitoring
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  redis_data:
+    driver: local
+  uploads_data:
+    driver: local
+  logs_data:
+    driver: local
+  nginx_cache:
+    driver: local
+  nginx_logs:
+    driver: local
+  backup_temp:
+    driver: local
+  prometheus_data:
+    driver: local
+
+networks:
+  gemini-prod-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16

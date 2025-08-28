@@ -1,0 +1,108 @@
+# Git
+.git
+.gitignore
+.github
+
+# Documentation
+*.md
+LICENSE
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Backend
+backend/venv
+backend/__pycache__
+backend/**/__pycache__
+backend/**/*.pyc
+backend/**/*.pyo
+backend/**/*.pyd
+backend/.pytest_cache
+backend/error_log.txt
+backend/uploads/**/jobs/**
+backend/uploads/**/batch_*/**
+backend/uploads/**/*.pdf
+backend/uploads/**/*.jpg
+backend/uploads/**/*.jpeg
+backend/uploads/**/*.png
+backend/uploads/**/*.json
+backend/uploads/**/*.xlsx
+backend/uploads/**/*.zip
+
+# Frontend
+frontend/node_modules
+frontend/.next
+frontend/.nuxt
+frontend/dist
+frontend/out
+frontend/build
+frontend/.env
+frontend/.env.local
+frontend/.env.production
+frontend/.env.development
+frontend/.vercel
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+# Dependencies
+**/node_modules
+**/venv
+**/env
+
+# Environment files
+.env
+.env.local
+.env.production
+.env.development
+backend/env/.env
+
+# Database
+*.db
+*.sqlite
+
+# Testing
+coverage
+.pytest_cache
+jest.config.js
+
+# Build artifacts
+dist
+build
+*.egg-info
+
+# Temporary files
+tmp
+temp
+*.tmp
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# CI/CD
+.travis.yml
+.github
+Jenkinsfile

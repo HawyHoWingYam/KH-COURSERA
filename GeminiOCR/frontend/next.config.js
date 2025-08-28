@@ -1,5 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // 启用standalone输出模式，用于Docker部署
+  output: 'standalone',
+  
   eslint: {
     ignoreDuringBuilds: true,
   },
@@ -21,14 +24,17 @@ const nextConfig = {
   
   // Allow cross-origin requests to our API
   async rewrites() {
+    // 在Docker环境中，使用内部服务名称
+    const apiHost = process.env.NEXT_PUBLIC_API_URL || 'http://backend:8000';
+    
     return [
       {
         source: '/api/:path*',
-        destination: `http://52.220.245.213:8000/:path*`,
+        destination: `${apiHost}/:path*`,
       },
       {
         source: '/files/:fileId/preview',
-        destination: `http://52.220.245.213:8000/files/:fileId`,
+        destination: `${apiHost}/files/:fileId`,
       }
     ];
   },
