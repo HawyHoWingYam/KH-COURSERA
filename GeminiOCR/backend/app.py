@@ -44,6 +44,8 @@ from db.models import (
 import main as ocr_processor
 from main import extract_text_from_image, extract_text_from_pdf
 from utils.excel_converter import json_to_excel
+from utils.s3_storage import get_s3_manager, is_s3_enabled, S3StorageManager
+from utils.file_storage import get_file_storage
 
 # 獲取應用配置
 try:
@@ -156,6 +158,32 @@ def health_check():
         }
     except Exception as e:
         health_status["services"]["configuration"] = {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+        if health_status["status"] == "healthy":
+            health_status["status"] = "degraded"
+    
+    # 檢查 S3 存储状态
+    try:
+        if is_s3_enabled():
+            s3_manager = get_s3_manager()
+            s3_health = s3_manager.get_health_status()
+            health_status["services"]["s3_storage"] = {
+                "status": s3_health["status"],
+                "info": s3_health,
+                "message": f"S3 storage: {s3_health['status']}"
+            }
+            if s3_health["status"] != "healthy" and health_status["status"] == "healthy":
+                health_status["status"] = "degraded"
+        else:
+            health_status["services"]["s3_storage"] = {
+                "status": "disabled",
+                "message": "Using local file storage"
+            }
+            health_status["config"]["storage_type"] = "local"
+    except Exception as e:
+        health_status["services"]["s3_storage"] = {
             "status": "unhealthy",
             "error": str(e)
         }
@@ -656,26 +684,26 @@ async def process_document(
                 status_code=500, detail=f"Schema file not found: {config.schema_path}"
             )
 
-        # Save the uploaded file
-        upload_dir = os.path.join(
-            "uploads", company.company_code, doc_type.type_code, "jobs"
-        )
-        os.makedirs(upload_dir, exist_ok=True)
-
-        # Generate a unique filename
-        file_path = os.path.join(upload_dir, document.filename)
-
-        # Save file to disk
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(document.file, buffer)
+        # 使用文件存储服务保存上传的文件
+        file_storage = get_file_storage()
+        try:
+            file_path, original_filename = file_storage.save_uploaded_file(
+                document, company.company_code, doc_type.type_code
+            )
+            logger.info(f"📁 文件已保存：{file_path}")
+        except Exception as e:
+            logger.error(f"❌ 文件保存失败：{e}")
+            raise HTTPException(
+                status_code=500, detail=f"File save failed: {str(e)}"
+            )
 
         # Create a new processing job
         job = ProcessingJob(
             company_id=company_id,
             doc_type_id=doc_type_id,
-            original_filename=document.filename,
+            original_filename=original_filename,
             status="pending",
-            s3_pdf_path=file_path,
+            s3_pdf_path=file_path,  # 现在可能是S3 URL或本地路径
         )
 
         db.add(job)
@@ -700,6 +728,7 @@ async def process_document(
             "job_id": job_id,
             "status": "pending",
             "message": "Document processing started",
+            "storage_type": "S3" if file_path.startswith("s3://") else "local",
         }
 
     except HTTPException:
@@ -721,6 +750,8 @@ async def process_document_task(
     doc_type_code: str,
 ):
     db = next(get_db())
+    file_storage = get_file_storage()
+    temp_file_path = None
 
     try:
         # Update job status
@@ -760,8 +791,13 @@ async def process_document_task(
             {"status": "processing", "message": "Extracting text from document..."},
         )
 
+        # 创建本地临时文件用于处理（如果需要）
+        temp_file_path = file_storage.create_temp_file_from_storage(file_path)
+        if not temp_file_path:
+            raise Exception(f"无法访问文件：{file_path}")
+
         # Process the document based on file type
-        file_extension = os.path.splitext(file_path)[1].lower()
+        file_extension = os.path.splitext(temp_file_path)[1].lower()
 
         process_start_time = time.time()
 
@@ -776,7 +812,7 @@ async def process_document_task(
                 },
             )
             result = await extract_text_from_image(
-                file_path, prompt_template, schema_json, api_key, model_name
+                temp_file_path, prompt_template, schema_json, api_key, model_name
             )
         elif file_extension == ".pdf":
             # Process PDF directly
@@ -788,7 +824,7 @@ async def process_document_task(
                 },
             )
             result = await extract_text_from_pdf(
-                file_path, prompt_template, schema_json, api_key, model_name
+                temp_file_path, prompt_template, schema_json, api_key, model_name
             )
         else:
             # Unsupported file type
@@ -822,7 +858,8 @@ async def process_document_task(
         db.add(api_usage)
         db.commit()
 
-        # Generate output files
+        # Generate output files - 使用本地临时目录存储结果文件
+        # 结果文件仍然存储在本地，因为它们通常很小且需要频繁访问
         output_dir = os.path.join("uploads", company_code, doc_type_code, str(job_id))
         os.makedirs(output_dir, exist_ok=True)
 
@@ -901,6 +938,7 @@ async def process_document_task(
                 "status": "success",
                 "message": f"Document processing completed in {processing_time:.2f} seconds",
                 "processing_time": processing_time,
+                "storage_type": "S3" if file_path.startswith("s3://") else "local",
                 "files": [
                     {
                         "id": json_file.file_id,
@@ -934,6 +972,10 @@ async def process_document_task(
             job_id, {"status": "error", "message": f"Processing failed: {str(e)}"}
         )
     finally:
+        # 清理临时文件
+        if temp_file_path and temp_file_path != file_path:  # 只清理真正的临时文件
+            file_storage.cleanup_temp_file(temp_file_path)
+        
         db.close()
         db = next(get_db())
 

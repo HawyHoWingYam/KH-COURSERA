@@ -204,8 +204,8 @@ The system supports multiple Gemini API keys with automatic failover and rotatio
 
 Example configuration:
 ```ini
-GEMINI_API_KEY_1=AIzaSyCMLtFuRivMXbWVNF6X5an63B5-y5_ADCU
-GEMINI_API_KEY_2=AIzaSyDWW7kOw8oTHduNTVlrSFrxALI40Ozpzpg
+GEMINI_API_KEY_1=456
+GEMINI_API_KEY_2=123
 ```
 
 ### Configuration Examples
