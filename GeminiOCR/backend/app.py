@@ -25,7 +25,10 @@ import google.generativeai as genai  # Correct import for Google's Generative AI
 from sqlalchemy import func
 import time
 
-from db.database import get_db, engine
+# 導入配置管理器
+from config_loader import config_loader, api_key_manager, validate_and_log_config
+
+from db.database import get_db, engine, test_database_connection, get_database_info
 from db.models import (
     Base,
     Company,
@@ -42,8 +45,27 @@ import main as ocr_processor
 from main import extract_text_from_image, extract_text_from_pdf
 from utils.excel_converter import json_to_excel
 
-# Create all tables
-Base.metadata.create_all(bind=engine)
+# 獲取應用配置
+try:
+    app_config = config_loader.get_app_config()
+    logger = logging.getLogger(__name__)
+    
+    # 驗證配置
+    validate_and_log_config()
+    
+except Exception as e:
+    logging.error(f"Failed to load configuration: {e}")
+    raise
+
+# Create all tables (with error handling)
+try:
+    if engine:
+        Base.metadata.create_all(bind=engine)
+        logger.info("✅ Database tables created/verified successfully")
+    else:
+        logger.warning("⚠️  Database engine not initialized, tables not created")
+except Exception as e:
+    logger.error(f"❌ Failed to create database tables: {e}")
 
 app = FastAPI(title="Document Processing API")
 
@@ -61,21 +83,93 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-logger = logging.getLogger(__name__)
 
 # WebSocket connections store
 active_connections = {}
-
-# Load config at module level
-CONFIG_PATH = os.path.join("env", "config.json")
-with open(CONFIG_PATH, "r") as f:
-    config = json.load(f)
 
 
 # Health check endpoint
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+    """增強的健康檢查端點"""
+    health_status = {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "services": {},
+        "config": {}
+    }
+    
+    # 檢查數據庫連接
+    try:
+        db_info = get_database_info()
+        health_status["services"]["database"] = {
+            "status": "healthy" if db_info["status"] == "connected" else "unhealthy",
+            "info": db_info
+        }
+        if db_info["status"] != "connected":
+            health_status["status"] = "degraded"
+    except Exception as e:
+        health_status["services"]["database"] = {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+        health_status["status"] = "unhealthy"
+    
+    # 檢查上傳目錄
+    try:
+        uploads_path = "uploads"
+        if os.path.exists(uploads_path) and os.access(uploads_path, os.W_OK):
+            health_status["services"]["storage"] = {
+                "status": "healthy",
+                "message": "Uploads directory accessible"
+            }
+        else:
+            health_status["services"]["storage"] = {
+                "status": "unhealthy",
+                "message": "Uploads directory not accessible"
+            }
+            if health_status["status"] == "healthy":
+                health_status["status"] = "degraded"
+    except Exception as e:
+        health_status["services"]["storage"] = {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+        if health_status["status"] == "healthy":
+            health_status["status"] = "degraded"
+    
+    # 檢查配置狀態
+    try:
+        api_keys = config_loader.get_gemini_api_keys()
+        app_config = config_loader.get_app_config()
+        
+        health_status["config"] = {
+            "gemini_api_keys": len(api_keys),
+            "environment": app_config["environment"],
+            "model": app_config["model_name"],
+            "api_base_url": app_config["api_base_url"]
+        }
+        
+        health_status["services"]["configuration"] = {
+            "status": "healthy",
+            "message": f"Configuration loaded successfully"
+        }
+    except Exception as e:
+        health_status["services"]["configuration"] = {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+        if health_status["status"] == "healthy":
+            health_status["status"] = "degraded"
+    
+    # 設置適當的 HTTP 狀態碼
+    status_code = 200
+    if health_status["status"] == "unhealthy":
+        status_code = 503
+    elif health_status["status"] == "degraded":
+        status_code = 200  # 對於降級服務仍返回 200
+    
+    return JSONResponse(content=health_status, status_code=status_code)
 
 
 # Companies API endpoints
@@ -606,11 +700,12 @@ async def process_document_task(
         with open(schema_path, "r") as f:
             schema_json = json.load(f)
 
-        # Get API key from config
-        api_key = config.get("api_key")
-        model_name = config.get("model_name")
-        if not api_key:
-            raise ValueError("API key not found in config.json")
+        # Get API key and model from config loader
+        try:
+            api_key = api_key_manager.get_least_used_key()
+            model_name = app_config.get("model_name", "gemini-2.5-flash-preview-05-20")
+        except ValueError as e:
+            raise ValueError(f"API key configuration error: {e}")
 
         await send_websocket_message(
             job_id,
@@ -1238,12 +1333,12 @@ async def process_zip_task(
                 with open(schema_path, "r") as f:
                     schema_json = json.load(f)
 
-                # Get API key from config
-                api_key = config.get("api_key")
-                model_name = config.get("model_name", "gemini-1.5-pro-vision")
-
-                if not api_key:
-                    raise ValueError("API key not found in config.json")
+                # Get API key from config loader
+                try:
+                    api_key = api_key_manager.get_least_used_key()
+                    model_name = app_config.get("model_name", "gemini-2.5-flash-preview-05-20")
+                except ValueError as e:
+                    raise ValueError(f"API key configuration error: {e}")
 
                 # Prepare the results file
                 all_results = []
@@ -1549,14 +1644,20 @@ def get_file_by_path(path: str, db: Session = Depends(get_db)):
 
 if __name__ == "__main__":
     import uvicorn
-
-    with open("env/config.json") as f:
-        config = json.load(f)
+    
+    # Use the secure configuration loader
+    try:
+        app_config = config_loader.get_app_config()
+        port = app_config["port"]
+        logger.info(f"🚀 Starting application on port {port}")
+    except Exception as e:
+        logger.error(f"Failed to load application config: {e}")
+        port = 8000  # Fallback port
     
     # Use multiple workers to handle concurrent requests
     uvicorn.run(
         app, 
         host="0.0.0.0", 
-        port=config["port"],
+        port=port,
         workers=4  # Use multiple workers to handle concurrent requests
     )

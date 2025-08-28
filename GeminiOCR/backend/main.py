@@ -15,8 +15,106 @@ import time
 import urllib.parse
 import logging
 from functools import wraps
+from typing import Optional, Dict, Any
+
+# 導入配置管理器
+try:
+    from config_loader import config_loader, api_key_manager
+    CONFIG_AVAILABLE = True
+except ImportError:
+    CONFIG_AVAILABLE = False
+    logging.warning("Config loader not available, using fallback methods")
 
 logger = logging.getLogger(__name__)
+
+def get_api_key_and_model() -> tuple[str, str]:
+    """獲取 API key 和模型名稱"""
+    if CONFIG_AVAILABLE:
+        try:
+            api_key = api_key_manager.get_least_used_key()
+            app_config = config_loader.get_app_config()
+            model_name = app_config.get("model_name", "gemini-2.5-flash-preview-05-20")
+            return api_key, model_name
+        except Exception as e:
+            logger.error(f"Failed to get API key from config loader: {e}")
+    
+    # 備用方法：從環境變量獲取
+    api_key = os.getenv('GEMINI_API_KEY_1') or os.getenv('GEMINI_API_KEY') or os.getenv('API_KEY')
+    model_name = os.getenv('MODEL_NAME', 'gemini-2.5-flash-preview-05-20')
+    
+    if not api_key:
+        raise ValueError("No Gemini API key found in environment variables or config")
+    
+    return api_key, model_name
+
+def configure_gemini_with_retry(api_key: str, max_retries: int = 3):
+    """配置 Gemini API 並支持重試機制"""
+    for attempt in range(max_retries):
+        try:
+            genai.configure(api_key=api_key)
+            logger.info(f"✅ Gemini API configured successfully (attempt {attempt + 1})")
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to configure Gemini API (attempt {attempt + 1}): {e}")
+            if attempt == max_retries - 1:
+                raise ValueError(f"Failed to configure Gemini API after {max_retries} attempts: {e}")
+            time.sleep(1)  # Wait before retry
+    return False
+
+def api_error_handler(func):
+    """API 錯誤處理裝飾器"""
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        max_retries = 3
+        last_exception = None
+        
+        for attempt in range(max_retries):
+            try:
+                # 如果有API key manager，嘗試獲取不同的key
+                if CONFIG_AVAILABLE and attempt > 0:
+                    try:
+                        new_api_key = api_key_manager.get_next_key()
+                        configure_gemini_with_retry(new_api_key)
+                        # 更新函數參數中的api_key
+                        if 'api_key' in kwargs:
+                            kwargs['api_key'] = new_api_key
+                        elif len(args) >= 4:  # 假設api_key是第4個參數
+                            args = list(args)
+                            args[3] = new_api_key
+                            args = tuple(args)
+                    except Exception as e:
+                        logger.warning(f"Could not rotate API key: {e}")
+                
+                return await func(*args, **kwargs)
+                
+            except Exception as e:
+                last_exception = e
+                error_msg = str(e).lower()
+                
+                # 檢查是否是可重試的錯誤
+                retryable_errors = ['quota', 'rate limit', 'timeout', 'connection', 'service unavailable']
+                if any(err in error_msg for err in retryable_errors):
+                    logger.warning(f"API error (attempt {attempt + 1}/{max_retries}): {e}")
+                    
+                    # 標記當前API key有問題
+                    if CONFIG_AVAILABLE and 'api_key' in locals():
+                        api_key_manager.mark_key_error(api_key)
+                    
+                    if attempt < max_retries - 1:
+                        wait_time = (2 ** attempt) + 1  # 指數退避
+                        logger.info(f"Waiting {wait_time}s before retry...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                else:
+                    # 不可重試的錯誤直接拋出
+                    logger.error(f"Non-retryable API error: {e}")
+                    raise e
+        
+        # 所有重試都失敗了
+        logger.error(f"All API retry attempts failed. Last error: {last_exception}")
+        raise last_exception
+    
+    return wrapper
 
 
 def preprocess_image(image_path):
@@ -170,16 +268,21 @@ def get_response_schema(doc_type, provider_name):
         return None
 
 
+@api_error_handler
 async def extract_text_from_image(
-    image_path, enhanced_prompt, response_schema, api_key, model_name
+    image_path, enhanced_prompt, response_schema, api_key=None, model_name=None
 ):
     """
-    Extract text from image using the enhanced pipeline (async version).
+    Extract text from image using the enhanced pipeline (async version with retry).
     """
+    # 如果沒有提供 API key 和模型名稱，從配置獲取
+    if not api_key or not model_name:
+        api_key, model_name = get_api_key_and_model()
+    
     processed_image = PIL.Image.open(image_path)
 
-    # Configure Gemini API
-    genai.configure(api_key=api_key)
+    # 配置 Gemini API（帶重試）
+    configure_gemini_with_retry(api_key)
 
     # Configure the model
     model = genai.GenerativeModel(
@@ -248,15 +351,20 @@ async def extract_text_from_image(
             return {"text": f"Error: {e}", "input_tokens": 0, "output_tokens": 0}
 
 
+@api_error_handler
 async def extract_text_from_pdf(
-    pdf_path, enhanced_prompt, response_schema, api_key, model_name
+    pdf_path, enhanced_prompt, response_schema, api_key=None, model_name=None
 ):
     """
-    Extract text directly from PDF using Gemini API (async version).
+    Extract text directly from PDF using Gemini API (async version with retry).
     With timing and status tracking.
     """
-    # Configure Gemini API
-    genai.configure(api_key=api_key)
+    # 如果沒有提供 API key 和模型名稱，從配置獲取
+    if not api_key or not model_name:
+        api_key, model_name = get_api_key_and_model()
+    
+    # 配置 Gemini API（帶重試）
+    configure_gemini_with_retry(api_key)
 
     # Load PDF as bytes
     with open(pdf_path, "rb") as f:

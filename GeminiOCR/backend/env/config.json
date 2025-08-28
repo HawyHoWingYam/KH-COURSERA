@@ -1,16 +1,4 @@
 {
-    "api_keys": [
-        "REPLACE_WITH_ENV_VAR_GEMINI_API_KEY_1",
-        "REPLACE_WITH_ENV_VAR_GEMINI_API_KEY_2"
-    ],
-    "database_url": "REPLACE_WITH_ENV_VAR_DATABASE_URL",
-    "aws_access_key_id": "REPLACE_WITH_ENV_VAR_AWS_ACCESS_KEY_ID",
-    "aws_secret_access_key": "REPLACE_WITH_ENV_VAR_AWS_SECRET_ACCESS_KEY",
-    "aws_default_region": "ap-southeast-1",
-    "aws_secret_name": "REPLACE_WITH_ENV_VAR_AWS_SECRET_NAME",
-    "API_BASE_URL": "52.220.245.213",
-    "port": 8000,
-    "model_name": "gemini-2.5-flash-preview-05-20",
     "document_type": {
         "invoices": {
             "archers": {
