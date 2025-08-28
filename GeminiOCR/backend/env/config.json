@@ -1,7 +1,7 @@
 {
-    "api_key": "AIzaSyDnUHmWDSsrh3X6wImAH4UOgRV1kLUA41E",
-    "database_url": "postgresql://HYA_OCR:iLOqKjLru5$h*<0$<-~yZTE:769~@hya-ocr-instance-dev.c94k46soeqmk.ap-southeast-1.rds.amazonaws.com:5432/document_processing_platform",
-    "API_BASE_URL": "localhost",
+    "api_key": "REPLACE_WITH_ENV_VAR",
+    "database_url": "REPLACE_WITH_ENV_VAR",
+    "API_BASE_URL": "52.220.245.213",
     "port": 8000,
     "model_name": "gemini-2.5-flash-preview-05-20",
     "document_type": {
