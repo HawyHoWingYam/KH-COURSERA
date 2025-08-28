@@ -28,7 +28,7 @@ import time
 # 導入配置管理器
 from config_loader import config_loader, api_key_manager, validate_and_log_config
 
-from db.database import get_db, engine, test_database_connection, get_database_info
+from db.database import get_db, engine, get_database_info
 from db.models import (
     Base,
     Company,

@@ -136,7 +136,7 @@ class ConfigLoader:
     def get_app_config(self) -> Dict[str, Any]:
         """獲取應用配置"""
         return {
-            'api_base_url': os.getenv('API_BASE_URL', self._get_from_config('API_BASE_URL', '52.220.245.213')),
+            'api_base_url': os.getenv('API_BASE_URL', self._get_from_config('API_BASE_URL', 'localhost')),
             'port': int(os.getenv('PORT', self._get_from_config('port', 8000))),
             'model_name': os.getenv('MODEL_NAME', self._get_from_config('model_name', 'gemini-2.5-flash-preview-05-20')),
             'environment': os.getenv('ENVIRONMENT', 'development'),

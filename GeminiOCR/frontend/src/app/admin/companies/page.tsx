@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Company } from '@/lib/api';
 // Get base URL and port from config
 const API_BASE_URL = process.env.NODE_ENV === 'production' 
-  ? 'http://52.220.245.213:8000' 
+  ? 'http://localhost:8000' 
   : 'http://localhost:8000';
   
 // Extended API methods for admin functions

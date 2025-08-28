@@ -85,7 +85,7 @@ export default function BatchJobDetails() {
     if (!path) return;
     
     // Create a direct download URL to the backend API using the file path
-    const downloadUrl = `${process.env.API_BASE_URL || 'http://52.220.245.213:8000'}/download-by-path?path=${encodeURIComponent(path)}`;
+    const downloadUrl = `${process.env.API_BASE_URL || 'http://localhost:8000'}/download-by-path?path=${encodeURIComponent(path)}`;
     
     // Open the download URL in a new tab
     window.open(downloadUrl, '_blank');

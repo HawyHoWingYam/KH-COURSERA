@@ -4,3 +4,35 @@ SG-VM-SSH.pem
 GeminiOCR/backend/__pycache__/
 /GeminiOCR/backend/__pycache__
 .cursor/.DS_Store
+
+# Environment variables and sensitive configuration
+.env
+.env.local
+.env.production
+.env.staging
+*.pem
+**/config.local.json
+**/config.prod.json
+
+# AWS credentials
+.aws/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+error_log.txt
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

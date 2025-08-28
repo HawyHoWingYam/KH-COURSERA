@@ -165,7 +165,7 @@ export default function JobDetails() {
         console.log(`Fetching preview for file ${fileId}`);
         
         // Use absolute URL to bypass Next.js routing for debugging
-        const previewUrl = `http://52.220.245.213:8000/files/${fileId}`;
+        const previewUrl = `http://localhost:8000/files/${fileId}`;
         console.log(`Trying to fetch from: ${previewUrl}`);
         
         const response = await fetch(previewUrl);

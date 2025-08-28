@@ -81,7 +81,7 @@ export interface BatchJob {
 // Base API URL and port from config
 const API_BASE_URL = typeof window !== 'undefined' && process.env.API_BASE_URL 
   ? `http://${process.env.API_BASE_URL}:${process.env.PORT || 8000}`
-  : 'http://52.220.245.213:8000';
+  : 'http://localhost:8000';
 
 // Generic fetch function with error handling
 export async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {

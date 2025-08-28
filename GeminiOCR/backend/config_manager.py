@@ -25,7 +25,7 @@ class Config:
         self.aws_secret_name = os.getenv('AWS_SECRET_NAME') or self._get_from_config('aws_secret_name')
         
         # Application Configuration
-        self.api_base_url = os.getenv('API_BASE_URL', '52.220.245.213')
+        self.api_base_url = os.getenv('API_BASE_URL', 'localhost')
         self.port = int(os.getenv('PORT', '8000'))
         self.model_name = os.getenv('MODEL_NAME', 'gemini-2.5-flash-preview-05-20')
         self.environment = os.getenv('ENVIRONMENT', 'development')

@@ -99,10 +99,6 @@ def create_database_engine():
             }
         )
         
-        # 測試連接
-        with engine.connect() as conn:
-            conn.execute("SELECT 1")
-        
         logger.info("✅ Database connection established successfully")
         return engine
         
@@ -146,18 +142,6 @@ def get_db():
         raise
     finally:
         db.close()
-
-def test_database_connection() -> bool:
-    """測試數據庫連接"""
-    try:
-        db = next(get_db())
-        db.execute("SELECT 1")
-        db.close()
-        logger.info("✅ Database connection test passed")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Database connection test failed: {e}")
-        return False
 
 def get_database_info() -> dict:
     """獲取數據庫信息"""
