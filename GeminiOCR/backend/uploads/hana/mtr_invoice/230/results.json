@@ -1,0 +1,2510 @@
+[
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76858",
+      "invoice_amount": "5,419.36",
+      "property_address": "FOTVEM1",
+      "property_code": "MTKX00199106"
+    },
+    "item_amount": "5.400.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76858",
+      "invoice_amount": "5,419.36",
+      "property_address": "FOTVEM1",
+      "property_code": "MTKX00199106"
+    },
+    "item_amount": "5,400.00",
+    "item_date": "06/2025 10/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76858",
+      "invoice_amount": "5,419.36",
+      "property_address": "FOTVEM1",
+      "property_code": "MTKX00199106"
+    },
+    "item_amount": "5,419.36",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, N.T.",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76542",
+      "invoice_amount": "49,047.15",
+      "property_address": "WEK B2-3",
+      "property_code": "MTKX00133200"
+    },
+    "item_amount": "57,047.09",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, N.T.",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76542",
+      "invoice_amount": "49,047.15",
+      "property_address": "WEK B2-3",
+      "property_code": "MTKX00133200"
+    },
+    "item_amount": "57,047.89",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, N.T.",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76542",
+      "invoice_amount": "49,047.15",
+      "property_address": "WEK B2-3",
+      "property_code": "MTKX00133200"
+    },
+    "item_amount": "3,697.15",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "T/O RENT 01/05/2025 TO 31/05/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, N.T.",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76542",
+      "invoice_amount": "49,047.15",
+      "property_address": "WEK B2-3",
+      "property_code": "MTKX00133200"
+    },
+    "item_amount": "-100.00",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "CASH COUPON REF: 04/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, N.T.",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76542",
+      "invoice_amount": "49,047.15",
+      "property_address": "WEK B2-3",
+      "property_code": "MTKX00133200"
+    },
+    "item_amount": "39,000.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, N.T.",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76542",
+      "invoice_amount": "49,047.15",
+      "property_address": "WEK B2-3",
+      "property_code": "MTKX00133200"
+    },
+    "item_amount": "2,795.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, N.T.",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76542",
+      "invoice_amount": "49,047.15",
+      "property_address": "WEK B2-3",
+      "property_code": "MTKX00133200"
+    },
+    "item_amount": "645.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "PROMOTION FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, N.T.",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76542",
+      "invoice_amount": "49,047.15",
+      "property_address": "WEK B2-3",
+      "property_code": "MTKX00133200"
+    },
+    "item_amount": "3,010.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76515",
+      "invoice_amount": "116,827.00",
+      "property_address": "TSY 5",
+      "property_code": "MTKX00127702"
+    },
+    "item_amount": "115,908.23",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76515",
+      "invoice_amount": "116,827.00",
+      "property_address": "TSY 5",
+      "property_code": "MTKX00127702"
+    },
+    "item_amount": "115,008.23",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76515",
+      "invoice_amount": "116,827.00",
+      "property_address": "TSY 5",
+      "property_code": "MTKX00127702"
+    },
+    "item_amount": "-70.00",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "CASH COUPON REF: 04/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76515",
+      "invoice_amount": "116,827.00",
+      "property_address": "TSY 5",
+      "property_code": "MTKX00127702"
+    },
+    "item_amount": "110,863.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76515",
+      "invoice_amount": "116,827.00",
+      "property_address": "TSY 5",
+      "property_code": "MTKX00127702"
+    },
+    "item_amount": "2,800.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76515",
+      "invoice_amount": "116,827.00",
+      "property_address": "TSY 5",
+      "property_code": "MTKX00127702"
+    },
+    "item_amount": "1,134.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "PROMOTION FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76515",
+      "invoice_amount": "116,827.00",
+      "property_address": "TSY 5",
+      "property_code": "MTKX00127702"
+    },
+    "item_amount": "2,100.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76475",
+      "invoice_amount": "57,791.00",
+      "property_address": "YUL 5",
+      "property_code": "MTKX00120705"
+    },
+    "item_amount": "57,231.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76475",
+      "invoice_amount": "57,791.00",
+      "property_address": "YUL 5",
+      "property_code": "MTKX00120705"
+    },
+    "item_amount": "57,231.00",
+    "item_date": "06/2025 10/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76475",
+      "invoice_amount": "57,791.00",
+      "property_address": "YUL 5",
+      "property_code": "MTKX00120705"
+    },
+    "item_amount": "-20.00",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "CASH COUPON REF: 04/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76475",
+      "invoice_amount": "57,791.00",
+      "property_address": "YUL 5",
+      "property_code": "MTKX00120705"
+    },
+    "item_amount": "56,900.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76475",
+      "invoice_amount": "57,791.00",
+      "property_address": "YUL 5",
+      "property_code": "MTKX00120705"
+    },
+    "item_amount": "911.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76507",
+      "invoice_amount": "160,890.00",
+      "property_address": "WAC 3",
+      "property_code": "MTKX00126405"
+    },
+    "item_amount": "160,910.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76507",
+      "invoice_amount": "160,890.00",
+      "property_address": "WAC 3",
+      "property_code": "MTKX00126405"
+    },
+    "item_amount": "-160,910.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 10/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76507",
+      "invoice_amount": "160,890.00",
+      "property_address": "WAC 3",
+      "property_code": "MTKX00126405"
+    },
+    "item_amount": "-20.00",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "CASH COUPON REF: 04/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76507",
+      "invoice_amount": "160,890.00",
+      "property_address": "WAC 3",
+      "property_code": "MTKX00126405"
+    },
+    "item_amount": "160,000.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76507",
+      "invoice_amount": "160,890.00",
+      "property_address": "WAC 3",
+      "property_code": "MTKX00126405"
+    },
+    "item_amount": "520.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76507",
+      "invoice_amount": "160,890.00",
+      "property_address": "WAC 3",
+      "property_code": "MTKX00126405"
+    },
+    "item_amount": "390.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76494",
+      "invoice_amount": "89,960.48",
+      "property_address": "CEN K8A",
+      "property_code": "MTKX00123902"
+    },
+    "item_amount": "88,735.00",
+    "item_date": "",
+    "item_description": "LAST MONTH-B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76494",
+      "invoice_amount": "89,960.48",
+      "property_address": "CEN K8A",
+      "property_code": "MTKX00123902"
+    },
+    "item_amount": "88,735.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76494",
+      "invoice_amount": "89,960.48",
+      "property_address": "CEN K8A",
+      "property_code": "MTKX00123902"
+    },
+    "item_amount": "88,315.48",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76494",
+      "invoice_amount": "89,960.48",
+      "property_address": "CEN K8A",
+      "property_code": "MTKX00123902"
+    },
+    "item_amount": "940.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76494",
+      "invoice_amount": "89,960.48",
+      "property_address": "CEN K8A",
+      "property_code": "MTKX00123902"
+    },
+    "item_amount": "705.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76678",
+      "invoice_amount": "269,036.87",
+      "property_address": "CEN W8",
+      "property_code": "MTKX00162205"
+    },
+    "item_amount": "265,633.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76678",
+      "invoice_amount": "269,036.87",
+      "property_address": "CEN W8",
+      "property_code": "MTKX00162205"
+    },
+    "item_amount": "-265,633.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76678",
+      "invoice_amount": "269,036.87",
+      "property_address": "CEN W8",
+      "property_code": "MTKX00162205"
+    },
+    "item_amount": "267,216.87",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76678",
+      "invoice_amount": "269,036.87",
+      "property_address": "CEN W8",
+      "property_code": "MTKX00162205"
+    },
+    "item_amount": "1,040.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76678",
+      "invoice_amount": "269,036.87",
+      "property_address": "CEN W8",
+      "property_code": "MTKX00162205"
+    },
+    "item_amount": "780.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76488",
+      "invoice_amount": "119,127.00",
+      "property_address": "Shop Nos. F4-F5",
+      "property_code": "MTKX00123208"
+    },
+    "item_amount": "119,037.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76488",
+      "invoice_amount": "119,127.00",
+      "property_address": "Shop Nos. F4-F5",
+      "property_code": "MTKX00123208"
+    },
+    "item_amount": "119,037.00",
+    "item_date": "06/2025 10/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76488",
+      "invoice_amount": "119,127.00",
+      "property_address": "Shop Nos. F4-F5",
+      "property_code": "MTKX00123208"
+    },
+    "item_amount": "116,415.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76488",
+      "invoice_amount": "119,127.00",
+      "property_address": "Shop Nos. F4-F5",
+      "property_code": "MTKX00123208"
+    },
+    "item_amount": "1,566.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76488",
+      "invoice_amount": "119,127.00",
+      "property_address": "Shop Nos. F4-F5",
+      "property_code": "MTKX00123208"
+    },
+    "item_amount": "1,146.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, NT",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76355",
+      "invoice_amount": "67,454.00",
+      "property_address": "HAH18",
+      "property_code": "MTKX00097501"
+    },
+    "item_amount": "67,364.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, NT",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76355",
+      "invoice_amount": "67,454.00",
+      "property_address": "HAH18",
+      "property_code": "MTKX00097501"
+    },
+    "item_amount": "-07,364.00",
+    "item_date": "06/2025 18/00/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/00/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, NT",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76355",
+      "invoice_amount": "67,454.00",
+      "property_address": "HAH18",
+      "property_code": "MTKX00097501"
+    },
+    "item_amount": "66,670.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, NT",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76355",
+      "invoice_amount": "67,454.00",
+      "property_address": "HAH18",
+      "property_code": "MTKX00097501"
+    },
+    "item_amount": "784.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76486",
+      "invoice_amount": "173,860.00",
+      "property_address": "ADM 28",
+      "property_code": "MTKX00122809"
+    },
+    "item_amount": "173,920.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76486",
+      "invoice_amount": "173,860.00",
+      "property_address": "ADM 28",
+      "property_code": "MTKX00122809"
+    },
+    "item_amount": "-173,920.00",
+    "item_date": "06/2025 10/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76486",
+      "invoice_amount": "173,860.00",
+      "property_address": "ADM 28",
+      "property_code": "MTKX00122809"
+    },
+    "item_amount": "-60.00",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "CASH COUPON REF: 04/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76486",
+      "invoice_amount": "173,860.00",
+      "property_address": "ADM 28",
+      "property_code": "MTKX00122809"
+    },
+    "item_amount": "172,160.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76486",
+      "invoice_amount": "173,860.00",
+      "property_address": "ADM 28",
+      "property_code": "MTKX00122809"
+    },
+    "item_amount": "1,006.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76486",
+      "invoice_amount": "173,860.00",
+      "property_address": "ADM 28",
+      "property_code": "MTKX00122809"
+    },
+    "item_amount": "754.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76480",
+      "invoice_amount": "178,656.00",
+      "property_address": "KWT 22",
+      "property_code": "MTKX00121502"
+    },
+    "item_amount": "178,646.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76480",
+      "invoice_amount": "178,656.00",
+      "property_address": "KWT 22",
+      "property_code": "MTKX00121502"
+    },
+    "item_amount": "-178,646.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76480",
+      "invoice_amount": "178,656.00",
+      "property_address": "KWT 22",
+      "property_code": "MTKX00121502"
+    },
+    "item_amount": "177,450.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76480",
+      "invoice_amount": "178,656.00",
+      "property_address": "KWT 22",
+      "property_code": "MTKX00121502"
+    },
+    "item_amount": "689.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76480",
+      "invoice_amount": "178,656.00",
+      "property_address": "KWT 22",
+      "property_code": "MTKX00121502"
+    },
+    "item_amount": "517.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76468",
+      "invoice_amount": "76,371.00",
+      "property_address": "KOW 92",
+      "property_code": "MTKX00119304"
+    },
+    "item_amount": "76,351.00",
+    "item_date": "",
+    "item_description": "LAST MONTH-B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76468",
+      "invoice_amount": "76,371.00",
+      "property_address": "KOW 92",
+      "property_code": "MTKX00119304"
+    },
+    "item_amount": "76,351.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76468",
+      "invoice_amount": "76,371.00",
+      "property_address": "KOW 92",
+      "property_code": "MTKX00119304"
+    },
+    "item_amount": "73,858.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76468",
+      "invoice_amount": "76,371.00",
+      "property_address": "KOW 92",
+      "property_code": "MTKX00119304"
+    },
+    "item_amount": "1,436.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76468",
+      "invoice_amount": "76,371.00",
+      "property_address": "KOW 92",
+      "property_code": "MTKX00119304"
+    },
+    "item_amount": "1,077.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76423",
+      "invoice_amount": "223,838.00",
+      "property_address": "SHT24",
+      "property_code": "MTKX00110203"
+    },
+    "item_amount": "223,778.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76423",
+      "invoice_amount": "223,838.00",
+      "property_address": "SHT24",
+      "property_code": "MTKX00110203"
+    },
+    "item_amount": "-223,778.00",
+    "item_date": "06/2025 10/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76423",
+      "invoice_amount": "223,838.00",
+      "property_address": "SHT24",
+      "property_code": "MTKX00110203"
+    },
+    "item_amount": "222,523.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76423",
+      "invoice_amount": "223,838.00",
+      "property_address": "SHT24",
+      "property_code": "MTKX00110203"
+    },
+    "item_amount": "856.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76423",
+      "invoice_amount": "223,838.00",
+      "property_address": "SHT24",
+      "property_code": "MTKX00110203"
+    },
+    "item_amount": "459.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76390",
+      "invoice_amount": "76,836.00",
+      "property_address": "TAW37",
+      "property_code": "MTKX00104705"
+    },
+    "item_amount": "76,856.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76390",
+      "invoice_amount": "76,836.00",
+      "property_address": "TAW37",
+      "property_code": "MTKX00104705"
+    },
+    "item_amount": "-76,856.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/08/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76390",
+      "invoice_amount": "76,836.00",
+      "property_address": "TAW37",
+      "property_code": "MTKX00104705"
+    },
+    "item_amount": "-20.00",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "CASH COUPON REF: 04/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76390",
+      "invoice_amount": "76,836.00",
+      "property_address": "TAW37",
+      "property_code": "MTKX00104705"
+    },
+    "item_amount": "75,344.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76390",
+      "invoice_amount": "76,836.00",
+      "property_address": "TAW37",
+      "property_code": "MTKX00104705"
+    },
+    "item_amount": "984.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76390",
+      "invoice_amount": "76,836.00",
+      "property_address": "TAW37",
+      "property_code": "MTKX00104705"
+    },
+    "item_amount": "528.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, NT",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76339",
+      "invoice_amount": "89,885.00",
+      "property_address": "TKO5",
+      "property_code": "MTKX00094100"
+    },
+    "item_amount": "89,885.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, NT",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76339",
+      "invoice_amount": "89,885.00",
+      "property_address": "TKO5",
+      "property_code": "MTKX00094100"
+    },
+    "item_amount": "80,885.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, NT",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76339",
+      "invoice_amount": "89,885.00",
+      "property_address": "TKO5",
+      "property_code": "MTKX00094100"
+    },
+    "item_amount": "89,005.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, NT",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76339",
+      "invoice_amount": "89,885.00",
+      "property_address": "TKO5",
+      "property_code": "MTKX00094100"
+    },
+    "item_amount": "880.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76261",
+      "invoice_amount": "135,622.00",
+      "property_address": "TAK13",
+      "property_code": "MTKX00075403"
+    },
+    "item_amount": "161,962.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76261",
+      "invoice_amount": "135,622.00",
+      "property_address": "TAK13",
+      "property_code": "MTKX00075403"
+    },
+    "item_amount": "161,962.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76261",
+      "invoice_amount": "135,622.00",
+      "property_address": "TAK13",
+      "property_code": "MTKX00075403"
+    },
+    "item_amount": "-20.00",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "CASH COUPON REF: 04/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76261",
+      "invoice_amount": "135,622.00",
+      "property_address": "TAK13",
+      "property_code": "MTKX00075403"
+    },
+    "item_amount": "135,000.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76261",
+      "invoice_amount": "135,622.00",
+      "property_address": "TAK13",
+      "property_code": "MTKX00075403"
+    },
+    "item_amount": "642.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76550",
+      "invoice_amount": "98,677.00",
+      "property_address": "TUM 31",
+      "property_code": "MTKX00134905"
+    },
+    "item_amount": "98,097.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76550",
+      "invoice_amount": "98,677.00",
+      "property_address": "TUM 31",
+      "property_code": "MTKX00134905"
+    },
+    "item_amount": "98,097.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76550",
+      "invoice_amount": "98,677.00",
+      "property_address": "TUM 31",
+      "property_code": "MTKX00134905"
+    },
+    "item_amount": "98,000.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76550",
+      "invoice_amount": "98,677.00",
+      "property_address": "TUM 31",
+      "property_code": "MTKX00134905"
+    },
+    "item_amount": "677.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76589",
+      "invoice_amount": "93,120.00",
+      "property_address": "CHH 10",
+      "property_code": "MTKX00142507"
+    },
+    "item_amount": "116,503.97",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76589",
+      "invoice_amount": "93,120.00",
+      "property_address": "CHH 10",
+      "property_code": "MTKX00142507"
+    },
+    "item_amount": "116,503.97",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76589",
+      "invoice_amount": "93,120.00",
+      "property_address": "CHH 10",
+      "property_code": "MTKX00142507"
+    },
+    "item_amount": "92,000.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76589",
+      "invoice_amount": "93,120.00",
+      "property_address": "CHH 10",
+      "property_code": "MTKX00142507"
+    },
+    "item_amount": "640.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76589",
+      "invoice_amount": "93,120.00",
+      "property_address": "CHH 10",
+      "property_code": "MTKX00142507"
+    },
+    "item_amount": "480.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76586",
+      "invoice_amount": "77,755.00",
+      "property_address": "ETS 1",
+      "property_code": "MTKX00141802"
+    },
+    "item_amount": "77,775.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76586",
+      "invoice_amount": "77,755.00",
+      "property_address": "ETS 1",
+      "property_code": "MTKX00141802"
+    },
+    "item_amount": "77,775.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76586",
+      "invoice_amount": "77,755.00",
+      "property_address": "ETS 1",
+      "property_code": "MTKX00141802"
+    },
+    "item_amount": "-20.00",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "CASH COUPON REF: 04/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76586",
+      "invoice_amount": "77,755.00",
+      "property_address": "ETS 1",
+      "property_code": "MTKX00141802"
+    },
+    "item_amount": "76,000.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76586",
+      "invoice_amount": "77,755.00",
+      "property_address": "ETS 1",
+      "property_code": "MTKX00141802"
+    },
+    "item_amount": "1,025.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76586",
+      "invoice_amount": "77,755.00",
+      "property_address": "ETS 1",
+      "property_code": "MTKX00141802"
+    },
+    "item_amount": "750.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76611",
+      "invoice_amount": "81,300.00",
+      "property_address": "KWF 14",
+      "property_code": "MTKX00147002"
+    },
+    "item_amount": "81,300.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76611",
+      "invoice_amount": "81,300.00",
+      "property_address": "KWF 14",
+      "property_code": "MTKX00147002"
+    },
+    "item_amount": "81,300.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76611",
+      "invoice_amount": "81,300.00",
+      "property_address": "KWF 14",
+      "property_code": "MTKX00147002"
+    },
+    "item_amount": "-20.00",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "CASH COUPON REF: 04/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76611",
+      "invoice_amount": "81,300.00",
+      "property_address": "KWF 14",
+      "property_code": "MTKX00147002"
+    },
+    "item_amount": "81,320.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76594",
+      "invoice_amount": "130,759.00",
+      "property_address": "TSW 13",
+      "property_code": "MTKX00144101"
+    },
+    "item_amount": "130,699.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76594",
+      "invoice_amount": "130,759.00",
+      "property_address": "TSW 13",
+      "property_code": "MTKX00144101"
+    },
+    "item_amount": "130,699.00",
+    "item_date": "06/2025 10/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76594",
+      "invoice_amount": "130,759.00",
+      "property_address": "TSW 13",
+      "property_code": "MTKX00144101"
+    },
+    "item_amount": "-10.00",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "CASH COUPON REF: 04/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76594",
+      "invoice_amount": "130,759.00",
+      "property_address": "TSW 13",
+      "property_code": "MTKX00144101"
+    },
+    "item_amount": "130,065.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76594",
+      "invoice_amount": "130,759.00",
+      "property_address": "TSW 13",
+      "property_code": "MTKX00144101"
+    },
+    "item_amount": "704.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76600",
+      "invoice_amount": "55,750.00",
+      "property_address": "FOH 12",
+      "property_code": "MTKX00144907"
+    },
+    "item_amount": "55,750.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76600",
+      "invoice_amount": "55,750.00",
+      "property_address": "FOH 12",
+      "property_code": "MTKX00144907"
+    },
+    "item_amount": "-55,750.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76600",
+      "invoice_amount": "55,750.00",
+      "property_address": "FOH 12",
+      "property_code": "MTKX00144907"
+    },
+    "item_amount": "55,086.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76600",
+      "invoice_amount": "55,750.00",
+      "property_address": "FOH 12",
+      "property_code": "MTKX00144907"
+    },
+    "item_amount": "664.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76628",
+      "invoice_amount": "167,270.00",
+      "property_address": "Shop No. 019",
+      "property_code": "MTKX00152203"
+    },
+    "item_amount": "167,270.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76628",
+      "invoice_amount": "167,270.00",
+      "property_address": "Shop No. 019",
+      "property_code": "MTKX00152203"
+    },
+    "item_amount": "167,270.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76628",
+      "invoice_amount": "167,270.00",
+      "property_address": "Shop No. 019",
+      "property_code": "MTKX00152203"
+    },
+    "item_amount": "166,610.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76628",
+      "invoice_amount": "167,270.00",
+      "property_address": "Shop No. 019",
+      "property_code": "MTKX00152203"
+    },
+    "item_amount": "660.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76612",
+      "invoice_amount": "58,892.66",
+      "property_address": "SIH 12",
+      "property_code": "MTKX00147206"
+    },
+    "item_amount": "58,653.42",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76612",
+      "invoice_amount": "58,892.66",
+      "property_address": "SIH 12",
+      "property_code": "MTKX00147206"
+    },
+    "item_amount": "-50,653.42",
+    "item_date": "06/2025 10/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76612",
+      "invoice_amount": "58,892.66",
+      "property_address": "SIH 12",
+      "property_code": "MTKX00147206"
+    },
+    "item_amount": "-40.00",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "CASH COUPON REF: 04/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76612",
+      "invoice_amount": "58,892.66",
+      "property_address": "SIH 12",
+      "property_code": "MTKX00147206"
+    },
+    "item_amount": "2,014.66",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "T/O RENT 01/05/2025 TO 31/05/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76612",
+      "invoice_amount": "58,892.66",
+      "property_address": "SIH 12",
+      "property_code": "MTKX00147206"
+    },
+    "item_amount": "56,032.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76612",
+      "invoice_amount": "58,892.66",
+      "property_address": "SIH 12",
+      "property_code": "MTKX00147206"
+    },
+    "item_amount": "886.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, NT",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76573",
+      "invoice_amount": "56,300.00",
+      "property_address": "WHAW4",
+      "property_code": "MTKX00140301"
+    },
+    "item_amount": "56,320.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, NT",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76573",
+      "invoice_amount": "56,300.00",
+      "property_address": "WHAW4",
+      "property_code": "MTKX00140301"
+    },
+    "item_amount": "56,320.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, NT",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76573",
+      "invoice_amount": "56,300.00",
+      "property_address": "WHAW4",
+      "property_code": "MTKX00140301"
+    },
+    "item_amount": "-20.00",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "CASH COUPON REF: 04/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, NT",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76573",
+      "invoice_amount": "56,300.00",
+      "property_address": "WHAW4",
+      "property_code": "MTKX00140301"
+    },
+    "item_amount": "54,640.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, NT",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76573",
+      "invoice_amount": "56,300.00",
+      "property_address": "WHAW4",
+      "property_code": "MTKX00140301"
+    },
+    "item_amount": "960.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, NT",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76573",
+      "invoice_amount": "56,300.00",
+      "property_address": "WHAW4",
+      "property_code": "MTKX00140301"
+    },
+    "item_amount": "720.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76627",
+      "invoice_amount": "80,913.00",
+      "property_address": "LCK 15",
+      "property_code": "MTKX00152009"
+    },
+    "item_amount": "80,913.00",
+    "item_date": "",
+    "item_description": "LAST MONTH D/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76627",
+      "invoice_amount": "80,913.00",
+      "property_address": "LCK 15",
+      "property_code": "MTKX00152009"
+    },
+    "item_amount": "-80,913.00",
+    "item_date": "06/2025 10/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76627",
+      "invoice_amount": "80,913.00",
+      "property_address": "LCK 15",
+      "property_code": "MTKX00152009"
+    },
+    "item_amount": "80,153.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76627",
+      "invoice_amount": "80,913.00",
+      "property_address": "LCK 15",
+      "property_code": "MTKX00152009"
+    },
+    "item_amount": "760.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Terrirtories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76639",
+      "invoice_amount": "85,453.00",
+      "property_address": "OCP 2",
+      "property_code": "MTKX00154205"
+    },
+    "item_amount": "85,383.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Terrirtories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76639",
+      "invoice_amount": "85,453.00",
+      "property_address": "OCP 2",
+      "property_code": "MTKX00154205"
+    },
+    "item_amount": "85,383.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 16/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Terrirtories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76639",
+      "invoice_amount": "85,453.00",
+      "property_address": "OCP 2",
+      "property_code": "MTKX00154205"
+    },
+    "item_amount": "85,000.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Terrirtories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76639",
+      "invoice_amount": "85,453.00",
+      "property_address": "OCP 2",
+      "property_code": "MTKX00154205"
+    },
+    "item_amount": "453.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76650",
+      "invoice_amount": "160,170.00",
+      "property_address": "MOK 14",
+      "property_code": "MTKX00156605"
+    },
+    "item_amount": "160,130.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76650",
+      "invoice_amount": "160,170.00",
+      "property_address": "MOK 14",
+      "property_code": "MTKX00156605"
+    },
+    "item_amount": "160,130.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76650",
+      "invoice_amount": "160,170.00",
+      "property_address": "MOK 14",
+      "property_code": "MTKX00156605"
+    },
+    "item_amount": "159,030.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76650",
+      "invoice_amount": "160,170.00",
+      "property_address": "MOK 14",
+      "property_code": "MTKX00156605"
+    },
+    "item_amount": "651.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76650",
+      "invoice_amount": "160,170.00",
+      "property_address": "MOK 14",
+      "property_code": "MTKX00156605"
+    },
+    "item_amount": "489.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76524",
+      "invoice_amount": "49,449.06",
+      "property_address": "TWW 21",
+      "property_code": "MTKX00129102"
+    },
+    "item_amount": "46,536.40",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76524",
+      "invoice_amount": "49,449.06",
+      "property_address": "TWW 21",
+      "property_code": "MTKX00129102"
+    },
+    "item_amount": "46,536.40",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76524",
+      "invoice_amount": "49,449.06",
+      "property_address": "TWW 21",
+      "property_code": "MTKX00129102"
+    },
+    "item_amount": "5,272.06",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "T/O RENT 01/05/2025 TO 31/05/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76524",
+      "invoice_amount": "49,449.06",
+      "property_address": "TWW 21",
+      "property_code": "MTKX00129102"
+    },
+    "item_amount": "43,504.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76524",
+      "invoice_amount": "49,449.06",
+      "property_address": "TWW 21",
+      "property_code": "MTKX00129102"
+    },
+    "item_amount": "673.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76662",
+      "invoice_amount": "124,085.00",
+      "property_address": "FAN10",
+      "property_code": "MTKX00159608"
+    },
+    "item_amount": "124,045.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76662",
+      "invoice_amount": "124,085.00",
+      "property_address": "FAN10",
+      "property_code": "MTKX00159608"
+    },
+    "item_amount": "124,045.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76662",
+      "invoice_amount": "124,085.00",
+      "property_address": "FAN10",
+      "property_code": "MTKX00159608"
+    },
+    "item_amount": "123,631.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76662",
+      "invoice_amount": "124,085.00",
+      "property_address": "FAN10",
+      "property_code": "MTKX00159608"
+    },
+    "item_amount": "454.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76686",
+      "invoice_amount": "98,247.00",
+      "property_address": "TIS 47",
+      "property_code": "MTKX00164605"
+    },
+    "item_amount": "97,827.00",
+    "item_date": "",
+    "item_description": "LAST MONTH-B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76686",
+      "invoice_amount": "98,247.00",
+      "property_address": "TIS 47",
+      "property_code": "MTKX00164605"
+    },
+    "item_amount": "97,827.00",
+    "item_date": "06/2025 10/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76686",
+      "invoice_amount": "98,247.00",
+      "property_address": "TIS 47",
+      "property_code": "MTKX00164605"
+    },
+    "item_amount": "97,500.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76686",
+      "invoice_amount": "98,247.00",
+      "property_address": "TIS 47",
+      "property_code": "MTKX00164605"
+    },
+    "item_amount": "747.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76727",
+      "invoice_amount": "95,440.00",
+      "property_address": "SHW 10",
+      "property_code": "MTKX00173708"
+    },
+    "item_amount": "95,440.00",
+    "item_date": "",
+    "item_description": "LAST MONTH-B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76727",
+      "invoice_amount": "95,440.00",
+      "property_address": "SHW 10",
+      "property_code": "MTKX00173708"
+    },
+    "item_amount": "95,440.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76727",
+      "invoice_amount": "95,440.00",
+      "property_address": "SHW 10",
+      "property_code": "MTKX00173708"
+    },
+    "item_amount": "94,800.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76727",
+      "invoice_amount": "95,440.00",
+      "property_address": "SHW 10",
+      "property_code": "MTKX00173708"
+    },
+    "item_amount": "640.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76727",
+      "invoice_amount": "95,440.00",
+      "property_address": "SHW 10",
+      "property_code": "MTKX00173708"
+    },
+    "item_amount": "453.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76748",
+      "invoice_amount": "89,177.00",
+      "property_address": "MKK 11",
+      "property_code": "MTKX00178203"
+    },
+    "item_amount": "80,177.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76748",
+      "invoice_amount": "89,177.00",
+      "property_address": "MKK 11",
+      "property_code": "MTKX00178203"
+    },
+    "item_amount": "-89,177.00",
+    "item_date": "06/2025 18/06/2025",
+    "item_description": "PAYMENT RECEIVED ON 18/06/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76748",
+      "invoice_amount": "89,177.00",
+      "property_address": "MKK 11",
+      "property_code": "MTKX00178203"
+    },
+    "item_amount": "-20.00",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "CASH COUPON REF: 04/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76748",
+      "invoice_amount": "89,177.00",
+      "property_address": "MKK 11",
+      "property_code": "MTKX00178203"
+    },
+    "item_amount": "186.24",
+    "item_date": "06/2025 26/06/2025",
+    "item_description": "T/O RENT 01/05/2025 TO 31/05/2025"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76748",
+      "invoice_amount": "89,177.00",
+      "property_address": "MKK 11",
+      "property_code": "MTKX00178203"
+    },
+    "item_amount": "115,050.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "LICENCE FEE - STATION RETAIL"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76748",
+      "invoice_amount": "89,177.00",
+      "property_address": "MKK 11",
+      "property_code": "MTKX00178203"
+    },
+    "item_amount": "2,132.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "CHILLED WATER CHARGE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F Goodman Global Gateway 168 Yeung Uk Road Tsuen Wan New Territories Hong Kong",
+      "company_name": "Hyakunousha International Limited",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76748",
+      "invoice_amount": "89,177.00",
+      "property_address": "MKK 11",
+      "property_code": "MTKX00178203"
+    },
+    "item_amount": "1,144.00",
+    "item_date": "07/2025 01/07/2025",
+    "item_description": "MANAGEMENT FEE"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung Uk Road, Tsuen Wan, New Territories",
+      "company_name": "Hyakunousha Int'l Ltd.",
+      "date_of_issue": "01/07/2025",
+      "demand_note": "M76733",
+      "invoice_amount": "57,364.00",
+      "property_address": "SOH 2",
+      "property_code": "MTKX00174709"
+    },
+    "item_amount": "56,484.00",
+    "item_date": "",
+    "item_description": "LAST MONTH B/F"
+  },
+  {
+    "invoice_info": {
+      "account_no": "003-447-0-777602-6",
+      "company_address": "Unit 1, 20/F., Goodman Global Gateway 168 Yeung
