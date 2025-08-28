@@ -274,6 +274,39 @@ The frontend will be available at http://localhost:3000
 
 - **API key errors**: Verify your Gemini API keys are valid and have the necessary permissions.
 
+- **WebSocket connection issues**: If you encounter WebSocket errors:
+  
+  **Missing WebSocket library warning**:
+  ```
+  WARNING: No supported WebSocket library detected
+  ```
+  Solution: Install WebSocket dependencies:
+  ```bash
+  pip install 'uvicorn[standard]' websockets
+  ```
+  
+  **WebSocket 404 errors**:
+  ```
+  INFO: 127.0.0.1:51096 - "GET /ws/246 HTTP/1.1" 404 Not Found
+  ```
+  Solutions:
+  - Ensure the backend is running with WebSocket support
+  - Check that the WebSocket endpoint is properly registered
+  - Verify the job ID format in the WebSocket URL
+  
+  **Testing WebSocket connections**:
+  ```bash
+  # Test WebSocket functionality
+  cd backend
+  python test_websocket.py localhost 8000
+  ```
+  
+  **WebSocket connection debugging**:
+  - Check the health endpoint: `http://localhost:8000/health`
+  - Look for WebSocket status in the health response
+  - Monitor backend logs for WebSocket connection attempts
+  - Ensure CORS settings allow WebSocket connections
+
 ## Security Best Practices
 
 ### Environment Variables

@@ -1,7 +1,11 @@
 import pandas as pd
 import json
 import os
+import logging
 from typing import Dict, List, Any, Union
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 
 def extract_text_value(value: Any) -> Any:
@@ -95,6 +99,39 @@ def normalize_table_data(table_data: List[Dict]) -> pd.DataFrame:
     return df
 
 
+def sanitize_sheet_name(name: str) -> str:
+    """
+    Sanitize a string to be used as an Excel sheet name.
+    Excel sheet names cannot contain: \ / * ? [ ] : '
+    And must be 31 characters or less.
+    """
+    if not name:
+        return "Data"
+    
+    # Remove invalid characters
+    invalid_chars = ['\\', '/', '*', '?', '[', ']', ':', "'", '"']
+    sanitized = name
+    for char in invalid_chars:
+        sanitized = sanitized.replace(char, '')
+    
+    # Replace multiple underscores with single underscore
+    while '__' in sanitized:
+        sanitized = sanitized.replace('__', '_')
+    
+    # Remove leading/trailing underscores
+    sanitized = sanitized.strip('_')
+    
+    # Ensure it's not empty after sanitization
+    if not sanitized:
+        sanitized = "Data"
+    
+    # Limit to 31 characters (Excel limit)
+    if len(sanitized) > 31:
+        sanitized = sanitized[:31].rstrip('_')
+    
+    return sanitized
+
+
 def json_to_excel(
     json_datas: Union[Dict, List], output_path: str, doc_type_code: str = None
 ) -> str:
@@ -161,48 +198,82 @@ def json_to_excel(
             else:
                 main_df = pd.concat([main_df, sub_df], ignore_index=True)
     
-   
     # 寫入Excel的代碼保持不變
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        sheet_name = doc_type_code[:30] if doc_type_code else "Data"
+    try:
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            sheet_name = sanitize_sheet_name(doc_type_code) if doc_type_code else "Data"
+            logger.info(f"Creating Excel sheet with name: '{sheet_name}' (sanitized from: '{doc_type_code}')")
 
-        if main_df is None or main_df.empty:
-            # 如果沒有數據，創建一個簡單的佔位符
-            main_df = pd.DataFrame(
-                {"No Data": ["No structured data found in the input JSON"]}
-            )
-
-        # 寫入主DataFrame
-        main_df.to_excel(writer, sheet_name=sheet_name, index=False)
-
-        # Auto-adjust column widths
-        worksheet = writer.sheets[sheet_name]
-
-        # Apply auto-filter to all columns
-        worksheet.auto_filter.ref = worksheet.dimensions
-
-        # Auto-adjust column widths
-        for idx, col in enumerate(main_df.columns):
-            # Calculate max length
-            max_len = (
-                max(
-                    main_df[col].astype(str).map(len).max() if len(main_df) > 0 else 0,
-                    len(str(col)),
+            if main_df is None or main_df.empty:
+                # 如果沒有數據，創建一個簡單的佔位符
+                main_df = pd.DataFrame(
+                    {"No Data": ["No structured data found in the input JSON"]}
                 )
-                + 2
-            )  # adding a little extra space
+                logger.warning("No structured data found, creating placeholder DataFrame")
 
-            # Convert column index to letter (A, B, C, etc.)
-            col_idx = idx
-            col_letter = ""
-            while True:
-                col_letter = chr(65 + (col_idx % 26)) + col_letter
-                col_idx = col_idx // 26 - 1
-                if col_idx < 0:
-                    break
+            # 寫入主DataFrame
+            try:
+                main_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                logger.info(f"Successfully wrote data to Excel sheet '{sheet_name}'")
+            except Exception as excel_write_error:
+                logger.error(f"Error writing to Excel sheet '{sheet_name}': {str(excel_write_error)}")
+                # Try with a fallback sheet name
+                fallback_sheet_name = "Data"
+                logger.info(f"Attempting to write with fallback sheet name: '{fallback_sheet_name}'")
+                main_df.to_excel(writer, sheet_name=fallback_sheet_name, index=False)
 
-            worksheet.column_dimensions[col_letter].width = min(
-                max_len, 50
-            )  # Cap at 50
+            # Auto-adjust column widths
+            try:
+                # Use the actual sheet name that was written
+                actual_sheet_name = sheet_name if sheet_name in writer.sheets else "Data"
+                worksheet = writer.sheets[actual_sheet_name]
+
+                # Apply auto-filter to all columns
+                if worksheet.dimensions:
+                    worksheet.auto_filter.ref = worksheet.dimensions
+
+                # Auto-adjust column widths
+                for idx, col in enumerate(main_df.columns):
+                    # Calculate max length
+                    max_len = (
+                        max(
+                            main_df[col].astype(str).map(len).max() if len(main_df) > 0 else 0,
+                            len(str(col)),
+                        )
+                        + 2
+                    )  # adding a little extra space
+
+                    # Convert column index to letter (A, B, C, etc.)
+                    col_idx = idx
+                    col_letter = ""
+                    while True:
+                        col_letter = chr(65 + (col_idx % 26)) + col_letter
+                        col_idx = col_idx // 26 - 1
+                        if col_idx < 0:
+                            break
+
+                    worksheet.column_dimensions[col_letter].width = min(
+                        max_len, 50
+                    )  # Cap at 50
+                
+                logger.info(f"Successfully applied formatting to Excel sheet")
+                
+            except Exception as format_error:
+                logger.warning(f"Error applying Excel formatting: {str(format_error)}")
+                # Continue without formatting - file is still usable
+
+    except Exception as e:
+        logger.error(f"Critical error creating Excel file: {str(e)}")
+        # Create a minimal Excel file as fallback
+        try:
+            fallback_df = pd.DataFrame({
+                "Error": [f"Excel conversion failed: {str(e)}"],
+                "Original_Data": [str(json_datas)[:500] + "..." if len(str(json_datas)) > 500 else str(json_datas)]
+            })
+            fallback_df.to_excel(output_path, sheet_name="Error", index=False)
+            logger.info("Created fallback Excel file with error information")
+        except Exception as fallback_error:
+            logger.error(f"Failed to create fallback Excel file: {str(fallback_error)}")
+            raise e  # Re-raise the original error if fallback also fails
 
     return output_path
