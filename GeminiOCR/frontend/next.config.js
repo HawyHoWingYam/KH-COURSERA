@@ -8,25 +8,27 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   
-  // Configure allowed dev origins for cross-origin requests
-  allowedDevOrigins: [
-    'http://52.220.245.213:3000',
-    'https://52.220.245.213:3000',
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-    'http://10.0.0.10:3000'
-  ],
+  // For Next.js 15+, use experimental config for dev origins
+  experimental: {
+    allowedDevOrigins: [
+      'http://52.220.245.213:3000',
+      'https://52.220.245.213:3000',
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      'http://10.0.0.10:3000'
+    ],
+  },
   
   // Allow cross-origin requests to our API
   async rewrites() {
     return [
       {
         source: '/api/:path*',
-        destination: `http://localhost:8000/:path*`,
+        destination: `http://52.220.245.213:8000/:path*`,
       },
       {
         source: '/files/:fileId/preview',
-        destination: `http://localhost:8000/files/:fileId`,
+        destination: `http://52.220.245.213:8000/files/:fileId`,
       }
     ];
   },
