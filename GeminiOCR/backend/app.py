@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
 import shutil
+import tempfile
 from datetime import datetime, timedelta
 import uuid
 import json
@@ -858,31 +859,43 @@ async def process_document_task(
         db.add(api_usage)
         db.commit()
 
-        # Generate output files - 使用本地临时目录存储结果文件
-        # 结果文件仍然存储在本地，因为它们通常很小且需要频繁访问
-        output_dir = os.path.join("uploads", company_code, doc_type_code, str(job_id))
-        os.makedirs(output_dir, exist_ok=True)
-
-        json_output_path = os.path.join(output_dir, "results.json")
-
-        # Save JSON output
-        with open(json_output_path, "w") as f:
-            # If the result is a string, assume it's already JSON formatted
-            if isinstance(json_result, str):
-                f.write(json_result)
-                # Parse the JSON string to get the object
-                result_obj = json.loads(json_result)
-            else:
-                # Otherwise, dump the object as JSON
-                json.dump(json_result, f, indent=2, ensure_ascii=False)
-                result_obj = json_result
-
-        # Get JSON file size
-        json_file_size = os.path.getsize(json_output_path)
+        # Generate output files - 使用S3存储结果文件
+        s3_manager = get_s3_manager()
+        
+        # Prepare JSON content
+        if isinstance(json_result, str):
+            json_content = json_result
+            result_obj = json.loads(json_result)
+        else:
+            json_content = json.dumps(json_result, indent=2, ensure_ascii=False)
+            result_obj = json_result
+        
+        # Generate S3 key for JSON result
+        json_key = f"{company_code}/{doc_type_code}/{job_id}/results.json"
+        
+        # Save JSON to S3 results folder
+        json_saved = False
+        json_file_size = len(json_content.encode('utf-8'))
+        
+        if s3_manager:
+            json_saved = s3_manager.save_json_result(json_key, result_obj)
+        
+        if not json_saved:
+            # Fallback to local storage
+            output_dir = os.path.join("uploads", company_code, doc_type_code, str(job_id))
+            os.makedirs(output_dir, exist_ok=True)
+            json_output_path = os.path.join(output_dir, "results.json")
+            
+            with open(json_output_path, "w", encoding='utf-8') as f:
+                f.write(json_content)
+            json_file_size = os.path.getsize(json_output_path)
+            json_s3_path = json_output_path
+        else:
+            json_s3_path = f"s3://{s3_manager.bucket_name}/results/{json_key}"
 
         # Create file entries for JSON output
         json_file = DBFile(
-            file_path=json_output_path,
+            file_path=json_s3_path,
             file_name="results.json",
             file_type="application/json",
             file_size=json_file_size,
@@ -899,15 +912,42 @@ async def process_document_task(
 
         db.add(json_doc_file)
 
-        # Generate Excel file dynamically
-        excel_output_path = os.path.join(output_dir, "results.xlsx")
-        json_to_excel(result_obj, excel_output_path, doc_type_code)
-
-        # Get Excel file size
-        excel_file_size = os.path.getsize(excel_output_path)
+        # Generate Excel file
+        excel_key = f"{company_code}/{doc_type_code}/{job_id}/results.xlsx"
+        excel_saved = False
+        
+        if s3_manager:
+            # Create temporary Excel file
+            with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temp_excel:
+                temp_excel_path = temp_excel.name
+            
+            try:
+                # Generate Excel file to temporary location
+                json_to_excel(result_obj, temp_excel_path, doc_type_code)
+                excel_file_size = os.path.getsize(temp_excel_path)
+                
+                # Upload to S3 exports folder
+                with open(temp_excel_path, 'rb') as excel_file_obj:
+                    excel_saved = s3_manager.save_excel_export(excel_key, excel_file_obj)
+            finally:
+                # Clean up temporary file
+                if os.path.exists(temp_excel_path):
+                    os.unlink(temp_excel_path)
+        
+        if not excel_saved:
+            # Fallback to local storage
+            output_dir = os.path.join("uploads", company_code, doc_type_code, str(job_id))
+            os.makedirs(output_dir, exist_ok=True)
+            excel_output_path = os.path.join(output_dir, "results.xlsx")
+            
+            json_to_excel(result_obj, excel_output_path, doc_type_code)
+            excel_file_size = os.path.getsize(excel_output_path)
+            excel_s3_path = excel_output_path
+        else:
+            excel_s3_path = f"s3://{s3_manager.bucket_name}/exports/{excel_key}"
 
         excel_file = DBFile(
-            file_path=excel_output_path,
+            file_path=excel_s3_path,
             file_name="results.xlsx",
             file_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             file_size=excel_file_size,
@@ -1147,14 +1187,94 @@ def download_file(file_id: int, db: Session = Depends(get_db)):
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
 
-    if not os.path.exists(file.file_path):
-        raise HTTPException(status_code=404, detail="File not found on disk")
+    logger.info(f"📥 下载请求 - 文件ID: {file_id}, 路径: {file.file_path}")
+    
+    # Check if file is stored in S3
+    if file.file_path.startswith("s3://"):
+        logger.info(f"📥 从S3下载文件: {file.file_path}")
+        s3_manager = get_s3_manager()
+        
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3存储不可用")
+        
+        try:
+            # Parse S3 path to extract bucket and key
+            # Format: s3://bucket-name/folder/path/to/file
+            s3_parts = file.file_path.replace("s3://", "").split("/", 1)
+            if len(s3_parts) != 2:
+                raise HTTPException(status_code=500, detail="无效的S3文件路径")
+            
+            bucket_name, full_key = s3_parts
+            
+            # Determine folder from the full key
+            if full_key.startswith("results/"):
+                key = full_key[8:]  # Remove "results/" prefix
+                file_content = s3_manager.get_json_result(key)
+                if file_content is not None:
+                    # Convert dict back to JSON string for download
+                    json_str = json.dumps(file_content, ensure_ascii=False, indent=2)
+                    file_bytes = json_str.encode('utf-8')
+                else:
+                    raise HTTPException(status_code=404, detail="S3中未找到文件")
+            elif full_key.startswith("exports/"):
+                key = full_key[8:]  # Remove "exports/" prefix  
+                file_bytes = s3_manager.get_excel_export(key)
+                if file_bytes is None:
+                    raise HTTPException(status_code=404, detail="S3中未找到文件")
+            elif full_key.startswith("upload/"):
+                key = full_key[7:]  # Remove "upload/" prefix
+                file_bytes = s3_manager.download_file(key, folder='upload')
+                if file_bytes is None:
+                    raise HTTPException(status_code=404, detail="S3中未找到文件")
+            else:
+                raise HTTPException(status_code=500, detail="无法识别的S3文件夹路径")
+            
+            # Create temporary file for FileResponse
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.file_name}") as temp_file:
+                temp_file.write(file_bytes)
+                temp_file_path = temp_file.name
+            
+            logger.info(f"✅ S3文件下载成功: {file.file_name}")
+            
+            # Create custom FileResponse that cleans up temp file
+            class CleanupFileResponse(FileResponse):
+                def __init__(self, *args, temp_path=None, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    self.temp_path = temp_path
+                
+                async def __call__(self, scope, receive, send):
+                    try:
+                        await super().__call__(scope, receive, send)
+                    finally:
+                        if self.temp_path and os.path.exists(self.temp_path):
+                            try:
+                                os.unlink(self.temp_path)
+                                logger.info(f"🧹 清理临时文件: {self.temp_path}")
+                            except Exception as e:
+                                logger.warning(f"⚠️ 清理临时文件失败: {e}")
+            
+            return CleanupFileResponse(
+                path=temp_file_path,
+                filename=file.file_name,
+                media_type=file.file_type or "application/octet-stream",
+                temp_path=temp_file_path
+            )
+            
+        except Exception as e:
+            logger.error(f"❌ S3文件下载失败: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"S3文件下载失败: {str(e)}")
+    
+    else:
+        # Local file handling
+        logger.info(f"📥 从本地下载文件: {file.file_path}")
+        if not os.path.exists(file.file_path):
+            raise HTTPException(status_code=404, detail="本地文件未找到")
 
-    return FileResponse(
-        path=file.file_path,
-        filename=file.file_name,
-        media_type=file.file_type or "application/octet-stream",
-    )
+        return FileResponse(
+            path=file.file_path,
+            filename=file.file_name,
+            media_type=file.file_type or "application/octet-stream",
+        )
 
 
 # Initialize database function
@@ -1600,18 +1720,58 @@ async def process_zip_task(
                     batch_job.processed_files += 1
                     db.commit()
 
-                # Save all results to a single JSON file
-                json_output_path = os.path.join(output_dir, "batch_results.json")
-                with open(json_output_path, "w") as f:
-                    json.dump(all_results, f, indent=2, ensure_ascii=False)
-
-                # Convert to Excel
-                excel_output_path = os.path.join(output_dir, "batch_results.xlsx")
-                await asyncio.to_thread(json_to_excel, all_results, excel_output_path)
+                # Save all results using S3 storage
+                s3_manager = get_s3_manager()
+                
+                # Generate S3 keys for batch results
+                batch_json_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_results.json"
+                batch_excel_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_results.xlsx"
+                
+                json_saved = False
+                excel_saved = False
+                
+                if s3_manager:
+                    # Save JSON results to S3 results folder
+                    json_saved = s3_manager.save_json_result(batch_json_key, all_results)
+                    
+                    if json_saved:
+                        json_s3_path = f"s3://{s3_manager.bucket_name}/results/{batch_json_key}"
+                    
+                    # Create temporary Excel file and upload to S3
+                    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temp_excel:
+                        temp_excel_path = temp_excel.name
+                    
+                    try:
+                        # Convert to Excel
+                        await asyncio.to_thread(json_to_excel, all_results, temp_excel_path)
+                        
+                        # Upload to S3 exports folder
+                        with open(temp_excel_path, 'rb') as excel_file_obj:
+                            excel_saved = s3_manager.save_excel_export(batch_excel_key, excel_file_obj)
+                        
+                        if excel_saved:
+                            excel_s3_path = f"s3://{s3_manager.bucket_name}/exports/{batch_excel_key}"
+                    finally:
+                        # Clean up temporary file
+                        if os.path.exists(temp_excel_path):
+                            os.unlink(temp_excel_path)
+                
+                # Fallback to local storage if S3 fails
+                if not json_saved or not excel_saved:
+                    if not json_saved:
+                        json_output_path = os.path.join(output_dir, "batch_results.json")
+                        with open(json_output_path, "w", encoding='utf-8') as f:
+                            json.dump(all_results, f, indent=2, ensure_ascii=False)
+                        json_s3_path = json_output_path
+                    
+                    if not excel_saved:
+                        excel_output_path = os.path.join(output_dir, "batch_results.xlsx")
+                        await asyncio.to_thread(json_to_excel, all_results, excel_output_path)
+                        excel_s3_path = excel_output_path
 
                 # Update batch job with output paths and complete status
-                batch_job.json_output_path = json_output_path
-                batch_job.excel_output_path = excel_output_path
+                batch_job.json_output_path = json_s3_path
+                batch_job.excel_output_path = excel_s3_path
                 batch_job.status = "success"
                 db.commit()
 

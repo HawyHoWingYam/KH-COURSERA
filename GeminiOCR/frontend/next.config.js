@@ -13,13 +13,13 @@ const nextConfig = {
   
   // For Next.js 15+, use experimental config for dev origins
   experimental: {
-    allowedDevOrigins: [
-      'http://52.220.245.213:3000',
-      'https://52.220.245.213:3000',
-      'http://localhost:3000',
-      'http://127.0.0.1:3000',
-      'http://10.0.0.10:3000'
-    ],
+    // allowedDevOrigins: [
+    //   'http://52.220.245.213:3000',
+    //   'https://52.220.245.213:3000',
+    //   'http://localhost:3000',
+    //   'http://127.0.0.1:3000',
+    //   'http://10.0.0.10:3000'
+    // ],
   },
   
   // Allow cross-origin requests to our API

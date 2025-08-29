@@ -8,7 +8,9 @@ WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
 
 # 安装依赖
-RUN npm ci --only=production && npm cache clean --force
+RUN npm ci && npm cache clean --force
+
+RUN npm install -D tailwindcss postcss autoprefixer @tailwindcss/postcss
 
 # 复制源代码
 COPY frontend/ .

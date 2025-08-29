@@ -4,14 +4,14 @@ import logging
 from typing import Optional, BinaryIO, Union
 from botocore.exceptions import ClientError, NoCredentialsError
 from datetime import datetime, timedelta
+import json
 import uuid
 import mimetypes
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 class S3StorageManager:
-    """AWS S3文件存储管理器"""
+    """AWS S3文件存储管理器 - 使用单存储桶多文件夹结构"""
     
     def __init__(self, bucket_name: str, region: str = 'ap-southeast-1'):
         """
@@ -23,6 +23,9 @@ class S3StorageManager:
         """
         self.bucket_name = bucket_name
         self.region = region
+        self.upload_prefix = 'upload/'
+        self.results_prefix = 'results/'
+        self.exports_prefix = 'exports/'
         self._s3_client = None
         self._s3_resource = None
         
@@ -107,7 +110,7 @@ class S3StorageManager:
             # 准备上传参数
             upload_args = {
                 'Bucket': self.bucket_name,
-                'Key': key,
+                'Key': f"{self.upload_prefix}{key}",
                 'ContentType': content_type
             }
             
@@ -117,13 +120,24 @@ class S3StorageManager:
             
             # 执行上传
             if hasattr(file_content, 'read'):
-                # 文件对象
-                self.s3_client.upload_fileobj(file_content, **upload_args)
+                # 文件对象 - upload_fileobj 需要单独的参数格式
+                extra_args = {
+                    'ContentType': content_type
+                }
+                if metadata:
+                    extra_args['Metadata'] = metadata
+                
+                self.s3_client.upload_fileobj(
+                    file_content, 
+                    upload_args['Bucket'], 
+                    upload_args['Key'], 
+                    ExtraArgs=extra_args
+                )
             else:
                 # 字节数据
                 self.s3_client.put_object(Body=file_content, **upload_args)
             
-            logger.info(f"✅ 文件上传成功：s3://{self.bucket_name}/{key}")
+            logger.info(f"✅ 文件上传成功：s3://{self.bucket_name}/{self.upload_prefix}{key}")
             return True
             
         except ClientError as e:
@@ -133,24 +147,158 @@ class S3StorageManager:
             logger.error(f"❌ 文件上传时发生未知错误：{e}")
             return False
     
-    def download_file(self, key: str) -> Optional[bytes]:
+    def save_json_result(self, key: str, data: dict, metadata: Optional[dict] = None) -> bool:
+        """
+        保存JSON结果到results文件夹
+        
+        Args:
+            key: 文件键名
+            data: JSON数据
+            metadata: 文件元数据
+            
+        Returns:
+            bool: 保存是否成功
+        """
+        try:
+            json_content = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
+            
+            upload_args = {
+                'Bucket': self.bucket_name,
+                'Key': f"{self.results_prefix}{key}",
+                'Body': json_content,
+                'ContentType': 'application/json',
+                'ContentEncoding': 'utf-8'
+            }
+            
+            if metadata:
+                upload_args['Metadata'] = metadata
+            
+            self.s3_client.put_object(**upload_args)
+            logger.info(f"✅ JSON结果保存成功：s3://{self.bucket_name}/{self.results_prefix}{key}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ JSON结果保存失败：{e}")
+            return False
+    
+    def get_json_result(self, key: str) -> Optional[dict]:
+        """
+        从results文件夹获取JSON结果
+        
+        Args:
+            key: 文件键名
+            
+        Returns:
+            Optional[dict]: JSON数据，失败时返回None
+        """
+        try:
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=f"{self.results_prefix}{key}")
+            content = response['Body'].read().decode('utf-8')
+            data = json.loads(content)
+            logger.info(f"✅ JSON结果获取成功：s3://{self.bucket_name}/{self.results_prefix}{key}")
+            return data
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchKey':
+                logger.warning(f"⚠️ JSON文件不存在：s3://{self.bucket_name}/{self.results_prefix}{key}")
+            else:
+                logger.error(f"❌ JSON结果获取失败：{e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ JSON结果获取时发生未知错误：{e}")
+            return None
+
+    def save_excel_export(self, key: str, file_content: Union[BinaryIO, bytes], metadata: Optional[dict] = None) -> bool:
+        """
+        保存Excel文件到exports文件夹
+        
+        Args:
+            key: 文件键名
+            file_content: Excel文件内容
+            metadata: 文件元数据
+            
+        Returns:
+            bool: 保存是否成功
+        """
+        try:
+            if hasattr(file_content, 'read'):
+                # 文件对象 - upload_fileobj 需要单独的参数格式
+                extra_args = {
+                    'ContentType': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                }
+                if metadata:
+                    extra_args['Metadata'] = metadata
+                
+                self.s3_client.upload_fileobj(
+                    file_content,
+                    self.bucket_name,
+                    f"{self.exports_prefix}{key}",
+                    ExtraArgs=extra_args
+                )
+            else:
+                upload_args = {
+                    'Bucket': self.bucket_name,
+                    'Key': f"{self.exports_prefix}{key}",
+                    'Body': file_content,
+                    'ContentType': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                }
+                if metadata:
+                    upload_args['Metadata'] = metadata
+                self.s3_client.put_object(**upload_args)
+            
+            logger.info(f"✅ Excel文件保存成功：s3://{self.bucket_name}/{self.exports_prefix}{key}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Excel文件保存失败：{e}")
+            return False
+    
+    def get_excel_export(self, key: str) -> Optional[bytes]:
+        """
+        从exports文件夹获取Excel文件
+        
+        Args:
+            key: 文件键名
+            
+        Returns:
+            Optional[bytes]: Excel文件内容，失败时返回None
+        """
+        try:
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=f"{self.exports_prefix}{key}")
+            content = response['Body'].read()
+            logger.info(f"✅ Excel文件获取成功：s3://{self.bucket_name}/{self.exports_prefix}{key}")
+            return content
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchKey':
+                logger.warning(f"⚠️ Excel文件不存在：s3://{self.bucket_name}/{self.exports_prefix}{key}")
+            else:
+                logger.error(f"❌ Excel文件获取失败：{e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Excel文件获取时发生未知错误：{e}")
+            return None
+    
+    def download_file(self, key: str, folder: str = 'upload') -> Optional[bytes]:
         """
         从S3下载文件
         
         Args:
-            key: S3中的文件键名
+            key: 文件键名
+            folder: 文件夹名称 (upload/results/exports)
             
         Returns:
             Optional[bytes]: 文件内容，失败时返回None
         """
+        folder_prefix = f"{folder}/" if not folder.endswith('/') else folder
+        full_key = f"{folder_prefix}{key}"
+        
         try:
-            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=key)
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=full_key)
             content = response['Body'].read()
-            logger.info(f"✅ 文件下载成功：s3://{self.bucket_name}/{key}")
+            logger.info(f"✅ 文件下载成功：s3://{self.bucket_name}/{full_key}")
             return content
         except ClientError as e:
             if e.response['Error']['Code'] == 'NoSuchKey':
-                logger.warning(f"⚠️ 文件不存在：s3://{self.bucket_name}/{key}")
+                logger.warning(f"⚠️ 文件不存在：s3://{self.bucket_name}/{full_key}")
             else:
                 logger.error(f"❌ 文件下载失败：{e}")
             return None
@@ -158,19 +306,23 @@ class S3StorageManager:
             logger.error(f"❌ 文件下载时发生未知错误：{e}")
             return None
     
-    def delete_file(self, key: str) -> bool:
+    def delete_file(self, key: str, folder: str = 'upload') -> bool:
         """
         从S3删除文件
         
         Args:
-            key: S3中的文件键名
+            key: 文件键名
+            folder: 文件夹名称 (upload/results/exports)
             
         Returns:
             bool: 删除是否成功
         """
+        folder_prefix = f"{folder}/" if not folder.endswith('/') else folder
+        full_key = f"{folder_prefix}{key}"
+        
         try:
-            self.s3_client.delete_object(Bucket=self.bucket_name, Key=key)
-            logger.info(f"✅ 文件删除成功：s3://{self.bucket_name}/{key}")
+            self.s3_client.delete_object(Bucket=self.bucket_name, Key=full_key)
+            logger.info(f"✅ 文件删除成功：s3://{self.bucket_name}/{full_key}")
             return True
         except ClientError as e:
             logger.error(f"❌ 文件删除失败：{e}")
@@ -179,18 +331,22 @@ class S3StorageManager:
             logger.error(f"❌ 文件删除时发生未知错误：{e}")
             return False
     
-    def file_exists(self, key: str) -> bool:
+    def file_exists(self, key: str, folder: str = 'upload') -> bool:
         """
         检查文件是否在S3中存在
         
         Args:
-            key: S3中的文件键名
+            key: 文件键名
+            folder: 文件夹名称 (upload/results/exports)
             
         Returns:
             bool: 文件是否存在
         """
+        folder_prefix = f"{folder}/" if not folder.endswith('/') else folder
+        full_key = f"{folder_prefix}{key}"
+        
         try:
-            self.s3_client.head_object(Bucket=self.bucket_name, Key=key)
+            self.s3_client.head_object(Bucket=self.bucket_name, Key=full_key)
             return True
         except ClientError as e:
             if e.response['Error']['Code'] == '404':
@@ -199,18 +355,22 @@ class S3StorageManager:
                 logger.error(f"❌ 检查文件存在时出错：{e}")
                 return False
     
-    def get_file_info(self, key: str) -> Optional[dict]:
+    def get_file_info(self, key: str, folder: str = 'upload') -> Optional[dict]:
         """
         获取S3文件信息
         
         Args:
-            key: S3中的文件键名
+            key: 文件键名
+            folder: 文件夹名称 (upload/results/exports)
             
         Returns:
             Optional[dict]: 文件信息，包含大小、修改时间等
         """
+        folder_prefix = f"{folder}/" if not folder.endswith('/') else folder
+        full_key = f"{folder_prefix}{key}"
+        
         try:
-            response = self.s3_client.head_object(Bucket=self.bucket_name, Key=key)
+            response = self.s3_client.head_object(Bucket=self.bucket_name, Key=full_key)
             return {
                 'size': response.get('ContentLength', 0),
                 'last_modified': response.get('LastModified'),
@@ -219,50 +379,58 @@ class S3StorageManager:
             }
         except ClientError as e:
             if e.response['Error']['Code'] == '404':
-                logger.warning(f"⚠️ 文件不存在：s3://{self.bucket_name}/{key}")
+                logger.warning(f"⚠️ 文件不存在：s3://{self.bucket_name}/{full_key}")
             else:
                 logger.error(f"❌ 获取文件信息失败：{e}")
             return None
     
-    def generate_presigned_url(self, key: str, expires_in: int = 3600) -> Optional[str]:
+    def generate_presigned_url(self, key: str, expires_in: int = 3600, folder: str = 'upload') -> Optional[str]:
         """
         生成预签名URL用于临时访问文件
         
         Args:
-            key: S3中的文件键名
+            key: 文件键名
             expires_in: URL过期时间（秒）
+            folder: 文件夹名称 (upload/results/exports)
             
         Returns:
             Optional[str]: 预签名URL
         """
+        folder_prefix = f"{folder}/" if not folder.endswith('/') else folder
+        full_key = f"{folder_prefix}{key}"
+        
         try:
             url = self.s3_client.generate_presigned_url(
                 'get_object',
-                Params={'Bucket': self.bucket_name, 'Key': key},
+                Params={'Bucket': self.bucket_name, 'Key': full_key},
                 ExpiresIn=expires_in
             )
-            logger.info(f"✅ 生成预签名URL成功：s3://{self.bucket_name}/{key}")
+            logger.info(f"✅ 生成预签名URL成功：s3://{self.bucket_name}/{full_key}")
             return url
         except ClientError as e:
             logger.error(f"❌ 生成预签名URL失败：{e}")
             return None
     
-    def list_files(self, prefix: str = '', max_keys: int = 1000) -> list:
+    def list_files(self, prefix: str = '', max_keys: int = 1000, folder: str = 'upload') -> list:
         """
         列出S3存储桶中的文件
         
         Args:
             prefix: 文件前缀过滤
             max_keys: 最大返回文件数
+            folder: 文件夹名称 (upload/results/exports)
             
         Returns:
             list: 文件信息列表
         """
+        folder_prefix = f"{folder}/" if not folder.endswith('/') else folder
+        full_prefix = f"{folder_prefix}{prefix}"
+        
         try:
             paginator = self.s3_client.get_paginator('list_objects_v2')
             pages = paginator.paginate(
                 Bucket=self.bucket_name,
-                Prefix=prefix,
+                Prefix=full_prefix,
                 MaxKeys=max_keys
             )
             
@@ -270,14 +438,17 @@ class S3StorageManager:
             for page in pages:
                 if 'Contents' in page:
                     for obj in page['Contents']:
+                        # 移除文件夹前缀，只返回相对路径
+                        relative_key = obj['Key'][len(folder_prefix):] if obj['Key'].startswith(folder_prefix) else obj['Key']
                         files.append({
-                            'key': obj['Key'],
+                            'key': relative_key,
+                            'full_key': obj['Key'],
                             'size': obj['Size'],
                             'last_modified': obj['LastModified'],
                             'etag': obj['ETag'].strip('"')
                         })
             
-            logger.info(f"✅ 列出文件成功，前缀：{prefix}，数量：{len(files)}")
+            logger.info(f"✅ 列出文件成功，文件夹：{folder}，前缀：{prefix}，数量：{len(files)}")
             return files
         except ClientError as e:
             logger.error(f"❌ 列出文件失败：{e}")
@@ -315,7 +486,7 @@ class S3StorageManager:
     def get_health_status(self) -> dict:
         """获取S3存储的健康状态"""
         try:
-            # 测试连接
+            # 测试存储桶连接
             self.s3_client.head_bucket(Bucket=self.bucket_name)
             
             # 获取存储桶信息
@@ -325,7 +496,8 @@ class S3StorageManager:
                 'status': 'healthy',
                 'bucket': self.bucket_name,
                 'region': location.get('LocationConstraint', 'us-east-1'),
-                'accessible': True
+                'accessible': True,
+                'folders': ['upload', 'results', 'exports']
             }
         except Exception as e:
             return {
@@ -346,16 +518,16 @@ def get_s3_manager() -> Optional[S3StorageManager]:
     
     if _s3_manager is None:
         try:
-            # 从环境变量或配置中获取S3设置
-            bucket_name = os.getenv('AWS_S3_BUCKET')
+            # 从环境变量获取S3设置
+            bucket_name = os.getenv('S3_BUCKET_NAME')
             region = os.getenv('AWS_DEFAULT_REGION', 'ap-southeast-1')
             
             if bucket_name:
                 _s3_manager = S3StorageManager(bucket_name, region)
                 _s3_manager.ensure_bucket_exists()
-                logger.info(f"✅ S3存储管理器初始化成功：{bucket_name}")
+                logger.info(f"✅ S3存储管理器初始化成功：bucket={bucket_name}")
             else:
-                logger.warning("⚠️ 未配置S3存储桶，将使用本地文件存储")
+                logger.warning("⚠️ 未配置S3存储桶名称，将使用本地文件存储")
                 
         except Exception as e:
             logger.error(f"❌ S3存储管理器初始化失败：{e}")
