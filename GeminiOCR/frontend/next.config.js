@@ -2,7 +2,7 @@
 const nextConfig = {
   // 启用standalone输出模式，用于Docker部署
   output: 'standalone',
-  
+
   eslint: {
     ignoreDuringBuilds: true,
   },
@@ -10,23 +10,17 @@ const nextConfig = {
     // This will allow the build to continue even with TypeScript errors
     ignoreBuildErrors: true,
   },
-  
-  // For Next.js 15+, use experimental config for dev origins
-  experimental: {
-    // allowedDevOrigins: [
-    //   'http://52.220.245.213:3000',
-    //   'https://52.220.245.213:3000',
-    //   'http://localhost:3000',
-    //   'http://127.0.0.1:3000',
-    //   'http://10.0.0.10:3000'
-    // ],
-  },
-  
+
+  // Note: allowedDevOrigins will be needed in future Next.js versions
+  // experimental: {
+  //   allowedDevOrigins: ['52.220.245.213']
+  // },
+
   // Allow cross-origin requests to our API
   async rewrites() {
-    // 在Docker环境中，使用内部服务名称
+    // Use environment variable or fallback to localhost for development
     const apiHost = process.env.NEXT_PUBLIC_API_URL || 'http://backend:8000';
-    
+
     return [
       {
         source: '/api/:path*',

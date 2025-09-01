@@ -17,9 +17,7 @@ interface ConfigType {
     type_name?: string;     // Joined from document_types
 }
 // Get base URL and port from config
-const API_BASE_URL = process.env.NODE_ENV === 'production' 
-  ? 'http://localhost:8000' 
-  : 'http://localhost:8000';
+const API_BASE_URL = '/api';
   
 // Extended API methods for admin functions
 async function fetchConfigs(): Promise<ConfigType[]> {
