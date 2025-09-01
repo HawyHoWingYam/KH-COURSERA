@@ -78,8 +78,8 @@ export interface BatchJob {
   uploader_name?: string;
 }
 
-// Base API URL from environment variable (client-side accessible)
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// Base API URL - use Next.js proxy path to avoid CORS issues
+const API_BASE_URL = '/api';
 
 // Generic fetch function with error handling
 export async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
