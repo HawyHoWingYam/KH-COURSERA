@@ -1,7 +1,4 @@
 # 🔍 GeminiOCR - AI-Powered Document Processing Platform
-
-A comprehensive document processing platform built with FastAPI (backend) and Next.js (frontend) that leverages Google's Gemini AI for OCR and data extraction from various document types.
-
 ## 🚀 Quick Start (Anaconda - Recommended)
 
 ### Prerequisites
