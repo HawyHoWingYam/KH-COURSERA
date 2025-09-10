@@ -125,9 +125,82 @@ health_check() {
     return 1
 }
 
-# 构建新镜像
-build_images() {
-    log_info "构建新的Docker镜像..."
+# 构建或拉取镜像
+build_or_pull_images() {
+    local image_source=${1:-"local"}  # local, hub, or auto
+    
+    if [[ "$image_source" == "hub" ]]; then
+        log_info "从 Docker Hub 拉取镜像..."
+        pull_images_from_hub
+    elif [[ "$image_source" == "auto" ]]; then
+        log_info "自动选择镜像源..."
+        if check_hub_images_available; then
+            log_info "Docker Hub 镜像可用，使用远程镜像"
+            pull_images_from_hub
+        else
+            log_info "Docker Hub 镜像不可用，本地构建"
+            build_images_locally
+        fi
+    else
+        log_info "本地构建 Docker 镜像..."
+        build_images_locally
+    fi
+}
+
+# 从 Docker Hub 拉取镜像
+pull_images_from_hub() {
+    local version=${DEPLOY_VERSION:-"latest"}
+    local repository=${DOCKER_REPOSITORY:-"karash062/hya-ocr-sandbox"}
+    
+    log_info "拉取版本: $version"
+    
+    # 拉取后端镜像
+    log_info "拉取后端镜像..."
+    docker pull "${repository}-backend:${version}" || {
+        log_error "拉取后端镜像失败"
+        return 1
+    }
+    
+    # 拉取前端镜像
+    log_info "拉取前端镜像..."
+    docker pull "${repository}-frontend:${version}" || {
+        log_error "拉取前端镜像失败"
+        return 1
+    }
+    
+    # 重新标记为本地使用的标签
+    docker tag "${repository}-backend:${version}" "geminiocr-backend:latest"
+    docker tag "${repository}-frontend:${version}" "geminiocr-frontend:latest"
+    
+    log_success "镜像拉取完成"
+}
+
+# 检查 Docker Hub 镜像是否可用
+check_hub_images_available() {
+    local version=${DEPLOY_VERSION:-"latest"}
+    local repository=${DOCKER_REPOSITORY:-"karash062/hya-ocr-sandbox"}
+    
+    log_info "检查 Docker Hub 镜像可用性..."
+    
+    # 检查后端镜像
+    if ! docker manifest inspect "${repository}-backend:${version}" > /dev/null 2>&1; then
+        log_warning "后端镜像 ${repository}-backend:${version} 不存在"
+        return 1
+    fi
+    
+    # 检查前端镜像
+    if ! docker manifest inspect "${repository}-frontend:${version}" > /dev/null 2>&1; then
+        log_warning "前端镜像 ${repository}-frontend:${version} 不存在"
+        return 1
+    fi
+    
+    log_success "Docker Hub 镜像检查通过"
+    return 0
+}
+
+# 本地构建镜像（原有逻辑）
+build_images_locally() {
+    log_info "本地构建 Docker 镜像..."
     
     # 获取Git版本信息
     local git_commit=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -140,7 +213,7 @@ build_images() {
         --build-arg VERSION=$git_branch \
         --parallel
     
-    log_success "镜像构建完成"
+    log_success "本地镜像构建完成"
 }
 
 # 蓝绿部署
@@ -318,9 +391,10 @@ show_deployment_status() {
 # 主部署函数
 main() {
     local deployment_type=${1:-"blue-green"}
+    local image_source=${2:-"auto"}
     local start_time=$(date +%s)
     
-    log_info "开始 GeminiOCR 零停机部署 (策略: $deployment_type)"
+    log_info "开始 GeminiOCR 零停机部署 (策略: $deployment_type, 镜像源: $image_source)"
     
     # 设置超时
     timeout $MAX_DEPLOY_TIME bash -c '
@@ -331,8 +405,8 @@ main() {
         backup_name=$(create_backup)
         echo "BACKUP_NAME=$backup_name" > /tmp/deploy_backup.env
         
-        # 构建新镜像
-        build_images
+        # 构建或拉取镜像
+        build_or_pull_images "$image_source"
         
         # 根据策略执行部署
         case "'$deployment_type'" in
@@ -378,16 +452,27 @@ main() {
 usage() {
     echo "GeminiOCR 零停机部署脚本"
     echo ""
-    echo "用法: $0 [部署策略]"
+    echo "用法: $0 [部署策略] [镜像源]"
     echo ""
     echo "部署策略:"
     echo "  blue-green  蓝绿部署 (默认)"
     echo "  rolling     滚动更新"
     echo ""
+    echo "镜像源:"
+    echo "  auto        自动选择 (默认) - 优先使用 Docker Hub，失败时本地构建"
+    echo "  hub         强制从 Docker Hub 拉取"
+    echo "  local       强制本地构建"
+    echo ""
+    echo "环境变量:"
+    echo "  DEPLOY_VERSION       指定要部署的版本 (默认: latest)"
+    echo "  DOCKER_REPOSITORY    Docker Hub 仓库名 (默认: karash062/hya-ocr-sandbox)"
+    echo ""
     echo "示例:"
-    echo "  $0                    # 使用蓝绿部署"
-    echo "  $0 blue-green        # 明确指定蓝绿部署"
-    echo "  $0 rolling           # 使用滚动更新"
+    echo "  $0                           # 蓝绿部署，自动选择镜像源"
+    echo "  $0 blue-green auto           # 明确指定蓝绿部署和自动镜像源"
+    echo "  $0 rolling hub               # 滚动更新，从 Docker Hub 拉取"
+    echo "  $0 blue-green local          # 蓝绿部署，本地构建"
+    echo "  DEPLOY_VERSION=v1.0.0 $0     # 部署指定版本"
     echo ""
 }
 
@@ -398,7 +483,17 @@ case "${1:-}" in
         exit 0
         ;;
     blue-green|rolling|"")
-        main "${1:-blue-green}"
+        # 验证镜像源参数
+        case "${2:-auto}" in
+            auto|hub|local|"")
+                main "${1:-blue-green}" "${2:-auto}"
+                ;;
+            *)
+                log_error "无效的镜像源: $2"
+                usage
+                exit 1
+                ;;
+        esac
         ;;
     *)
         log_error "无效的部署策略: $1"

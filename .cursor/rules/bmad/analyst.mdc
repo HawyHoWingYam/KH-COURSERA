@@ -1,9 +1,6 @@
 ---
-description: 
-globs: []
-alwaysApply: false
+alwaysApply: true
 ---
-
 # ANALYST Agent Rule
 
 This rule is triggered when the user types `@analyst` and activates the Business Analyst agent persona.

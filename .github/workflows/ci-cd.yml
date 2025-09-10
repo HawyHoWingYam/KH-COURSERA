@@ -1,0 +1,343 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  DOCKER_REGISTRY: docker.io
+  DOCKER_REPOSITORY: karash062/hya-ocr-sandbox
+  
+jobs:
+  # Build and Test Phase
+  build-and-test:
+    name: Build, Test & Security Scan
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        service: [backend, frontend]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Full history for proper versioning
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Generate build metadata
+      id: meta
+      run: |
+        # Generate semantic version based on Git tags and branch
+        if [[ $GITHUB_REF == refs/tags/* ]]; then
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "IS_RELEASE=true" >> $GITHUB_OUTPUT
+        elif [[ $GITHUB_REF == refs/heads/main ]]; then
+          VERSION="latest"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "IS_RELEASE=false" >> $GITHUB_OUTPUT
+        else
+          VERSION="dev-$(date +%Y%m%d)-${GITHUB_SHA::8}"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "IS_RELEASE=false" >> $GITHUB_OUTPUT
+        fi
+        
+        # Build metadata
+        echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+        echo "VCS_REF=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+        echo "BUILD_VERSION=$VERSION" >> $GITHUB_OUTPUT
+    
+    - name: Build Docker image (${{ matrix.service }})
+      uses: docker/build-push-action@v5
+      with:
+        context: ./GeminiOCR
+        file: ./GeminiOCR/${{ matrix.service }}.Dockerfile
+        load: true
+        tags: |
+          ${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:${{ steps.meta.outputs.VERSION }}
+          ${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:${{ github.sha }}
+        build-args: |
+          BUILD_DATE=${{ steps.meta.outputs.BUILD_DATE }}
+          VCS_REF=${{ steps.meta.outputs.VCS_REF }}
+          VERSION=${{ steps.meta.outputs.BUILD_VERSION }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        labels: |
+          org.opencontainers.image.title=GeminiOCR-${{ matrix.service }}
+          org.opencontainers.image.description=GeminiOCR ${{ matrix.service }} service
+          org.opencontainers.image.url=https://github.com/${{ github.repository }}
+          org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          org.opencontainers.image.version=${{ steps.meta.outputs.VERSION }}
+          org.opencontainers.image.created=${{ steps.meta.outputs.BUILD_DATE }}
+          org.opencontainers.image.revision=${{ github.sha }}
+          org.opencontainers.image.licenses=MIT
+    
+    - name: Run security scan with Trivy
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:${{ github.sha }}
+        format: 'sarif'
+        output: 'trivy-results-${{ matrix.service }}.sarif'
+    
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-results-${{ matrix.service }}.sarif'
+    
+    - name: Test image health
+      run: |
+        # Start the container for health testing
+        if [ "${{ matrix.service }}" = "backend" ]; then
+          docker run -d --name test-${{ matrix.service }} \
+            -p 8000:8000 \
+            -e DATABASE_URL=sqlite:///tmp/test.db \
+            ${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:${{ github.sha }}
+          
+          # Wait for container to be ready
+          sleep 30
+          
+          # Health check
+          curl -f http://localhost:8000/health || exit 1
+        elif [ "${{ matrix.service }}" = "frontend" ]; then
+          docker run -d --name test-${{ matrix.service }} \
+            -p 3000:3000 \
+            -e NEXT_PUBLIC_API_URL=http://localhost:8000 \
+            ${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:${{ github.sha }}
+          
+          # Wait for container to be ready  
+          sleep 45
+          
+          # Health check
+          curl -f http://localhost:3000/ || exit 1
+        fi
+        
+        # Cleanup
+        docker stop test-${{ matrix.service }}
+        docker rm test-${{ matrix.service }}
+    
+    - name: Export image for integration tests
+      run: |
+        docker save ${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:${{ github.sha }} \
+          -o ${{ matrix.service }}-image.tar
+    
+    - name: Upload image artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.service }}-image
+        path: ${{ matrix.service }}-image.tar
+        retention-days: 1
+
+  # Integration Testing Phase
+  integration-test:
+    name: Integration Testing
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Download backend image
+      uses: actions/download-artifact@v4
+      with:
+        name: backend-image
+    
+    - name: Download frontend image  
+      uses: actions/download-artifact@v4
+      with:
+        name: frontend-image
+    
+    - name: Load Docker images
+      run: |
+        docker load -i backend-image.tar
+        docker load -i frontend-image.tar
+    
+    - name: Start integration test environment
+      run: |
+        cd GeminiOCR
+        # Create test environment file
+        cat > .env.test << EOF
+        POSTGRES_USER=test_user
+        POSTGRES_PASSWORD=test_password  
+        POSTGRES_DB=test_db
+        REDIS_PASSWORD=test_redis_password
+        EOF
+        
+        # Start test stack with built images
+        export BACKEND_IMAGE="${{ env.DOCKER_REPOSITORY }}-backend:${{ github.sha }}"
+        export FRONTEND_IMAGE="${{ env.DOCKER_REPOSITORY }}-frontend:${{ github.sha }}"
+        
+        docker-compose -f docker-compose.ci.yml up -d
+    
+    - name: Run integration tests
+      run: |
+        cd GeminiOCR
+        # Wait for services to be ready
+        sleep 60
+        
+        # Test backend health
+        curl -f http://localhost:8000/health
+        
+        # Test frontend
+        curl -f http://localhost:3000/
+        
+        # Test API endpoints
+        curl -f http://localhost:8000/docs
+        
+        # Add more integration tests here
+        echo "Integration tests completed successfully"
+    
+    - name: Cleanup test environment
+      if: always()
+      run: |
+        cd GeminiOCR
+        docker-compose -f docker-compose.ci.yml down -v
+
+  # Publish Phase (only for main branch and tags)
+  publish:
+    name: Publish to Docker Hub
+    runs-on: ubuntu-latest
+    needs: [build-and-test, integration-test]
+    if: github.event_name != 'pull_request'
+    
+    strategy:
+      matrix:
+        service: [backend, frontend]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    
+    - name: Generate publish metadata
+      id: meta
+      run: |
+        if [[ $GITHUB_REF == refs/tags/* ]]; then
+          VERSION=${GITHUB_REF#refs/tags/}
+          TAGS="${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:$VERSION"
+          TAGS="$TAGS,${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:latest"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "TAGS=$TAGS" >> $GITHUB_OUTPUT
+          echo "IS_RELEASE=true" >> $GITHUB_OUTPUT
+        elif [[ $GITHUB_REF == refs/heads/main ]]; then
+          VERSION="latest"
+          TAGS="${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:latest"
+          TAGS="$TAGS,${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:main-${GITHUB_SHA::8}"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "TAGS=$TAGS" >> $GITHUB_OUTPUT
+          echo "IS_RELEASE=false" >> $GITHUB_OUTPUT
+        else
+          VERSION="dev-$(date +%Y%m%d)-${GITHUB_SHA::8}"
+          TAGS="${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:$VERSION"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "TAGS=$TAGS" >> $GITHUB_OUTPUT
+          echo "IS_RELEASE=false" >> $GITHUB_OUTPUT
+        fi
+        
+        echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+        echo "VCS_REF=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./GeminiOCR
+        file: ./GeminiOCR/${{ matrix.service }}.Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.TAGS }}
+        build-args: |
+          BUILD_DATE=${{ steps.meta.outputs.BUILD_DATE }}
+          VCS_REF=${{ steps.meta.outputs.VCS_REF }}
+          VERSION=${{ steps.meta.outputs.VERSION }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        labels: |
+          org.opencontainers.image.title=GeminiOCR-${{ matrix.service }}
+          org.opencontainers.image.description=GeminiOCR ${{ matrix.service }} service
+          org.opencontainers.image.url=https://github.com/${{ github.repository }}
+          org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          org.opencontainers.image.version=${{ steps.meta.outputs.VERSION }}
+          org.opencontainers.image.created=${{ steps.meta.outputs.BUILD_DATE }}
+          org.opencontainers.image.revision=${{ github.sha }}
+          org.opencontainers.image.licenses=MIT
+
+  # Deploy to Staging (for main branch)
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: publish
+    if: github.ref == 'refs/heads/main'
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Deploy to staging
+      run: |
+        echo "🚀 Deploying to staging environment..."
+        echo "Backend image: ${{ env.DOCKER_REPOSITORY }}-backend:latest"
+        echo "Frontend image: ${{ env.DOCKER_REPOSITORY }}-frontend:latest"
+        
+        # Here you would add actual deployment steps to your staging environment
+        # For example, using SSH to deploy to a staging server:
+        # - Setup SSH keys
+        # - Connect to staging server
+        # - Pull new images
+        # - Run deployment script
+        
+        echo "✅ Staging deployment completed"
+
+  # Create Release (for tags)
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Create Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        body: |
+          ## GeminiOCR Release ${{ github.ref }}
+          
+          ### Docker Images Published
+          - `${{ env.DOCKER_REPOSITORY }}-backend:${{ github.ref }}`
+          - `${{ env.DOCKER_REPOSITORY }}-frontend:${{ github.ref }}`
+          
+          ### Deployment Command
+          ```bash
+          # For production deployment
+          export VERSION=${{ github.ref }}
+          docker-compose -f docker-compose.prod.yml pull
+          docker-compose -f docker-compose.prod.yml up -d
+          ```
+          
+          ### Changes
+          See commit history for detailed changes.
+        draft: false
+        prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}

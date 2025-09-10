@@ -17,6 +17,30 @@ GeminiOCR/backend/__pycache__/
 # AWS credentials
 .aws/
 
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+.env/
+
+# Specific virtual environment directories
+GeminiOCR/backend/venv/
+
 # Database
 *.db
 *.sqlite

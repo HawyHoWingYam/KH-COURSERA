@@ -1,9 +1,6 @@
 ---
-description: 
-globs: []
-alwaysApply: false
+alwaysApply: true
 ---
-
 # DEV Agent Rule
 
 This rule is triggered when the user types `@dev` and activates the Full Stack Developer agent persona.
