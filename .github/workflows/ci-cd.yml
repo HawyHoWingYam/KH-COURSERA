@@ -7,6 +7,10 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+  security-events: write
+
 env:
   DOCKER_REGISTRY: docker.io
   DOCKER_REPOSITORY: karash062/hya-ocr-sandbox
@@ -86,8 +90,8 @@ jobs:
         output: 'trivy-results-${{ matrix.service }}.sarif'
     
     - name: Upload Trivy scan results
+      if: ${{ github.event_name != 'pull_request' }}
       uses: github/codeql-action/upload-sarif@v3
-      if: always()
       with:
         sarif_file: 'trivy-results-${{ matrix.service }}.sarif'
     
