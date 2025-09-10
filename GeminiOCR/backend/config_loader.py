@@ -98,6 +98,11 @@ class ConfigLoader:
                 logger.warning("Using single Gemini API key from config file (fallback)")
                 return [config['api_key']]
         
+        # 在測試環境下允許無 API key 運行
+        if os.getenv('ENVIRONMENT') == 'test':
+            logger.warning("Running in test mode without Gemini API keys")
+            return ['test-api-key-mock']
+            
         raise ValueError("No Gemini API keys found in environment variables, AWS Secrets, or config file")
     
     def get_aws_credentials(self) -> Dict[str, str]:
