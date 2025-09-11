@@ -41,7 +41,7 @@ services:
 
   # Backend Service (uses image built in CI)
   backend:
-    image: ${BACKEND_IMAGE:-karash062/hya-ocr-sandbox-backend:latest}
+    image: ${BACKEND_IMAGE:-karash062/hya-ocr-sandbox:backend-latest}
     container_name: gemini-test-backend
     restart: unless-stopped
     ports:
@@ -80,7 +80,7 @@ services:
 
   # Frontend Service (uses image built in CI)
   frontend:
-    image: ${FRONTEND_IMAGE:-karash062/hya-ocr-sandbox-frontend:latest}
+    image: ${FRONTEND_IMAGE:-karash062/hya-ocr-sandbox:frontend-latest}
     container_name: gemini-test-frontend
     restart: unless-stopped
     ports:

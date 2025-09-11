@@ -64,8 +64,8 @@ jobs:
         file: ./GeminiOCR/${{ matrix.service }}.Dockerfile
         load: true
         tags: |
-          ${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:${{ steps.meta.outputs.VERSION }}
-          ${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:${{ github.sha }}
+          ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ steps.meta.outputs.VERSION }}
+          ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}
         build-args: |
           BUILD_DATE=${{ steps.meta.outputs.BUILD_DATE }}
           VCS_REF=${{ steps.meta.outputs.VCS_REF }}
@@ -85,7 +85,7 @@ jobs:
     - name: Run security scan with Trivy
       uses: aquasecurity/trivy-action@master
       with:
-        image-ref: ${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:${{ github.sha }}
+        image-ref: ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}
         format: 'sarif'
         output: 'trivy-results-${{ matrix.service }}.sarif'
     
@@ -103,7 +103,7 @@ jobs:
             -p 8000:8000 \
             -e DATABASE_URL=sqlite:///./test.db \
             -e ENVIRONMENT=test \
-            ${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:${{ github.sha }}
+            ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}
           
           # Wait for container to start and check logs
           echo "Waiting for backend container to start..."
@@ -131,7 +131,7 @@ jobs:
           docker run -d --name test-${{ matrix.service }} \
             -p 3000:3000 \
             -e NEXT_PUBLIC_API_URL=http://localhost:8000 \
-            ${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:${{ github.sha }}
+            ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}
           
           # Wait for container to start and check logs
           echo "Waiting for frontend container to start..."
@@ -162,7 +162,7 @@ jobs:
     
     - name: Export image for integration tests
       run: |
-        docker save ${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:${{ github.sha }} \
+        docker save ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }} \
           -o ${{ matrix.service }}-image.tar
     
     - name: Upload image artifact
@@ -209,8 +209,8 @@ jobs:
         EOF
         
         # Start test stack with built images
-        export BACKEND_IMAGE="${{ env.DOCKER_REPOSITORY }}-backend:${{ github.sha }}"
-        export FRONTEND_IMAGE="${{ env.DOCKER_REPOSITORY }}-frontend:${{ github.sha }}"
+        export BACKEND_IMAGE="${{ env.DOCKER_REPOSITORY }}:backend-${{ github.sha }}"
+        export FRONTEND_IMAGE="${{ env.DOCKER_REPOSITORY }}:frontend-${{ github.sha }}"
         
         docker compose -f docker-compose.ci.yml up -d
     
@@ -286,21 +286,21 @@ jobs:
       run: |
         if [[ $GITHUB_REF == refs/tags/* ]]; then
           VERSION=${GITHUB_REF#refs/tags/}
-          TAGS="${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:$VERSION"
-          TAGS="$TAGS,${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:latest"
+          TAGS="${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-$VERSION"
+          TAGS="$TAGS,${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-latest"
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "TAGS=$TAGS" >> $GITHUB_OUTPUT
           echo "IS_RELEASE=true" >> $GITHUB_OUTPUT
         elif [[ $GITHUB_REF == refs/heads/main ]]; then
           VERSION="latest"
-          TAGS="${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:latest"
-          TAGS="$TAGS,${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:main-${GITHUB_SHA::8}"
+          TAGS="${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-latest"
+          TAGS="$TAGS,${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-main-${GITHUB_SHA::8}"
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "TAGS=$TAGS" >> $GITHUB_OUTPUT
           echo "IS_RELEASE=false" >> $GITHUB_OUTPUT
         else
           VERSION="dev-$(date +%Y%m%d)-${GITHUB_SHA::8}"
-          TAGS="${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:$VERSION"
+          TAGS="${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-$VERSION"
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "TAGS=$TAGS" >> $GITHUB_OUTPUT
           echo "IS_RELEASE=false" >> $GITHUB_OUTPUT
@@ -346,8 +346,8 @@ jobs:
     - name: Deploy to staging
       run: |
         echo "🚀 Deploying to staging environment..."
-        echo "Backend image: ${{ env.DOCKER_REPOSITORY }}-backend:latest"
-        echo "Frontend image: ${{ env.DOCKER_REPOSITORY }}-frontend:latest"
+        echo "Backend image: ${{ env.DOCKER_REPOSITORY }}:backend-latest"
+        echo "Frontend image: ${{ env.DOCKER_REPOSITORY }}:frontend-latest"
         
         # Here you would add actual deployment steps to your staging environment
         # For example, using SSH to deploy to a staging server:
@@ -380,8 +380,8 @@ jobs:
           ## GeminiOCR Release ${{ github.ref }}
           
           ### Docker Images Published
-          - `${{ env.DOCKER_REPOSITORY }}-backend:${{ github.ref }}`
-          - `${{ env.DOCKER_REPOSITORY }}-frontend:${{ github.ref }}`
+          - `${{ env.DOCKER_REPOSITORY }}:backend-${{ github.ref }}`
+          - `${{ env.DOCKER_REPOSITORY }}:frontend-${{ github.ref }}`
           
           ### Deployment Command
           ```bash

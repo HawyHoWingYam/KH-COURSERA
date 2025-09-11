@@ -1,5 +1,5 @@
 # 多阶段构建 - 构建阶段
-FROM node:18-alpine as builder
+FROM node:18-alpine AS builder
 
 # 设置工作目录
 WORKDIR /app
@@ -19,7 +19,7 @@ COPY frontend/ .
 RUN npm run build
 
 # 生产阶段
-FROM node:18-alpine as production
+FROM node:18-alpine AS production
 
 # 设置环境变量
 ENV NODE_ENV=production
