@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
 import { Company } from '@/lib/api';
 // Get base URL and port from config
 const API_BASE_URL = '/api';

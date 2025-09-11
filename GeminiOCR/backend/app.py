@@ -17,12 +17,9 @@ import os
 import shutil
 import tempfile
 from datetime import datetime, timedelta
-import uuid
 import json
 import logging
 import asyncio
-import fitz  # PyMuPDF for PDF handling
-import google.generativeai as genai  # Correct import for Google's Generative AI
 from sqlalchemy import func
 import time
 
@@ -40,12 +37,10 @@ from db.models import (
     DocumentFile,
     ApiUsage,
     BatchJob,
-    User,
 )
-import main as ocr_processor
 from main import extract_text_from_image, extract_text_from_pdf
 from utils.excel_converter import json_to_excel
-from utils.s3_storage import get_s3_manager, is_s3_enabled, S3StorageManager
+from utils.s3_storage import get_s3_manager, is_s3_enabled
 from utils.file_storage import get_file_storage
 
 # 獲取應用配置
@@ -155,7 +150,7 @@ def health_check():
         
         health_status["services"]["configuration"] = {
             "status": "healthy",
-            "message": f"Configuration loaded successfully"
+            "message": "Configuration loaded successfully"
         }
     except Exception as e:
         health_status["services"]["configuration"] = {
@@ -662,7 +657,7 @@ async def process_document(
             .filter(
                 CompanyDocumentConfig.company_id == company_id,
                 CompanyDocumentConfig.doc_type_id == doc_type_id,
-                CompanyDocumentConfig.active == True,
+                CompanyDocumentConfig.active,
             )
             .first()
         )
@@ -1285,7 +1280,7 @@ async def startup_db_client():
         os.makedirs("uploads", exist_ok=True)
 
         # Try connecting to database
-        db = next(get_db())
+        next(get_db())
         logger.info("Successfully connected to database")
     except Exception as e:
         logger.error(f"Failed to connect to database: {str(e)}")
@@ -1311,8 +1306,8 @@ def get_companies_for_document_type(doc_type_id: int, db: Session = Depends(get_
         )
         .filter(
             CompanyDocumentConfig.doc_type_id == doc_type_id,
-            CompanyDocumentConfig.active == True,
-            Company.active == True,
+            CompanyDocumentConfig.active,
+            Company.active,
         )
         .all()
     )
@@ -1428,7 +1423,7 @@ async def process_zip_file(
             .filter(
                 CompanyDocumentConfig.company_id == company_id,
                 CompanyDocumentConfig.doc_type_id == doc_type_id,
-                CompanyDocumentConfig.active == True,
+                CompanyDocumentConfig.active,
             )
             .first()
         )
@@ -1620,7 +1615,7 @@ async def process_zip_task(
                                 )
 
                             if "text" not in result:
-                                raise KeyError(f"Result missing 'text' key")
+                                raise KeyError("Result missing 'text' key")
 
                             # Now handle the text content - always parse it as JSON string first
                             json_text = result["text"]

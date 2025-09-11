@@ -2,8 +2,8 @@ import boto3
 import os
 import logging
 from typing import Optional, BinaryIO, Union
-from botocore.exceptions import ClientError, NoCredentialsError
-from datetime import datetime, timedelta
+from botocore.exceptions import ClientError
+from datetime import datetime
 import json
 import uuid
 import mimetypes

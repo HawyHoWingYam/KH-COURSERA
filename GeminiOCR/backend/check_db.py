@@ -4,7 +4,6 @@
 用于验证数据库连接和基本功能
 """
 
-import os
 import sys
 import logging
 from sqlalchemy import create_engine, text

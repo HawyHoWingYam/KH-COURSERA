@@ -1,7 +1,7 @@
 import os
 import shutil
 import logging
-from typing import Optional, Union, BinaryIO
+from typing import Optional
 from pathlib import Path
 from datetime import datetime
 import tempfile
@@ -270,7 +270,7 @@ class FileStorageService:
         else:
             try:
                 return os.path.getsize(file_path) if os.path.exists(file_path) else 0
-            except:
+            except (OSError, FileNotFoundError, PermissionError):
                 return 0
     
     def _get_s3_file_size(self, s3_url: str) -> int:

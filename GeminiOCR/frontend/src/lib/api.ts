@@ -201,7 +201,7 @@ export async function uploadFile(file: globalThis.File, path: string): Promise<{
 }
 
 // WebSocket connection
-export function connectWebSocket(jobId: number, onMessage: (data: any) => void) {
+export function connectWebSocket(jobId: number, onMessage: (data: unknown) => void) {
   const socket = new WebSocket(`ws://${process.env.API_BASE_URL || 'localhost'}:${process.env.PORT || 8000}/ws/${jobId}`);
   socket.onopen = () => {
     console.log(`WebSocket connection established for job ${jobId}`);
@@ -231,7 +231,6 @@ export function connectWebSocket(jobId: number, onMessage: (data: any) => void) 
 
 // Download file
 export async function downloadFile(fileId: number): Promise<Blob> {
-  const fileInfo = await fetchApi<{ file_path: string; file_name: string; file_type: string }>(`/files/${fileId}`);
   const response = await fetch(`${API_BASE_URL}/download/${fileId}`);
 
   if (!response.ok) {

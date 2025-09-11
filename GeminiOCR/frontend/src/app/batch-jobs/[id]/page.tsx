@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { fetchBatchJobStatus, BatchJob, getFileDownloadUrl } from '@/lib/api';
+import { fetchBatchJobStatus, BatchJob } from '@/lib/api';
 
 export default function BatchJobDetails() {
   const params = useParams();
@@ -64,20 +64,6 @@ export default function BatchJobDetails() {
         {status}
       </span>
     );
-  };
-
-  // Add a new function to get file ID by path
-  const getFileIdByPath = async (path: string): Promise<number | null> => {
-    try {
-      const response = await fetch(`${process.env.API_BASE_URL || 'http://localhost:8000'}/files?path=${encodeURIComponent(path)}`);
-      if (!response.ok) return null;
-      
-      const data = await response.json();
-      return data.file_id;
-    } catch (error) {
-      console.error('Error getting file ID:', error);
-      return null;
-    }
   };
 
   // Update the download function

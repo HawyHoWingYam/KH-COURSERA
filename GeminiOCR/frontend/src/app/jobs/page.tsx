@@ -4,13 +4,19 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { fetchJobs, fetchBatchJobs, Job, BatchJob } from '@/lib/api';
 
+interface PendingUpload {
+  jobId?: number;
+  batchId?: number;
+  fileName?: string;
+  [key: string]: unknown;
+}
+
 export default function Jobs() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [batchJobs, setBatchJobs] = useState<BatchJob[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-  const [pendingUpload, setPendingUpload] = useState<any>(null);
-  const [showBatchJobs, setShowBatchJobs] = useState<boolean>(true);
+  const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(null);
   const [viewBatchJobs, setViewBatchJobs] = useState(false);
 
   useEffect(() => {
@@ -54,9 +60,6 @@ export default function Jobs() {
     };
   }, []);
 
-  const toggleJobView = () => {
-    setShowBatchJobs(!showBatchJobs);
-  };
 
   return (
     <div className="container mx-auto px-4 py-8">

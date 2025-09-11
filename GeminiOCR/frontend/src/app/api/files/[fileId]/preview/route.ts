@@ -1,6 +1,4 @@
 import { NextResponse } from 'next/server';
-import path from 'path';
-import fs from 'fs/promises';
 import * as XLSX from 'xlsx';
 
 // The route that handles file preview requests
@@ -8,11 +6,11 @@ export async function GET(
   request: Request,
   context: { params: { fileId: string } }
 ) {
-  const { fileId } = context.params;
+  const { fileId: fileIdParam } = context.params;
   try {
     // Use await when accessing params
-    const fileIdParam = await fileId;
-    const fileId = parseInt(fileIdParam);
+    const fileIdString = await fileIdParam;
+    const fileId = parseInt(fileIdString);
     
     if (isNaN(fileId)) {
       return NextResponse.json(

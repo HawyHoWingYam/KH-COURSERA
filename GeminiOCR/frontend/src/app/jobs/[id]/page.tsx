@@ -10,22 +10,7 @@ import type { Job } from '@/lib/api';
 import { JsonView } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
 
-// Define types for preview data
-interface PreviewData {
-  headers?: string[];
-  rows?: any[][];
-  error?: string;
-  [key: string]: any; // For handling arbitrary JSON data
-}
 
-// Define types for preview states
-interface PreviewStates {
-  [key: number]: boolean;
-}
-
-interface FilePreviewDataMap {
-  [key: number]: PreviewData;
-}
 
 export default function JobDetails() {
   const params = useParams();
@@ -39,9 +24,6 @@ export default function JobDetails() {
 
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Fix type definitions for preview states
-  const [previewStates, setPreviewStates] = useState<PreviewStates>({});
-  const [filePreviewData, setFilePreviewData] = useState<FilePreviewDataMap>({});
 
   // Fetch job details initially
   useEffect(() => {
@@ -143,56 +125,6 @@ export default function JobDetails() {
     }
   }, [jobId, job?.status]);
 
-  // Get file by category
-  const getFileByCategory = (category: string) => {
-    return files.find(file =>
-      file.file_name.includes(category) ||
-      file.file_path.includes(category)
-    );
-  };
-
-  // Fix type annotations for togglePreview function and update API path
-  const togglePreview = async (fileId: number, fileType: string) => {
-    // Toggle preview state
-    setPreviewStates(prev => ({
-      ...prev,
-      [fileId]: !prev[fileId]
-    }));
-
-    // If opening preview and we don't have the data yet, fetch it
-    if (!previewStates[fileId] && !filePreviewData[fileId]) {
-      try {
-        console.log(`Fetching preview for file ${fileId}`);
-        
-        // Use absolute URL to bypass Next.js routing for debugging
-        const previewUrl = `http://localhost:8000/files/${fileId}`;
-        console.log(`Trying to fetch from: ${previewUrl}`);
-        
-        const response = await fetch(previewUrl);
-        console.log(`Preview request status: ${response.status}`);
-        
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`Server error response: ${errorText}`);
-          throw new Error(`Failed to load preview (${response.status})`);
-        }
-        
-        const data = await response.json();
-        console.log('Preview data received:', data);
-        
-        setFilePreviewData(prev => ({
-          ...prev,
-          [fileId]: data
-        }));
-      } catch (error) {
-        console.error('Error loading preview:', error);
-        setFilePreviewData(prev => ({
-          ...prev,
-          [fileId]: { error: `Failed to load preview: ${error instanceof Error ? error.message : 'Unknown error'}` }
-        }));
-      }
-    }
-  };
 
   // Fix type annotations for renderPreview function
   const renderPreview = (file: FileInfo) => {

@@ -1,21 +1,14 @@
 import google.generativeai as genai
 import os
 import PIL.Image
-from PIL import ImageEnhance, ImageFilter
 import cv2
 import numpy as np
-import re
-from pdf2image import convert_from_path
-import tempfile
 import json
 from datetime import datetime
-import pandas as pd
 import asyncio
 import time
-import urllib.parse
 import logging
 from functools import wraps
-from typing import Optional, Dict, Any
 
 # 導入配置管理器
 try:
@@ -97,8 +90,12 @@ def api_error_handler(func):
                     logger.warning(f"API error (attempt {attempt + 1}/{max_retries}): {e}")
                     
                     # 標記當前API key有問題
-                    if CONFIG_AVAILABLE and 'api_key' in locals():
-                        api_key_manager.mark_key_error(api_key)
+                    if CONFIG_AVAILABLE:
+                        try:
+                            current_api_key = api_key_manager.get_current_key()
+                            api_key_manager.mark_key_error(current_api_key)
+                        except Exception:
+                            pass  # 如果無法獲取當前key，忽略標記
                     
                     if attempt < max_retries - 1:
                         wait_time = (2 ** attempt) + 1  # 指數退避
@@ -521,7 +518,7 @@ def main():
             # Select document type
             while True:
                 try:
-                    choice = int(input(f"Select document type (enter number): "))
+                    choice = int(input("Select document type (enter number): "))
                     if 1 <= choice <= len(doc_types):
                         selected_doc_type = doc_types[choice - 1]
                         break

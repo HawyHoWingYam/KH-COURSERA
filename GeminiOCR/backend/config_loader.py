@@ -321,7 +321,7 @@ def validate_and_log_config():
     
     # 記錄配置來源
     app_config = config_loader.get_app_config()
-    logger.info(f"🔧 Configuration loaded:")
+    logger.info("🔧 Configuration loaded:")
     logger.info(f"  - API Base URL: {app_config['api_base_url']}")
     logger.info(f"  - Port: {app_config['port']}")
     logger.info(f"  - Model: {app_config['model_name']}")

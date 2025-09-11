@@ -4,7 +4,6 @@
 用于创建数据库表和插入初始数据
 """
 
-import os
 import sys
 import logging
 from sqlalchemy import create_engine, text
@@ -16,9 +15,8 @@ sys.path.insert(0, '/app')
 
 from db.database import get_database_url, Base
 from db.models import (
-    Department, User, DocumentType, DepartmentDocTypeAccess, 
-    Company, CompanyDocumentConfig, File, ProcessingJob, 
-    DocumentFile, ApiUsage, BatchJob
+    Department, User, DocumentType, Company, ProcessingJob, 
+    BatchJob
 )
 
 # 配置日志
@@ -112,7 +110,7 @@ def add_check_constraints(database_url: str):
                 except SQLAlchemyError as e:
                     # 如果约束已存在，忽略错误
                     if "already exists" in str(e) or "duplicate key" in str(e):
-                        logger.info(f"约束已存在，跳过...")
+                        logger.info("约束已存在，跳过...")
                         continue
                     else:
                         logger.warning(f"添加约束失败: {e}")

@@ -5,7 +5,6 @@ import os
 import json
 import urllib.parse
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

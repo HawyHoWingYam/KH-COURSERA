@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { DocumentType, Company, FileInfo } from '@/lib/api';
+import { DocumentType, Company } from '@/lib/api';
 
 // Define ConfigType for document configurations
 interface ConfigType {
@@ -170,7 +170,7 @@ export default function ConfigsPage() {
         e.preventDefault();
 
         try {
-            let updatedFormData = { ...formData };
+            const updatedFormData = { ...formData };
 
             // If files were uploaded, upload them first
             if (promptFile) {
