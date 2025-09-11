@@ -86,17 +86,31 @@ def create_database_engine():
     try:
         database_url = get_database_url()
         
-        # 創建引擎，添加連接池和重試機制
-        engine = create_engine(
-            database_url,
-            pool_size=10,
-            max_overflow=20,
-            pool_recycle=3600,
-            pool_pre_ping=True,
-            connect_args={
+        # 根據數據庫類型設置連接參數
+        if database_url.startswith('sqlite'):
+            # SQLite 不支持 PostgreSQL 特定參數
+            connect_args = {}
+            pool_size = 5  # SQLite 連接池較小
+            max_overflow = 10
+            logger.info("Using SQLite database configuration")
+        else:
+            # PostgreSQL 連接參數
+            connect_args = {
                 "connect_timeout": 30,
                 "application_name": "GeminiOCR_Backend"
             }
+            pool_size = 10
+            max_overflow = 20
+            logger.info("Using PostgreSQL database configuration")
+        
+        # 創建引擎，添加連接池和重試機制
+        engine = create_engine(
+            database_url,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
+            pool_recycle=3600,
+            pool_pre_ping=True,
+            connect_args=connect_args
         )
         
         logger.info("✅ Database connection established successfully")
