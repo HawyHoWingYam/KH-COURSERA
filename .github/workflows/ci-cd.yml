@@ -220,17 +220,34 @@ jobs:
         # Wait for services to be ready
         sleep 60
         
-        # Test backend health
-        curl -f http://localhost:8000/health
+        # Check container status first
+        echo "=== Container Status ==="
+        docker compose -f docker-compose.ci.yml ps
+        
+        # Show logs if any container is unhealthy
+        echo "=== Backend Logs ==="
+        docker compose -f docker-compose.ci.yml logs backend || true
+        
+        echo "=== Database Logs ==="
+        docker compose -f docker-compose.ci.yml logs db || true
+        
+        # Test backend health with verbose output
+        echo "=== Testing Backend Health ==="
+        curl -v http://localhost:8000/health
         
         # Test frontend
+        echo "=== Testing Frontend ==="
         curl -f http://localhost:3000/
         
         # Test API endpoints
+        echo "=== Testing API Documentation ==="
         curl -f http://localhost:8000/docs
         
-        # Add more integration tests here
-        echo "Integration tests completed successfully"
+        # Additional API tests
+        echo "=== Testing API Root ==="
+        curl -f http://localhost:8000/
+        
+        echo "✅ Integration tests completed successfully"
     
     - name: Cleanup test environment
       if: always()

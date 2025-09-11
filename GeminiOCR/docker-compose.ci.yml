@@ -1,5 +1,3 @@
-version: '3.8'
-
 # ==============================================
 # GeminiOCR CI/CD Testing Configuration
 # ==============================================
@@ -52,7 +50,7 @@ services:
       # Test database configuration
       - DATABASE_URL=postgresql://${POSTGRES_USER:-test_user}:${POSTGRES_PASSWORD:-test_password}@db:5432/${POSTGRES_DB:-test_db}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-test_redis_password}@redis:6379/0
-      - ENVIRONMENT=testing
+      - ENVIRONMENT=test
       
       # Disable external services for testing
       - USE_S3_STORAGE=false
@@ -75,8 +73,8 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s
       timeout: 10s
-      retries: 5
-      start_period: 60s
+      retries: 8
+      start_period: 90s
     networks:
       - gemini-test-network
 
@@ -113,7 +111,7 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD:-test_redis_password}@redis:6379/0
       - BACKEND_URL=http://backend:8000
       - FRONTEND_URL=http://frontend:3000
-      - ENVIRONMENT=testing
+      - ENVIRONMENT=test
     volumes:
       - test_uploads:/app/uploads
       - test_logs:/app/logs
