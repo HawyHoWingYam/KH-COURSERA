@@ -1,0 +1,61 @@
+# .trivyignore - Trivy Security Scanner Ignore List
+# 
+# This file contains CVEs that have been reviewed and determined to be acceptable risks
+# for this project. Each entry should include:
+# - CVE ID
+# - Brief explanation of why it's acceptable
+# - Review date and reviewer
+#
+# Format: CVE-YYYY-NNNNN [optional comment]
+#
+# IMPORTANT: Regularly review and update this list. 
+# CVEs should only be ignored after proper risk assessment.
+
+# =============================================================================
+# BASE IMAGE CVEs - Common vulnerabilities in base images that are often 
+# acceptable for development/testing environments
+# =============================================================================
+
+# Example entries (uncomment and modify as needed after proper risk assessment):
+# CVE-2024-6387   # OpenSSH vulnerability - not used in containerized app
+# CVE-2023-4911   # glibc vulnerability - patched in newer versions
+# CVE-2023-29491  # ncurses vulnerability - not exposed in production
+
+# =============================================================================
+# DEVELOPMENT/TESTING ONLY CVEs
+# =============================================================================
+
+# CVEs that are acceptable in development but should be fixed for production
+# These should be conditional based on environment tags
+
+# =============================================================================
+# LIBRARY-SPECIFIC IGNORES
+# =============================================================================
+
+# Python/Node.js specific vulnerabilities that don't apply to our use case
+# (Add specific CVEs here after assessment)
+
+# =============================================================================
+# MANUAL REVIEW REQUIRED
+# =============================================================================
+
+# When adding CVEs here:
+# 1. Document the business justification
+# 2. Include the date reviewed and by whom  
+# 3. Set a review reminder date
+# 4. Consider alternative mitigations
+
+# Example format:
+# CVE-2024-XXXXX  # [REVIEWED 2024-01-15 by Security Team] 
+#                 # Risk: LOW - affects unused component
+#                 # Mitigation: Component disabled in production config
+#                 # Next review: 2024-07-15
+
+# =============================================================================
+# NOTES
+# =============================================================================
+# - This file is checked into version control for transparency
+# - All ignores should have documented business justification
+# - Prefer fixing vulnerabilities over ignoring them
+# - Use ignore-unfixed in Trivy config for issues without available fixes
+# - Regularly audit this list during security reviews
