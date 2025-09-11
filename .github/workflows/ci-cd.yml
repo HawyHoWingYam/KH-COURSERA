@@ -153,7 +153,7 @@ jobs:
           org.opencontainers.image.licenses=MIT
     
     - name: Run security scan with Trivy
-      uses: aquasecurity/trivy-action@v0.24.0
+      uses: aquasecurity/trivy-action@0.25.0
       with:
         image-ref: ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}
         format: 'sarif'
