@@ -566,8 +566,8 @@ jobs:
     timeout-minutes: 15
     needs: publish
     if: github.ref == 'refs/heads/main'
-    environment:
-      name: staging
+    # environment:
+    #   name: staging  # Temporarily disabled - requires GitHub environment configuration
     
     steps:
     - name: Checkout code
