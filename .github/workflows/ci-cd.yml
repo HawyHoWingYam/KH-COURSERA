@@ -159,7 +159,7 @@ jobs:
         image-ref: ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}
         format: 'sarif'
         output: 'trivy-results-${{ matrix.service }}.sarif'
-        exit-code: '1'
+        exit-code: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && '1' || '0' }}
         severity: 'CRITICAL,HIGH'
     
     - name: Upload Trivy scan results

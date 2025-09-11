@@ -17,6 +17,7 @@ export default function Upload() {
   const [error, setError] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [isLoading, setIsLoading] = useState(false);
   const fileUrlRef = useRef<string | null>(null);
 
   const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB in bytes
@@ -147,6 +148,9 @@ export default function Upload() {
       return;
     }
 
+    setIsLoading(true);
+    setError(null);
+
     try {
       // Create the FormData object
       const formData = new FormData();
@@ -199,6 +203,8 @@ export default function Upload() {
     } catch (err) {
       setError('Failed to start upload');
       console.error(err);
+    } finally {
+      setIsLoading(false);
     }
   };
 
