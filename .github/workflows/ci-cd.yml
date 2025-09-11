@@ -24,6 +24,7 @@ jobs:
   detect-changes:
     name: Detect Changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       backend: ${{ steps.changes.outputs.backend }}
       frontend: ${{ steps.changes.outputs.frontend }}
@@ -51,10 +52,12 @@ jobs:
   build-and-test:
     name: Build, Test & Security Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: detect-changes
     if: needs.detect-changes.outputs.backend == 'true' || needs.detect-changes.outputs.frontend == 'true' || startsWith(github.ref, 'refs/tags/')
     
     strategy:
+      fail-fast: false
       matrix:
         service: [backend, frontend]
     
@@ -74,6 +77,30 @@ jobs:
     
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
+    
+    - name: Run backend linting (ruff)
+      if: matrix.service == 'backend'
+      run: |
+        cd GeminiOCR/backend
+        pip install ruff
+        ruff check . --format=github
+        ruff format --check .
+    
+    - name: Run frontend linting (eslint)
+      if: matrix.service == 'frontend'
+      run: |
+        cd GeminiOCR/frontend
+        npm ci
+        npm run lint -- --max-warnings=0
+    
+    - name: Run Dockerfile linting (hadolint)
+      run: |
+        # Install hadolint
+        wget -O /tmp/hadolint https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+        chmod +x /tmp/hadolint
+        
+        # Lint the Dockerfile for this service
+        /tmp/hadolint GeminiOCR/${{ matrix.service }}.Dockerfile || echo "Dockerfile linting completed with warnings"
     
     - name: Generate build metadata
       id: meta
@@ -100,6 +127,7 @@ jobs:
     
     - name: Build Docker image (${{ matrix.service }})
       uses: docker/build-push-action@v5
+      timeout-minutes: 15
       with:
         context: ./GeminiOCR
         file: ./GeminiOCR/${{ matrix.service }}.Dockerfile
@@ -113,8 +141,7 @@ jobs:
           VERSION=${{ steps.meta.outputs.BUILD_VERSION }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
-        sbom: true
-        provenance: true
+        platforms: linux/amd64
         labels: |
           org.opencontainers.image.title=GeminiOCR-${{ matrix.service }}
           org.opencontainers.image.description=GeminiOCR ${{ matrix.service }} service
@@ -126,7 +153,7 @@ jobs:
           org.opencontainers.image.licenses=MIT
     
     - name: Run security scan with Trivy
-      uses: aquasecurity/trivy-action@master
+      uses: aquasecurity/trivy-action@v0.24.0
       with:
         image-ref: ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}
         format: 'sarif'
@@ -221,6 +248,7 @@ jobs:
   integration-test:
     name: Integration Testing
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [detect-changes, build-and-test]
     if: needs.detect-changes.outputs.backend == 'true' || needs.detect-changes.outputs.frontend == 'true'
     
@@ -363,6 +391,7 @@ jobs:
   publish:
     name: Publish to Docker Hub
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [detect-changes, build-and-test, integration-test]
     if: |
       github.event_name == 'push' && 
@@ -370,6 +399,7 @@ jobs:
       (needs.detect-changes.outputs.backend == 'true' || needs.detect-changes.outputs.frontend == 'true' || startsWith(github.ref, 'refs/tags/'))
     
     strategy:
+      fail-fast: false
       matrix:
         service: [backend, frontend]
     
@@ -422,6 +452,7 @@ jobs:
     
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
+      timeout-minutes: 20
       with:
         context: ./GeminiOCR
         file: ./GeminiOCR/${{ matrix.service }}.Dockerfile
@@ -434,6 +465,7 @@ jobs:
           VERSION=${{ steps.docker-meta.outputs.version }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
         sbom: true
         provenance: true
 
@@ -441,8 +473,11 @@ jobs:
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: publish
     if: github.ref == 'refs/heads/main'
+    environment:
+      name: staging
     
     steps:
     - name: Checkout code
@@ -467,6 +502,7 @@ jobs:
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: publish
     if: startsWith(github.ref, 'refs/tags/')
     
