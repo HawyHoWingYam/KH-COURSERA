@@ -243,9 +243,9 @@ jobs:
         echo "=== Testing API Documentation ==="
         curl -f http://localhost:8000/docs
         
-        # Additional API tests
-        echo "=== Testing API Root ==="
-        curl -f http://localhost:8000/
+        # Additional API tests - test health endpoint instead of non-existent root
+        echo "=== Testing API Health Endpoint ==="
+        curl -f http://localhost:8000/health
         
         echo "✅ Integration tests completed successfully"
     
