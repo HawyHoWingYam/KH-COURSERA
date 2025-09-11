@@ -52,20 +52,17 @@ jobs:
     name: Build, Test & Security Scan
     runs-on: ubuntu-latest
     needs: detect-changes
-    if: needs.detect-changes.outputs.backend == 'true' || needs.detect-changes.outputs.frontend == 'true'
+    if: needs.detect-changes.outputs.backend == 'true' || needs.detect-changes.outputs.frontend == 'true' || startsWith(github.ref, 'refs/tags/')
     
     strategy:
       matrix:
         service: [backend, frontend]
-        exclude:
-          - service: backend
-            backend_changed: ${{ needs.detect-changes.outputs.backend != 'true' }}
-          - service: frontend
-            frontend_changed: ${{ needs.detect-changes.outputs.frontend != 'true' }}
     
     steps:
-    - name: Skip if no changes
-      if: (matrix.service == 'backend' && needs.detect-changes.outputs.backend != 'true') || (matrix.service == 'frontend' && needs.detect-changes.outputs.frontend != 'true')
+    - name: Skip if no changes for this service
+      if: |
+        (matrix.service == 'backend' && needs.detect-changes.outputs.backend != 'true' && !startsWith(github.ref, 'refs/tags/')) ||
+        (matrix.service == 'frontend' && needs.detect-changes.outputs.frontend != 'true' && !startsWith(github.ref, 'refs/tags/'))
       run: |
         echo "Skipping ${{ matrix.service }} build - no changes detected"
         exit 0
@@ -232,19 +229,34 @@ jobs:
       uses: actions/checkout@v4
     
     - name: Download backend image
+      if: needs.detect-changes.outputs.backend == 'true'
       uses: actions/download-artifact@v4
       with:
         name: backend-image
     
     - name: Download frontend image  
+      if: needs.detect-changes.outputs.frontend == 'true'
       uses: actions/download-artifact@v4
       with:
         name: frontend-image
     
     - name: Load Docker images
       run: |
-        docker load -i backend-image.tar
-        docker load -i frontend-image.tar
+        # Load backend image if it was built
+        if [ -f "backend-image.tar" ]; then
+          echo "Loading backend image..."
+          docker load -i backend-image.tar
+        else
+          echo "Backend image not found, using existing image"
+        fi
+        
+        # Load frontend image if it was built
+        if [ -f "frontend-image.tar" ]; then
+          echo "Loading frontend image..."
+          docker load -i frontend-image.tar
+        else
+          echo "Frontend image not found, using existing image"
+        fi
     
     - name: Start integration test environment
       run: |
@@ -257,9 +269,26 @@ jobs:
         REDIS_PASSWORD=test_redis_password
         EOF
         
-        # Start test stack with built images
-        export BACKEND_IMAGE="${{ env.DOCKER_REPOSITORY }}:backend-${{ github.sha }}"
-        export FRONTEND_IMAGE="${{ env.DOCKER_REPOSITORY }}:frontend-${{ github.sha }}"
+        # Start test stack with built images or fallbacks
+        if [ "${{ needs.detect-changes.outputs.backend }}" = "true" ]; then
+          export BACKEND_IMAGE="${{ env.DOCKER_REPOSITORY }}:backend-${{ github.sha }}"
+          echo "Using newly built backend image: $BACKEND_IMAGE"
+        else
+          export BACKEND_IMAGE="${{ env.DOCKER_REPOSITORY }}:backend-latest"
+          echo "Using fallback backend image: $BACKEND_IMAGE"
+          # Try to pull the latest image as fallback
+          docker pull $BACKEND_IMAGE || echo "Warning: Could not pull fallback backend image"
+        fi
+        
+        if [ "${{ needs.detect-changes.outputs.frontend }}" = "true" ]; then
+          export FRONTEND_IMAGE="${{ env.DOCKER_REPOSITORY }}:frontend-${{ github.sha }}"
+          echo "Using newly built frontend image: $FRONTEND_IMAGE"
+        else
+          export FRONTEND_IMAGE="${{ env.DOCKER_REPOSITORY }}:frontend-latest"
+          echo "Using fallback frontend image: $FRONTEND_IMAGE"
+          # Try to pull the latest image as fallback
+          docker pull $FRONTEND_IMAGE || echo "Warning: Could not pull fallback frontend image"
+        fi
         
         docker compose -f docker-compose.ci.yml up -d
     
@@ -338,20 +367,17 @@ jobs:
     if: |
       github.event_name == 'push' && 
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) &&
-      (needs.detect-changes.outputs.backend == 'true' || needs.detect-changes.outputs.frontend == 'true')
+      (needs.detect-changes.outputs.backend == 'true' || needs.detect-changes.outputs.frontend == 'true' || startsWith(github.ref, 'refs/tags/'))
     
     strategy:
       matrix:
         service: [backend, frontend]
-        exclude:
-          - service: backend
-            backend_changed: ${{ needs.detect-changes.outputs.backend != 'true' }}
-          - service: frontend
-            frontend_changed: ${{ needs.detect-changes.outputs.frontend != 'true' }}
     
     steps:
-    - name: Skip if no changes
-      if: (matrix.service == 'backend' && needs.detect-changes.outputs.backend != 'true') || (matrix.service == 'frontend' && needs.detect-changes.outputs.frontend != 'true')
+    - name: Skip if no changes for this service
+      if: |
+        (matrix.service == 'backend' && needs.detect-changes.outputs.backend != 'true' && !startsWith(github.ref, 'refs/tags/')) ||
+        (matrix.service == 'frontend' && needs.detect-changes.outputs.frontend != 'true' && !startsWith(github.ref, 'refs/tags/'))
       run: |
         echo "Skipping ${{ matrix.service }} publish - no changes detected"
         exit 0
@@ -449,23 +475,22 @@ jobs:
       uses: actions/checkout@v4
     
     - name: Create Release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      uses: softprops/action-gh-release@v1
       with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
+        name: Release ${{ github.ref_name }}
         body: |
-          ## GeminiOCR Release ${{ github.ref }}
+          ## GeminiOCR Release ${{ github.ref_name }}
           
           ### Docker Images Published
-          - `${{ env.DOCKER_REPOSITORY }}:backend-${{ github.ref }}`
-          - `${{ env.DOCKER_REPOSITORY }}:frontend-${{ github.ref }}`
+          - `${{ env.DOCKER_REPOSITORY }}:backend-${{ github.ref_name }}`
+          - `${{ env.DOCKER_REPOSITORY }}:frontend-${{ github.ref_name }}`
+          - `${{ env.DOCKER_REPOSITORY }}:backend-latest`
+          - `${{ env.DOCKER_REPOSITORY }}:frontend-latest`
           
           ### Deployment Command
           ```bash
           # For production deployment
-          export VERSION=${{ github.ref }}
+          export VERSION=${{ github.ref_name }}
           docker compose -f docker-compose.prod.yml pull
           docker compose -f docker-compose.prod.yml up -d
           ```
@@ -473,4 +498,4 @@ jobs:
           ### Changes
           See commit history for detailed changes.
         draft: false
-        prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+        prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
