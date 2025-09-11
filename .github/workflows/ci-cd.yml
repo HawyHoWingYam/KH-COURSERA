@@ -11,21 +11,65 @@ permissions:
   contents: read
   security-events: write
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   DOCKER_REGISTRY: docker.io
-  DOCKER_REPOSITORY: karash062/hya-ocr-sandbox
+  DOCKER_REPOSITORY: karasho62/hya-ocr-sandbox
   
 jobs:
+  # Detect changes to optimize builds
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.changes.outputs.backend }}
+      frontend: ${{ steps.changes.outputs.frontend }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Check for changes
+      uses: dorny/paths-filter@v3
+      id: changes
+      with:
+        filters: |
+          backend:
+            - 'GeminiOCR/backend/**'
+            - 'GeminiOCR/backend.Dockerfile'
+            - 'GeminiOCR/docker-compose*.yml'
+            - '.github/workflows/**'
+          frontend:
+            - 'GeminiOCR/frontend/**'
+            - 'GeminiOCR/frontend.Dockerfile'
+            - 'GeminiOCR/docker-compose*.yml'
+            - '.github/workflows/**'
+
   # Build and Test Phase
   build-and-test:
     name: Build, Test & Security Scan
     runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.backend == 'true' || needs.detect-changes.outputs.frontend == 'true'
     
     strategy:
       matrix:
         service: [backend, frontend]
+        exclude:
+          - service: backend
+            backend_changed: ${{ needs.detect-changes.outputs.backend != 'true' }}
+          - service: frontend
+            frontend_changed: ${{ needs.detect-changes.outputs.frontend != 'true' }}
     
     steps:
+    - name: Skip if no changes
+      if: (matrix.service == 'backend' && needs.detect-changes.outputs.backend != 'true') || (matrix.service == 'frontend' && needs.detect-changes.outputs.frontend != 'true')
+      run: |
+        echo "Skipping ${{ matrix.service }} build - no changes detected"
+        exit 0
+    
     - name: Checkout code
       uses: actions/checkout@v4
       with:
@@ -72,6 +116,8 @@ jobs:
           VERSION=${{ steps.meta.outputs.BUILD_VERSION }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        sbom: true
+        provenance: true
         labels: |
           org.opencontainers.image.title=GeminiOCR-${{ matrix.service }}
           org.opencontainers.image.description=GeminiOCR ${{ matrix.service }} service
@@ -88,6 +134,8 @@ jobs:
         image-ref: ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}
         format: 'sarif'
         output: 'trivy-results-${{ matrix.service }}.sarif'
+        exit-code: '1'
+        severity: 'CRITICAL,HIGH'
     
     - name: Upload Trivy scan results
       if: ${{ github.event_name != 'pull_request' }}
@@ -176,7 +224,8 @@ jobs:
   integration-test:
     name: Integration Testing
     runs-on: ubuntu-latest
-    needs: build-and-test
+    needs: [detect-changes, build-and-test]
+    if: needs.detect-changes.outputs.backend == 'true' || needs.detect-changes.outputs.frontend == 'true'
     
     steps:
     - name: Checkout code
@@ -231,21 +280,47 @@ jobs:
         echo "=== Database Logs ==="
         docker compose -f docker-compose.ci.yml logs db || true
         
-        # Test backend health with verbose output
+        # Test backend health with retry logic
         echo "=== Testing Backend Health ==="
-        curl -v http://localhost:8000/health
+        for i in {1..5}; do
+          if curl -fsS http://localhost:8000/health; then
+            echo "✅ Backend health check passed!"
+            break
+          else
+            echo "❌ Backend health check attempt $i/5 failed, retrying in 10s..."
+            if [ $i -eq 5 ]; then
+              echo "Backend logs:"
+              docker compose -f docker-compose.ci.yml logs backend
+              exit 1
+            fi
+            sleep 10
+          fi
+        done
         
-        # Test frontend
+        # Test frontend with retry logic
         echo "=== Testing Frontend ==="
-        curl -f http://localhost:3000/
+        for i in {1..5}; do
+          if curl -fsS http://localhost:3000/ > /dev/null; then
+            echo "✅ Frontend health check passed!"
+            break
+          else
+            echo "❌ Frontend health check attempt $i/5 failed, retrying in 15s..."
+            if [ $i -eq 5 ]; then
+              echo "Frontend logs:"
+              docker compose -f docker-compose.ci.yml logs frontend
+              exit 1
+            fi
+            sleep 15
+          fi
+        done
         
         # Test API endpoints
         echo "=== Testing API Documentation ==="
-        curl -f http://localhost:8000/docs
-        
-        # Additional API tests - test health endpoint instead of non-existent root
-        echo "=== Testing API Health Endpoint ==="
-        curl -f http://localhost:8000/health
+        curl -fsS http://localhost:8000/docs > /dev/null || {
+          echo "❌ API docs endpoint failed"
+          docker compose -f docker-compose.ci.yml logs backend
+          exit 1
+        }
         
         echo "✅ Integration tests completed successfully"
     
@@ -259,14 +334,28 @@ jobs:
   publish:
     name: Publish to Docker Hub
     runs-on: ubuntu-latest
-    needs: [build-and-test, integration-test]
-    if: github.event_name != 'pull_request'
+    needs: [detect-changes, build-and-test, integration-test]
+    if: |
+      github.event_name == 'push' && 
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) &&
+      (needs.detect-changes.outputs.backend == 'true' || needs.detect-changes.outputs.frontend == 'true')
     
     strategy:
       matrix:
         service: [backend, frontend]
+        exclude:
+          - service: backend
+            backend_changed: ${{ needs.detect-changes.outputs.backend != 'true' }}
+          - service: frontend
+            frontend_changed: ${{ needs.detect-changes.outputs.frontend != 'true' }}
     
     steps:
+    - name: Skip if no changes
+      if: (matrix.service == 'backend' && needs.detect-changes.outputs.backend != 'true') || (matrix.service == 'frontend' && needs.detect-changes.outputs.frontend != 'true')
+      run: |
+        echo "Skipping ${{ matrix.service }} publish - no changes detected"
+        exit 0
+    
     - name: Checkout code
       uses: actions/checkout@v4
       with:
@@ -281,31 +370,27 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
     
+    - name: Generate Docker metadata
+      id: docker-meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.DOCKER_REPOSITORY }}
+        tags: |
+          type=ref,event=tag,pattern=v*,prefix=${{ matrix.service }}-
+          type=ref,event=branch,enable={{is_default_branch}},prefix=${{ matrix.service }}-
+          type=ref,event=branch,enable={{is_default_branch}},prefix=${{ matrix.service }}-,suffix=-{{sha}}
+          type=raw,value=${{ matrix.service }}-latest,enable={{is_default_branch}}
+        labels: |
+          org.opencontainers.image.title=GeminiOCR-${{ matrix.service }}
+          org.opencontainers.image.description=GeminiOCR ${{ matrix.service }} service
+          org.opencontainers.image.url=https://github.com/${{ github.repository }}
+          org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          org.opencontainers.image.licenses=MIT
+    
     - name: Generate publish metadata
       id: meta
       run: |
-        if [[ $GITHUB_REF == refs/tags/* ]]; then
-          VERSION=${GITHUB_REF#refs/tags/}
-          TAGS="${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-$VERSION"
-          TAGS="$TAGS,${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-latest"
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "TAGS=$TAGS" >> $GITHUB_OUTPUT
-          echo "IS_RELEASE=true" >> $GITHUB_OUTPUT
-        elif [[ $GITHUB_REF == refs/heads/main ]]; then
-          VERSION="latest"
-          TAGS="${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-latest"
-          TAGS="$TAGS,${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-main-${GITHUB_SHA::8}"
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "TAGS=$TAGS" >> $GITHUB_OUTPUT
-          echo "IS_RELEASE=false" >> $GITHUB_OUTPUT
-        else
-          VERSION="dev-$(date +%Y%m%d)-${GITHUB_SHA::8}"
-          TAGS="${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-$VERSION"
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "TAGS=$TAGS" >> $GITHUB_OUTPUT
-          echo "IS_RELEASE=false" >> $GITHUB_OUTPUT
-        fi
-        
+        # Generate build metadata for docker/metadata-action compatibility
         echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
         echo "VCS_REF=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
     
@@ -315,22 +400,16 @@ jobs:
         context: ./GeminiOCR
         file: ./GeminiOCR/${{ matrix.service }}.Dockerfile
         push: true
-        tags: ${{ steps.meta.outputs.TAGS }}
+        tags: ${{ steps.docker-meta.outputs.tags }}
+        labels: ${{ steps.docker-meta.outputs.labels }}
         build-args: |
           BUILD_DATE=${{ steps.meta.outputs.BUILD_DATE }}
           VCS_REF=${{ steps.meta.outputs.VCS_REF }}
-          VERSION=${{ steps.meta.outputs.VERSION }}
+          VERSION=${{ steps.docker-meta.outputs.version }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
-        labels: |
-          org.opencontainers.image.title=GeminiOCR-${{ matrix.service }}
-          org.opencontainers.image.description=GeminiOCR ${{ matrix.service }} service
-          org.opencontainers.image.url=https://github.com/${{ github.repository }}
-          org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          org.opencontainers.image.version=${{ steps.meta.outputs.VERSION }}
-          org.opencontainers.image.created=${{ steps.meta.outputs.BUILD_DATE }}
-          org.opencontainers.image.revision=${{ github.sha }}
-          org.opencontainers.image.licenses=MIT
+        sbom: true
+        provenance: true
 
   # Deploy to Staging (for main branch)
   deploy-staging:

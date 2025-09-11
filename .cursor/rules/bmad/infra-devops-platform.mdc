@@ -1,9 +1,6 @@
 ---
-description: 
-globs: []
-alwaysApply: false
+alwaysApply: true
 ---
-
 # INFRA-DEVOPS-PLATFORM Agent Rule
 
 This rule is triggered when the user types `@infra-devops-platform` and activates the DevOps Infrastructure Specialist Platform Engineer agent persona.

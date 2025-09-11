@@ -1,12 +1,35 @@
 # 🔍 GeminiOCR - AI-Powered Document Processing Platform
-## 🚀 Quick Start (Anaconda - Recommended)
 
-### Prerequisites
-- Anaconda Python environment
-- Node.js and npm
-- Access to AWS resources (RDS, S3)
+一个基于 FastAPI + Next.js 的智能 OCR/文档处理平台，支持多文档类型解析、批处理、WebSocket 实时状态、S3 文件存储与 RDS 数据库，并提供完善的 Docker 化与 CI/CD 流程。
 
-### 1. Backend Setup (Terminal 1)
+## 🏗️ 架构与能力
+
+**核心组件**
+- Backend: FastAPI（含 WebSocket、OpenAPI /docs）
+- Frontend: Next.js（App Router）
+- Database: PostgreSQL（本地/容器/RDS 皆可）
+- Cache: Redis（可选）
+- Storage: AWS S3（测试环境自动回退本地）
+- AI Engine: Google Gemini
+
+**关键特性**
+- 🔍 PDF/图片/ZIP 等多格式解析
+- ⚡ WebSocket 实时进度
+- 📦 批处理任务与使用统计
+- 🏢 多租户文档类型配置
+- ☁️ S3/RDS 云集成，支持本地降级
+- 📈 导出 Excel
+
+---
+
+## 🚀 本地开发（Anaconda 推荐）
+
+### 依赖
+- Anaconda（Python 3.11+）
+- Node.js 18+（npm 9+）
+- 可选：本地 PostgreSQL / Redis
+
+### 启动 Backend（Terminal 1）
 ```bash
 cd GeminiOCR/backend
 conda activate gemini-sandbox
@@ -16,78 +39,114 @@ export AWS_DEFAULT_REGION=ap-southeast-1
 uvicorn app:app --host 0.0.0.0 --port 8001
 ```
 
-### 2. Frontend Setup (Terminal 2)
+### 启动 Frontend（Terminal 2）
 ```bash
 cd GeminiOCR/frontend
 npm run dev
 ```
 
-### 3. Access Application
-- **Frontend**: http://localhost:3000
-- **API Documentation**: http://localhost:8001/docs
-- **Health Check**: http://localhost:8001/health
+### 访问
+- Frontend: http://localhost:3000
+- API Docs: http://localhost:8001/docs
+- Health: http://localhost:8001/health
 
-## 📚 Documentation
+---
 
-- **[CLAUDE.md](./CLAUDE.md)** - Complete development setup and commands
-- **[DOCKER_DEPLOYMENT.md](./GeminiOCR/DOCKER_DEPLOYMENT.md)** - Production deployment with Docker
+## 🐳 Docker 部署（开发/生产）
 
-## 🏗️ Architecture & Features
+平台提供完整的 Docker 化方案与零停机部署脚本。
 
-**Core Components:**
-- **Backend**: FastAPI with WebSocket support
-- **Frontend**: Next.js React application with real-time updates  
-- **Database**: PostgreSQL (Aurora RDS for sandbox/production)
-- **Storage**: AWS S3 with local file fallback
-- **AI Engine**: Google Gemini for OCR and data extraction
+### 开发环境（可选）
+```bash
+# 启动
+docker compose -f GeminiOCR/docker-compose.dev.yml up -d
 
-**Key Features:**
-- 🔍 **Multi-format Support**: Process PDFs, images, and ZIP archives
-- ⚡ **Real-time Updates**: WebSocket integration for live processing status
-- 📦 **Batch Processing**: Handle multiple documents simultaneously
-- 🏢 **Multi-tenant**: Company-specific document configurations
-- ☁️ **Cloud Integration**: AWS S3 storage and RDS database
-- 📊 **API Usage Tracking**: Monitor usage with comprehensive statistics
-- 🔄 **API Key Rotation**: Multiple keys with automatic failover
-- 📈 **Excel Export**: Automatic JSON to Excel conversion
+# 查看状态与日志
+docker compose -f GeminiOCR/docker-compose.dev.yml ps
+docker compose -f GeminiOCR/docker-compose.dev.yml logs -f
+```
 
-## 🔧 Environment Setup
+### 生产部署
+```bash
+cd GeminiOCR
 
-### Sandbox Configuration
-- **Database**: Aurora RDS Sandbox (`hya-ocr-sandbox`)
-- **Storage**: S3 Bucket (`hya-ocr-sandbox`)
-- **API Port**: 8001 (Backend), 3000 (Frontend)
-- **Environment**: `sandbox`
+# 蓝绿部署（推荐）
+./deploy.sh blue-green auto     # 智能选择镜像源（Hub 优先）
 
-### Requirements
-- **Backend**: Python 3.11+ (Anaconda recommended)
-- **Frontend**: Node.js 18+, npm 9+
-- **Database**: PostgreSQL 13+ (Aurora RDS)
-- **Storage**: AWS S3 bucket access
+# 滚动更新
+./deploy.sh rolling auto
 
-## 📁 Project Structure
+# 指定版本（从 Docker Hub 拉取）
+DEPLOY_VERSION=v1.0.0 ./deploy.sh blue-green hub
+```
+
+> 部署脚本会完成：预检查 → 备份 → 构建/拉取镜像 → 蓝绿/滚动部署 → 健康验证 → 清理旧资源。
+
+### Compose 说明
+- 推荐 `docker compose`（Compose v2）。
+- Compose 文件中的顶层 `version:` 已弃用，已按 v2 规范兼容。
+
+---
+
+## 🔁 CI/CD（GitHub Actions）
+
+流水线包含：构建与测试 → 安全扫描（Trivy）→ 集成测试（Compose）→ 发布镜像（Docker Hub）→（可选）Staging 部署 → 创建 Release。
+
+### 仓库与凭据
+- Docker Hub 仓库：`karash062/hya-ocr-sandbox`
+- GitHub Secrets：
+  - `DOCKERHUB_USERNAME`
+  - `DOCKERHUB_TOKEN`
+
+### 触发策略
+- push 到 `main` / `develop`
+- `v*` 标签（语义化版本）
+- PR 到 `main`（仅构建与测试，不发布）
+
+### 镜像命名（推荐）
+- 统一单仓库：通过标签区分服务
+  - `karash062/hya-ocr-sandbox:backend-<version>`
+  - `karash062/hya-ocr-sandbox:frontend-<version>`
+
+### 集成测试要点
+- 使用 Compose v2 启动 `db / redis / backend / frontend`
+- 后端健康探针命中 `/health`，根路径 404 不视为失败
+- Postgres 健康检查使用 `-d ${POSTGRES_DB}` 避免噪声日志
+
+### 常见失败与修复
+- 推送镜像被拒：确认仓库存在且已 `docker/login-action`
+- SARIF 上传被拒：添加 `permissions.security-events: write`，仅在非 PR 上传
+- `docker-compose` 未找到：在 CI 使用 `docker compose`
+- SQLite/依赖问题：测试时用 `sqlite:////tmp/test.db`；安装 `python-multipart`
+
+---
+
+## 📁 目录结构
 
 ```
 GeminiOCR/
-├── backend/              # FastAPI application
-│   ├── app.py           # Main FastAPI app with WebSocket support
-│   ├── config_loader.py # Centralized configuration management
-│   ├── env/.env         # Environment variables (not committed)
-│   ├── db/              # Database models and connection
-│   └── utils/           # S3 storage, Excel conversion, API utilities
-├── frontend/            # Next.js React application
-│   ├── src/app/         # App router with admin, jobs, upload pages
-│   └── .env.local       # Frontend API configuration
-└── CLAUDE.md            # Complete development guide
+├── backend/              # FastAPI app
+│   ├── app.py            # 主应用（含 WebSocket）
+│   ├── config_loader.py  # 配置加载与校验
+│   ├── env/.env          # 环境变量（不提交）
+│   ├── db/               # 数据库模型与连接
+│   └── utils/            # S3/Excel/工具
+├── frontend/             # Next.js 应用
+│   ├── src/app/
+│   └── .env.local
+├── deploy.sh             # 零停机部署脚本
+└── .github/workflows/ci-cd.yml
 ```
 
-## ⚙️ Configuration
+---
 
-### Environment Files
-- `backend/env/.env` - Backend configuration (sandbox settings)
-- `frontend/.env.local` - Frontend API URL configuration
+## ⚙️ 配置
 
-### Key Settings (Sandbox)
+### 环境文件
+- `backend/env/.env`（后端）
+- `frontend/.env.local`（前端）
+
+### 示例（Sandbox）
 ```bash
 # Backend (backend/env/.env)
 ENVIRONMENT=sandbox
@@ -96,50 +155,71 @@ DATABASE_URL="postgresql://HYA_OCR:password@hya-ocr-sandbox.c94k46soeqmk.ap-sout
 S3_BUCKET_NAME=hya-ocr-sandbox
 GEMINI_API_KEY_1=your_sandbox_gemini_key
 
-# Frontend (frontend/.env.local)  
+# Frontend (frontend/.env.local)
 NEXT_PUBLIC_API_URL=http://localhost:8001
 ```
 
-## 🔍 Monitoring & Health
-
-### Service URLs (Sandbox)
-- **Backend API**: http://localhost:8001
-- **API Documentation**: http://localhost:8001/docs
-- **Health Check**: http://localhost:8001/health
-- **Frontend**: http://localhost:3000
-
-### Database & Storage
-- **Database**: hya-ocr-sandbox.c94k46soeqmk.ap-southeast-1.rds.amazonaws.com:5432
-- **S3 Bucket**: hya-ocr-sandbox
-
-## 🚨 Important Notes
-
-- **Never commit** environment files (`.env`, `.env.local`)
-- **Use Anaconda** for consistent Python environment management
-- **Sandbox environment** is configured for safe testing
-- **Configuration priority**: Environment variables > AWS Secrets > .env > defaults
-- **Multi-API key support** with automatic failover and rotation
-
-## 🛠️ Troubleshooting
-
-**Common Issues:**
-- **Port conflicts**: Use `lsof -i :8001` to find and kill processes using the port
-- **Missing dependencies**: Ensure `pip install python-multipart` for file uploads
-- **Database connection**: Verify DATABASE_URL and database accessibility
-- **WebSocket issues**: Check health endpoint and install `uvicorn[standard] websockets`
-
-**For detailed troubleshooting**: See [CLAUDE.md](./CLAUDE.md#testing-and-quality)
-
-## 📞 Support
-
-**For development issues:**
-1. Check [health endpoints](http://localhost:8001/health)
-2. Review logs in terminal
-3. Verify environment variables
-4. Consult [CLAUDE.md](./CLAUDE.md) for detailed setup
-
-**Environment Status**: Sandbox ✅ | **Last Updated**: 2025-09-06
+**注意**
+- 不要提交 `.env`、`.env.local`
+- 配置优先级：环境变量 > AWS Secrets > .env > 默认值
 
 ---
 
-**Note**: This is the main project README. For detailed development commands and Docker deployment, see the documentation links above.
+## 🔍 监控与健康
+- Backend API: http://localhost:8001
+- API Docs: http://localhost:8001/docs
+- Health: http://localhost:8001/health
+- Frontend: http://localhost:3000
+
+### 运维常用命令（Docker）
+```bash
+docker compose ps
+docker compose logs -f backend
+docker compose logs -f frontend
+curl -f http://localhost/health
+```
+
+---
+
+## 🛠️ 故障排除
+
+**镜像推送失败**
+```bash
+echo $DOCKERHUB_TOKEN | docker login -u $DOCKERHUB_USERNAME --password-stdin
+```
+
+**健康检查失败**
+```bash
+docker compose ps
+docker compose logs backend
+curl -v http://localhost:8000/health
+```
+
+**部署脚本排错**
+```bash
+cd GeminiOCR
+./deploy.sh -h
+./deploy.sh blue-green auto 2>&1 | tee deploy.log
+```
+
+**镜像拉取失败**
+```bash
+docker manifest inspect karash062/hya-ocr-sandbox:backend-latest
+```
+
+---
+
+## 📜 版本策略
+- main → `latest`
+- tags（如 `v1.0.0`）→ 语义化版本
+- develop/feature 分支：仅构建与测试
+
+---
+
+## 📞 支持
+1. 健康检查与日志
+2. 环境变量与凭据
+3. 参考 `CLAUDE.md` 获取完整开发指南
+
+**Environment Status**: Sandbox ✅  
+**Last Updated**: 2025-09-11

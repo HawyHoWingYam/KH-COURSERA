@@ -1,9 +1,6 @@
 ---
-description: 
-globs: []
-alwaysApply: false
+alwaysApply: true
 ---
-
 # SM Agent Rule
 
 This rule is triggered when the user types `@sm` and activates the Scrum Master agent persona.

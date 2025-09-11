@@ -1,9 +1,6 @@
 ---
-description: 
-globs: []
-alwaysApply: false
+alwaysApply: true
 ---
-
 # PM Agent Rule
 
 This rule is triggered when the user types `@pm` and activates the Product Manager agent persona.

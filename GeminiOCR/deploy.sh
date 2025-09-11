@@ -150,7 +150,7 @@ build_or_pull_images() {
 # 从 Docker Hub 拉取镜像
 pull_images_from_hub() {
     local version=${DEPLOY_VERSION:-"latest"}
-    local repository=${DOCKER_REPOSITORY:-"karash062/hya-ocr-sandbox"}
+    local repository=${DOCKER_REPOSITORY:-"karasho62/hya-ocr-sandbox"}
     
     log_info "拉取版本: $version"
     
@@ -178,7 +178,7 @@ pull_images_from_hub() {
 # 检查 Docker Hub 镜像是否可用
 check_hub_images_available() {
     local version=${DEPLOY_VERSION:-"latest"}
-    local repository=${DOCKER_REPOSITORY:-"karash062/hya-ocr-sandbox"}
+    local repository=${DOCKER_REPOSITORY:-"karasho62/hya-ocr-sandbox"}
     
     log_info "检查 Docker Hub 镜像可用性..."
     
@@ -465,7 +465,7 @@ usage() {
     echo ""
     echo "环境变量:"
     echo "  DEPLOY_VERSION       指定要部署的版本 (默认: latest)"
-    echo "  DOCKER_REPOSITORY    Docker Hub 仓库名 (默认: karash062/hya-ocr-sandbox)"
+    echo "  DOCKER_REPOSITORY    Docker Hub 仓库名 (默认: karasho62/hya-ocr-sandbox)"
     echo ""
     echo "示例:"
     echo "  $0                           # 蓝绿部署，自动选择镜像源"
