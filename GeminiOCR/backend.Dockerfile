@@ -1,5 +1,5 @@
 # 使用Python 3.9官方镜像作为基础镜像
-FROM python:3.9-slim as base
+FROM python:3.9-slim AS base
 
 # 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE=1 \

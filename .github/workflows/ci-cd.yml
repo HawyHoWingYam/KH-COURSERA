@@ -101,7 +101,7 @@ jobs:
         if [ "${{ matrix.service }}" = "backend" ]; then
           docker run -d --name test-${{ matrix.service }} \
             -p 8000:8000 \
-            -e DATABASE_URL=sqlite:///tmp/test.db \
+            -e DATABASE_URL=sqlite:///./test.db \
             -e ENVIRONMENT=test \
             ${{ env.DOCKER_REPOSITORY }}-${{ matrix.service }}:${{ github.sha }}
           
@@ -212,7 +212,7 @@ jobs:
         export BACKEND_IMAGE="${{ env.DOCKER_REPOSITORY }}-backend:${{ github.sha }}"
         export FRONTEND_IMAGE="${{ env.DOCKER_REPOSITORY }}-frontend:${{ github.sha }}"
         
-        docker-compose -f docker-compose.ci.yml up -d
+        docker compose -f docker-compose.ci.yml up -d
     
     - name: Run integration tests
       run: |
@@ -236,7 +236,7 @@ jobs:
       if: always()
       run: |
         cd GeminiOCR
-        docker-compose -f docker-compose.ci.yml down -v
+        docker compose -f docker-compose.ci.yml down -v
 
   # Publish Phase (only for main branch and tags)
   publish:
@@ -370,8 +370,8 @@ jobs:
           ```bash
           # For production deployment
           export VERSION=${{ github.ref }}
-          docker-compose -f docker-compose.prod.yml pull
-          docker-compose -f docker-compose.prod.yml up -d
+          docker compose -f docker-compose.prod.yml pull
+          docker compose -f docker-compose.prod.yml up -d
           ```
           
           ### Changes
