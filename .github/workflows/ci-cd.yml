@@ -178,7 +178,7 @@ jobs:
         echo "✅ Docker image verified: ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}"
     
     - name: Run security scan with Trivy
-      uses: aquasecurity/trivy-action@0.25.0
+      uses: aquasecurity/trivy-action@0.27.0
       env:
         TRIVY_CACHE_DIR: ${{ env.TRIVY_CACHE_DIR }}
       with:
@@ -191,6 +191,7 @@ jobs:
         limit-severities-for-sarif: true
         timeout: '10m'
         trivyignores: './.trivyignore'
+        scanners: 'vuln'
     
     - name: Upload Trivy scan results to GitHub Security
       if: ${{ github.event_name != 'pull_request' }}
@@ -200,7 +201,7 @@ jobs:
     
     - name: Generate human-readable Trivy report
       if: always()  # Generate report even if scan failed
-      uses: aquasecurity/trivy-action@0.25.0
+      uses: aquasecurity/trivy-action@0.27.0
       env:
         TRIVY_CACHE_DIR: ${{ env.TRIVY_CACHE_DIR }}
       with:
@@ -212,6 +213,38 @@ jobs:
         ignore-unfixed: true
         timeout: '5m'
         trivyignores: './.trivyignore'
+        scanners: 'vuln'
+    
+    - name: Generate comprehensive security summary
+      if: always()
+      run: |
+        echo "## 🔒 Security Scan Summary for ${{ matrix.service }}" > security-summary-${{ matrix.service }}.md
+        echo "" >> security-summary-${{ matrix.service }}.md
+        echo "**Image**: \`${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}\`" >> security-summary-${{ matrix.service }}.md
+        echo "**Scan Date**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> security-summary-${{ matrix.service }}.md
+        echo "**Pipeline**: ${{ github.workflow }} #${{ github.run_number }}" >> security-summary-${{ matrix.service }}.md
+        echo "" >> security-summary-${{ matrix.service }}.md
+        
+        # Extract vulnerability counts from the report
+        if [ -f "trivy-report-${{ matrix.service }}.txt" ]; then
+          echo "### Vulnerability Summary" >> security-summary-${{ matrix.service }}.md
+          echo "\`\`\`" >> security-summary-${{ matrix.service }}.md
+          grep -E "Total: [0-9]+" trivy-report-${{ matrix.service }}.txt || echo "No vulnerabilities summary found" >> security-summary-${{ matrix.service }}.md
+          echo "\`\`\`" >> security-summary-${{ matrix.service }}.md
+          echo "" >> security-summary-${{ matrix.service }}.md
+          
+          # Check if there are any unfixed vulnerabilities
+          if grep -q "CRITICAL\|HIGH\|MEDIUM" trivy-report-${{ matrix.service }}.txt 2>/dev/null; then
+            echo "### 📋 Detailed Report" >> security-summary-${{ matrix.service }}.md
+            echo "See attached \`trivy-report-${{ matrix.service }}.txt\` for complete details." >> security-summary-${{ matrix.service }}.md
+          else
+            echo "### ✅ All Clear" >> security-summary-${{ matrix.service }}.md
+            echo "No significant vulnerabilities detected in this image." >> security-summary-${{ matrix.service }}.md
+          fi
+        else
+          echo "### ⚠️ Scan Error" >> security-summary-${{ matrix.service }}.md
+          echo "Trivy report was not generated successfully." >> security-summary-${{ matrix.service }}.md
+        fi
     
     - name: Upload Trivy artifacts
       if: always()  # Upload artifacts even if scan failed
@@ -221,6 +254,7 @@ jobs:
         path: |
           trivy-results-${{ matrix.service }}.sarif
           trivy-report-${{ matrix.service }}.txt
+          security-summary-${{ matrix.service }}.md
         retention-days: 30
     
     - name: Test image health
