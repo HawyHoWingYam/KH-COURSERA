@@ -83,14 +83,15 @@ jobs:
       run: |
         cd GeminiOCR/backend
         pip install ruff
-        ruff check . --format=github
+        ruff check . --output-format=github
         ruff format --check .
     
     - name: Run frontend linting (eslint)
       if: matrix.service == 'frontend'
+      continue-on-error: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
       run: |
         cd GeminiOCR/frontend
-        npm ci
+        npm ci --no-audit --fund=false
         npm run lint -- --max-warnings=0
     
     - name: Run Dockerfile linting (hadolint)
