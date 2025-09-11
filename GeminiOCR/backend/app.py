@@ -47,10 +47,10 @@ from utils.file_storage import get_file_storage
 try:
     app_config = config_loader.get_app_config()
     logger = logging.getLogger(__name__)
-    
+
     # 驗證配置
     validate_and_log_config()
-    
+
 except Exception as e:
     logging.error(f"Failed to load configuration: {e}")
     raise
@@ -94,72 +94,66 @@ def health_check():
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "services": {},
-        "config": {}
+        "config": {},
     }
-    
+
     # 檢查數據庫連接
     try:
         db_info = get_database_info()
         health_status["services"]["database"] = {
             "status": "healthy" if db_info["status"] == "connected" else "unhealthy",
-            "info": db_info
+            "info": db_info,
         }
         if db_info["status"] != "connected":
             health_status["status"] = "degraded"
     except Exception as e:
-        health_status["services"]["database"] = {
-            "status": "unhealthy",
-            "error": str(e)
-        }
+        health_status["services"]["database"] = {"status": "unhealthy", "error": str(e)}
         health_status["status"] = "unhealthy"
-    
+
     # 檢查上傳目錄
     try:
         uploads_path = "uploads"
         if os.path.exists(uploads_path) and os.access(uploads_path, os.W_OK):
             health_status["services"]["storage"] = {
                 "status": "healthy",
-                "message": "Uploads directory accessible"
+                "message": "Uploads directory accessible",
             }
         else:
             health_status["services"]["storage"] = {
                 "status": "unhealthy",
-                "message": "Uploads directory not accessible"
+                "message": "Uploads directory not accessible",
             }
             if health_status["status"] == "healthy":
                 health_status["status"] = "degraded"
     except Exception as e:
-        health_status["services"]["storage"] = {
-            "status": "unhealthy",
-            "error": str(e)
-        }
+        health_status["services"]["storage"] = {"status": "unhealthy", "error": str(e)}
         if health_status["status"] == "healthy":
             health_status["status"] = "degraded"
-    
+
     # 檢查配置狀態
     try:
         api_keys = config_loader.get_gemini_api_keys()
         app_config = config_loader.get_app_config()
-        
+
         health_status["config"] = {
             "gemini_api_keys": len(api_keys),
             "environment": app_config["environment"],
             "model": app_config["model_name"],
-            "api_base_url": app_config["api_base_url"]
+            "api_base_url": app_config["api_base_url"],
         }
-        
+
         health_status["services"]["configuration"] = {
             "status": "healthy",
-            "message": "Configuration loaded successfully"
+            "message": "Configuration loaded successfully",
         }
     except Exception as e:
         health_status["services"]["configuration"] = {
             "status": "unhealthy",
-            "error": str(e)
+            "error": str(e),
         }
         if health_status["status"] == "healthy":
             health_status["status"] = "degraded"
-    
+
     # 檢查 S3 存储状态
     try:
         if is_s3_enabled():
@@ -168,54 +162,57 @@ def health_check():
             health_status["services"]["s3_storage"] = {
                 "status": s3_health["status"],
                 "info": s3_health,
-                "message": f"S3 storage: {s3_health['status']}"
+                "message": f"S3 storage: {s3_health['status']}",
             }
-            if s3_health["status"] != "healthy" and health_status["status"] == "healthy":
+            if (
+                s3_health["status"] != "healthy"
+                and health_status["status"] == "healthy"
+            ):
                 health_status["status"] = "degraded"
         else:
             health_status["services"]["s3_storage"] = {
                 "status": "disabled",
-                "message": "Using local file storage"
+                "message": "Using local file storage",
             }
             health_status["config"]["storage_type"] = "local"
     except Exception as e:
         health_status["services"]["s3_storage"] = {
             "status": "unhealthy",
-            "error": str(e)
+            "error": str(e),
         }
         if health_status["status"] == "healthy":
             health_status["status"] = "degraded"
-    
+
     # 檢查 WebSocket 連接狀態
     try:
         websocket_status = {
             "active_connections": len(active_connections),
-            "connection_ids": list(active_connections.keys())
+            "connection_ids": list(active_connections.keys()),
         }
-        
+
         health_status["services"]["websocket"] = {
             "status": "healthy",
             "info": websocket_status,
-            "message": f"{len(active_connections)} active WebSocket connections"
+            "message": f"{len(active_connections)} active WebSocket connections",
         }
-        
+
         health_status["websocket"] = websocket_status
-        
+
     except Exception as e:
         health_status["services"]["websocket"] = {
             "status": "unhealthy",
-            "error": str(e)
+            "error": str(e),
         }
         if health_status["status"] == "healthy":
             health_status["status"] = "degraded"
-    
+
     # 設置適當的 HTTP 狀態碼
     status_code = 200
     if health_status["status"] == "unhealthy":
         status_code = 503
     elif health_status["status"] == "degraded":
         status_code = 200  # 對於降級服務仍返回 200
-    
+
     return JSONResponse(content=health_status, status_code=status_code)
 
 
@@ -593,13 +590,15 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
         await websocket.accept()
         active_connections[job_id] = websocket
         logger.info(f"✅ WebSocket connection established for job_id: {job_id}")
-        
+
         # Send initial connection confirmation
-        await websocket.send_json({
-            "type": "connection_established",
-            "job_id": job_id,
-            "message": "WebSocket connection established successfully"
-        })
+        await websocket.send_json(
+            {
+                "type": "connection_established",
+                "job_id": job_id,
+                "message": "WebSocket connection established successfully",
+            }
+        )
 
         try:
             while True:
@@ -607,21 +606,25 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
                 try:
                     data = await websocket.receive_text()
                     logger.debug(f"Received WebSocket message for job {job_id}: {data}")
-                    
+
                     # Handle ping messages to keep connection alive
                     if data == "ping":
                         await websocket.send_json({"type": "pong", "job_id": job_id})
-                        
+
                 except asyncio.TimeoutError:
                     # Send periodic ping to keep connection alive
                     await websocket.send_json({"type": "ping", "job_id": job_id})
-                    
+
         except Exception as connection_error:
-            logger.warning(f"WebSocket connection error for job_id {job_id}: {str(connection_error)}")
-            
+            logger.warning(
+                f"WebSocket connection error for job_id {job_id}: {str(connection_error)}"
+            )
+
     except Exception as accept_error:
-        logger.error(f"❌ Failed to accept WebSocket connection for job_id {job_id}: {str(accept_error)}")
-        
+        logger.error(
+            f"❌ Failed to accept WebSocket connection for job_id {job_id}: {str(accept_error)}"
+        )
+
     finally:
         if job_id in active_connections:
             del active_connections[job_id]
@@ -689,9 +692,7 @@ async def process_document(
             logger.info(f"📁 文件已保存：{file_path}")
         except Exception as e:
             logger.error(f"❌ 文件保存失败：{e}")
-            raise HTTPException(
-                status_code=500, detail=f"File save failed: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f"File save failed: {str(e)}")
 
         # Create a new processing job
         job = ProcessingJob(
@@ -856,7 +857,7 @@ async def process_document_task(
 
         # Generate output files - 使用S3存储结果文件
         s3_manager = get_s3_manager()
-        
+
         # Prepare JSON content
         if isinstance(json_result, str):
             json_content = json_result
@@ -864,24 +865,26 @@ async def process_document_task(
         else:
             json_content = json.dumps(json_result, indent=2, ensure_ascii=False)
             result_obj = json_result
-        
+
         # Generate S3 key for JSON result
         json_key = f"{company_code}/{doc_type_code}/{job_id}/results.json"
-        
+
         # Save JSON to S3 results folder
         json_saved = False
-        json_file_size = len(json_content.encode('utf-8'))
-        
+        json_file_size = len(json_content.encode("utf-8"))
+
         if s3_manager:
             json_saved = s3_manager.save_json_result(json_key, result_obj)
-        
+
         if not json_saved:
             # Fallback to local storage
-            output_dir = os.path.join("uploads", company_code, doc_type_code, str(job_id))
+            output_dir = os.path.join(
+                "uploads", company_code, doc_type_code, str(job_id)
+            )
             os.makedirs(output_dir, exist_ok=True)
             json_output_path = os.path.join(output_dir, "results.json")
-            
-            with open(json_output_path, "w", encoding='utf-8') as f:
+
+            with open(json_output_path, "w", encoding="utf-8") as f:
                 f.write(json_content)
             json_file_size = os.path.getsize(json_output_path)
             json_s3_path = json_output_path
@@ -910,31 +913,37 @@ async def process_document_task(
         # Generate Excel file
         excel_key = f"{company_code}/{doc_type_code}/{job_id}/results.xlsx"
         excel_saved = False
-        
+
         if s3_manager:
             # Create temporary Excel file
-            with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temp_excel:
+            with tempfile.NamedTemporaryFile(
+                suffix=".xlsx", delete=False
+            ) as temp_excel:
                 temp_excel_path = temp_excel.name
-            
+
             try:
                 # Generate Excel file to temporary location
                 json_to_excel(result_obj, temp_excel_path, doc_type_code)
                 excel_file_size = os.path.getsize(temp_excel_path)
-                
+
                 # Upload to S3 exports folder
-                with open(temp_excel_path, 'rb') as excel_file_obj:
-                    excel_saved = s3_manager.save_excel_export(excel_key, excel_file_obj)
+                with open(temp_excel_path, "rb") as excel_file_obj:
+                    excel_saved = s3_manager.save_excel_export(
+                        excel_key, excel_file_obj
+                    )
             finally:
                 # Clean up temporary file
                 if os.path.exists(temp_excel_path):
                     os.unlink(temp_excel_path)
-        
+
         if not excel_saved:
             # Fallback to local storage
-            output_dir = os.path.join("uploads", company_code, doc_type_code, str(job_id))
+            output_dir = os.path.join(
+                "uploads", company_code, doc_type_code, str(job_id)
+            )
             os.makedirs(output_dir, exist_ok=True)
             excel_output_path = os.path.join(output_dir, "results.xlsx")
-            
+
             json_to_excel(result_obj, excel_output_path, doc_type_code)
             excel_file_size = os.path.getsize(excel_output_path)
             excel_s3_path = excel_output_path
@@ -1010,7 +1019,7 @@ async def process_document_task(
         # 清理临时文件
         if temp_file_path and temp_file_path != file_path:  # 只清理真正的临时文件
             file_storage.cleanup_temp_file(temp_file_path)
-        
+
         db.close()
         db = next(get_db())
 
@@ -1020,32 +1029,36 @@ async def process_document_task(
 async def send_websocket_message(job_id: int, message: dict):
     """Send WebSocket message with improved error handling"""
     job_id_str = str(job_id)
-    
+
     if job_id_str not in active_connections:
         logger.debug(f"No WebSocket connection found for job_id: {job_id}")
         return False
-        
+
     try:
         websocket = active_connections[job_id_str]
-        
+
         # Add metadata to message
         enhanced_message = {
             **message,
             "job_id": job_id,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat(),
         }
-        
+
         await websocket.send_json(enhanced_message)
-        logger.debug(f"✅ WebSocket message sent for job_id {job_id}: {message.get('status', 'unknown')}")
+        logger.debug(
+            f"✅ WebSocket message sent for job_id {job_id}: {message.get('status', 'unknown')}"
+        )
         return True
-        
+
     except Exception as e:
-        logger.warning(f"⚠️  Failed to send WebSocket message for job_id {job_id}: {str(e)}")
-        
+        logger.warning(
+            f"⚠️  Failed to send WebSocket message for job_id {job_id}: {str(e)}"
+        )
+
         # Remove the broken connection
         if job_id_str in active_connections:
             del active_connections[job_id_str]
-            
+
         return False
 
 
@@ -1135,26 +1148,32 @@ async def list_jobs(
             # Convert to dict before leaving the function to avoid session issues
             result = []
             for job in jobs:
-                result.append({
-                    "job_id": job.job_id,
-                    "company_id": job.company_id,
-                    "company_name": job.company.company_name if job.company else None,
-                    "doc_type_id": job.doc_type_id,
-                    "type_name": job.document_type.type_name if job.document_type else None,
-                    "status": job.status,
-                    "original_filename": job.original_filename,
-                    "created_at": job.created_at.isoformat(),
-                    "updated_at": job.updated_at.isoformat(),
-                })
+                result.append(
+                    {
+                        "job_id": job.job_id,
+                        "company_id": job.company_id,
+                        "company_name": job.company.company_name
+                        if job.company
+                        else None,
+                        "doc_type_id": job.doc_type_id,
+                        "type_name": job.document_type.type_name
+                        if job.document_type
+                        else None,
+                        "status": job.status,
+                        "original_filename": job.original_filename,
+                        "created_at": job.created_at.isoformat(),
+                        "updated_at": job.updated_at.isoformat(),
+                    }
+                )
             return result
-    
+
     # Run the database query in a separate thread using ThreadPoolExecutor
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
-    
+
     executor = ThreadPoolExecutor()
     result = await asyncio.get_event_loop().run_in_executor(executor, get_jobs)
-    
+
     return result
 
 
@@ -1183,24 +1202,24 @@ def download_file(file_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="File not found")
 
     logger.info(f"📥 下载请求 - 文件ID: {file_id}, 路径: {file.file_path}")
-    
+
     # Check if file is stored in S3
     if file.file_path.startswith("s3://"):
         logger.info(f"📥 从S3下载文件: {file.file_path}")
         s3_manager = get_s3_manager()
-        
+
         if not s3_manager:
             raise HTTPException(status_code=500, detail="S3存储不可用")
-        
+
         try:
             # Parse S3 path to extract bucket and key
             # Format: s3://bucket-name/folder/path/to/file
             s3_parts = file.file_path.replace("s3://", "").split("/", 1)
             if len(s3_parts) != 2:
                 raise HTTPException(status_code=500, detail="无效的S3文件路径")
-            
+
             bucket_name, full_key = s3_parts
-            
+
             # Determine folder from the full key
             if full_key.startswith("results/"):
                 key = full_key[8:]  # Remove "results/" prefix
@@ -1208,35 +1227,37 @@ def download_file(file_id: int, db: Session = Depends(get_db)):
                 if file_content is not None:
                     # Convert dict back to JSON string for download
                     json_str = json.dumps(file_content, ensure_ascii=False, indent=2)
-                    file_bytes = json_str.encode('utf-8')
+                    file_bytes = json_str.encode("utf-8")
                 else:
                     raise HTTPException(status_code=404, detail="S3中未找到文件")
             elif full_key.startswith("exports/"):
-                key = full_key[8:]  # Remove "exports/" prefix  
+                key = full_key[8:]  # Remove "exports/" prefix
                 file_bytes = s3_manager.get_excel_export(key)
                 if file_bytes is None:
                     raise HTTPException(status_code=404, detail="S3中未找到文件")
             elif full_key.startswith("upload/"):
                 key = full_key[7:]  # Remove "upload/" prefix
-                file_bytes = s3_manager.download_file(key, folder='upload')
+                file_bytes = s3_manager.download_file(key, folder="upload")
                 if file_bytes is None:
                     raise HTTPException(status_code=404, detail="S3中未找到文件")
             else:
                 raise HTTPException(status_code=500, detail="无法识别的S3文件夹路径")
-            
+
             # Create temporary file for FileResponse
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.file_name}") as temp_file:
+            with tempfile.NamedTemporaryFile(
+                delete=False, suffix=f"_{file.file_name}"
+            ) as temp_file:
                 temp_file.write(file_bytes)
                 temp_file_path = temp_file.name
-            
+
             logger.info(f"✅ S3文件下载成功: {file.file_name}")
-            
+
             # Create custom FileResponse that cleans up temp file
             class CleanupFileResponse(FileResponse):
                 def __init__(self, *args, temp_path=None, **kwargs):
                     super().__init__(*args, **kwargs)
                     self.temp_path = temp_path
-                
+
                 async def __call__(self, scope, receive, send):
                     try:
                         await super().__call__(scope, receive, send)
@@ -1247,18 +1268,18 @@ def download_file(file_id: int, db: Session = Depends(get_db)):
                                 logger.info(f"🧹 清理临时文件: {self.temp_path}")
                             except Exception as e:
                                 logger.warning(f"⚠️ 清理临时文件失败: {e}")
-            
+
             return CleanupFileResponse(
                 path=temp_file_path,
                 filename=file.file_name,
                 media_type=file.file_type or "application/octet-stream",
-                temp_path=temp_file_path
+                temp_path=temp_file_path,
             )
-            
+
         except Exception as e:
             logger.error(f"❌ S3文件下载失败: {str(e)}")
             raise HTTPException(status_code=500, detail=f"S3文件下载失败: {str(e)}")
-    
+
     else:
         # Local file handling
         logger.info(f"📥 从本地下载文件: {file.file_path}")
@@ -1461,7 +1482,7 @@ async def process_zip_file(
             shutil.copyfileobj(zip_file.file, buffer)
 
         logger.info(f"Zip file saved to: {zip_file.filename}")
-    
+
         batch_job = BatchJob(
             # uploader_user_id=3,
             company_id=company_id,
@@ -1469,10 +1490,10 @@ async def process_zip_file(
             zip_filename=zip_file.filename,
             s3_zipfile_path=zip_path,
             original_zipfile=zip_path,
-            status="pending"
+            status="pending",
         )
         logger.info(f"batch_job: {str(batch_job.__dict__)}")
-    
+
         db.add(batch_job)
         db.commit()
         db.refresh(batch_job)
@@ -1569,7 +1590,9 @@ async def process_zip_task(
                 # Get API key from config loader
                 try:
                     api_key = api_key_manager.get_least_used_key()
-                    model_name = app_config.get("model_name", "gemini-2.5-flash-preview-05-20")
+                    model_name = app_config.get(
+                        "model_name", "gemini-2.5-flash-preview-05-20"
+                    )
                 except ValueError as e:
                     raise ValueError(f"API key configuration error: {e}")
 
@@ -1631,20 +1654,26 @@ async def process_zip_task(
                             if isinstance(json_data, list):
                                 # Process all items in the list
                                 processed_results = []
-                                
+
                                 for item in json_data:
                                     # Add filename to each item
                                     if isinstance(item, dict):
-                                        item["__filename"] = os.path.basename(image_path)
+                                        item["__filename"] = os.path.basename(
+                                            image_path
+                                        )
                                         processed_results.append(item)
                                     else:
                                         # Handle non-dict items
-                                        processed_results.append({
-                                            "__filename": os.path.basename(image_path),
-                                            "value": item,
-                                            "__non_dict_item": True
-                                        })
-                                
+                                        processed_results.append(
+                                            {
+                                                "__filename": os.path.basename(
+                                                    image_path
+                                                ),
+                                                "value": item,
+                                                "__non_dict_item": True,
+                                            }
+                                        )
+
                                 # Add all processed items to the results
                                 all_results.extend(processed_results)
                             else:
@@ -1717,51 +1746,67 @@ async def process_zip_task(
 
                 # Save all results using S3 storage
                 s3_manager = get_s3_manager()
-                
+
                 # Generate S3 keys for batch results
                 batch_json_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_results.json"
                 batch_excel_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_results.xlsx"
-                
+
                 json_saved = False
                 excel_saved = False
-                
+
                 if s3_manager:
                     # Save JSON results to S3 results folder
-                    json_saved = s3_manager.save_json_result(batch_json_key, all_results)
-                    
+                    json_saved = s3_manager.save_json_result(
+                        batch_json_key, all_results
+                    )
+
                     if json_saved:
-                        json_s3_path = f"s3://{s3_manager.bucket_name}/results/{batch_json_key}"
-                    
+                        json_s3_path = (
+                            f"s3://{s3_manager.bucket_name}/results/{batch_json_key}"
+                        )
+
                     # Create temporary Excel file and upload to S3
-                    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temp_excel:
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".xlsx", delete=False
+                    ) as temp_excel:
                         temp_excel_path = temp_excel.name
-                    
+
                     try:
                         # Convert to Excel
-                        await asyncio.to_thread(json_to_excel, all_results, temp_excel_path)
-                        
+                        await asyncio.to_thread(
+                            json_to_excel, all_results, temp_excel_path
+                        )
+
                         # Upload to S3 exports folder
-                        with open(temp_excel_path, 'rb') as excel_file_obj:
-                            excel_saved = s3_manager.save_excel_export(batch_excel_key, excel_file_obj)
-                        
+                        with open(temp_excel_path, "rb") as excel_file_obj:
+                            excel_saved = s3_manager.save_excel_export(
+                                batch_excel_key, excel_file_obj
+                            )
+
                         if excel_saved:
                             excel_s3_path = f"s3://{s3_manager.bucket_name}/exports/{batch_excel_key}"
                     finally:
                         # Clean up temporary file
                         if os.path.exists(temp_excel_path):
                             os.unlink(temp_excel_path)
-                
+
                 # Fallback to local storage if S3 fails
                 if not json_saved or not excel_saved:
                     if not json_saved:
-                        json_output_path = os.path.join(output_dir, "batch_results.json")
-                        with open(json_output_path, "w", encoding='utf-8') as f:
+                        json_output_path = os.path.join(
+                            output_dir, "batch_results.json"
+                        )
+                        with open(json_output_path, "w", encoding="utf-8") as f:
                             json.dump(all_results, f, indent=2, ensure_ascii=False)
                         json_s3_path = json_output_path
-                    
+
                     if not excel_saved:
-                        excel_output_path = os.path.join(output_dir, "batch_results.xlsx")
-                        await asyncio.to_thread(json_to_excel, all_results, excel_output_path)
+                        excel_output_path = os.path.join(
+                            output_dir, "batch_results.xlsx"
+                        )
+                        await asyncio.to_thread(
+                            json_to_excel, all_results, excel_output_path
+                        )
                         excel_s3_path = excel_output_path
 
                 # Update batch job with output paths and complete status
@@ -1874,25 +1919,27 @@ def download_file_by_path(path: str):
     """Download a file by its full path."""
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail=f"File not found on disk: {path}")
-    
+
     # Get the filename from the path
     filename = os.path.basename(path)
-    
+
     # Determine content type based on file extension
     file_extension = os.path.splitext(filename)[1].lower()
     content_type = "application/octet-stream"  # Default content type
-    
+
     if file_extension == ".json":
         content_type = "application/json"
     elif file_extension == ".xlsx":
-        content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        content_type = (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
     elif file_extension == ".pdf":
         content_type = "application/pdf"
     elif file_extension in [".jpg", ".jpeg"]:
         content_type = "image/jpeg"
     elif file_extension == ".png":
         content_type = "image/png"
-    
+
     return FileResponse(
         path=path,
         filename=filename,
@@ -1906,7 +1953,7 @@ def get_file_by_path(path: str, db: Session = Depends(get_db)):
     file = db.query(DBFile).filter(DBFile.file_path == path).first()
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     return {
         "file_id": file.file_id,
         "file_name": file.file_name,
@@ -1917,7 +1964,7 @@ def get_file_by_path(path: str, db: Session = Depends(get_db)):
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     # Use the secure configuration loader
     try:
         app_config = config_loader.get_app_config()
@@ -1926,11 +1973,11 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Failed to load application config: {e}")
         port = 8000  # Fallback port
-    
+
     # Use multiple workers to handle concurrent requests
     uvicorn.run(
-        app, 
-        host="0.0.0.0", 
+        app,
+        host="0.0.0.0",
         port=port,
-        workers=4  # Use multiple workers to handle concurrent requests
+        workers=4,  # Use multiple workers to handle concurrent requests
     )

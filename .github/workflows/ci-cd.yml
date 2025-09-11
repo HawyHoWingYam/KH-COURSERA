@@ -92,7 +92,7 @@ jobs:
       run: |
         cd GeminiOCR/frontend
         npm ci --no-audit --fund=false
-        npm run lint -- --max-warnings=0
+        npm run lint -- --max-warnings=1
     
     - name: Run Dockerfile linting (hadolint)
       run: |

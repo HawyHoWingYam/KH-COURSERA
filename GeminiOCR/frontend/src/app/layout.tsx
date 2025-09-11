@@ -19,6 +19,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
+        {/* Preconnect for Google Fonts */}
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+        
         {/* Preload critical fonts */}
         <link 
           rel="preload" 

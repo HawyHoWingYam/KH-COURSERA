@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import Image from 'next/image';
 import { fetchDocumentTypes, fetchCompaniesForDocType, processDocument, processZipFile } from '@/lib/api';
 import type { DocumentType, Company } from '@/lib/api';
 import { MdZoomIn, MdZoomOut, MdRefresh } from 'react-icons/md';
@@ -14,6 +15,7 @@ export default function Upload() {
   const [selectedCompany, setSelectedCompany] = useState<number | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
   const fileUrlRef = useRef<string | null>(null);
 
@@ -57,9 +59,10 @@ export default function Upload() {
 
   // Clean up object URLs when component unmounts
   useEffect(() => {
+    const currentFileUrl = fileUrlRef.current;
     return () => {
-      if (fileUrlRef.current) {
-        URL.revokeObjectURL(fileUrlRef.current);
+      if (currentFileUrl) {
+        URL.revokeObjectURL(currentFileUrl);
       }
     };
   }, []);
@@ -77,8 +80,15 @@ export default function Upload() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
 
-    // Clear previous errors
+    // Clear previous errors and preview
     setError('');
+    
+    // Clean up previous preview URL
+    if (fileUrlRef.current) {
+      URL.revokeObjectURL(fileUrlRef.current);
+      fileUrlRef.current = null;
+    }
+    setPreviewUrl(null);
 
     // Check if file exists
     if (!selectedFile) {
@@ -93,6 +103,13 @@ export default function Upload() {
       // Reset the file input
       e.target.value = '';
       return;
+    }
+
+    // Create preview URL for image files
+    if (selectedFile.type.startsWith('image/')) {
+      const url = URL.createObjectURL(selectedFile);
+      fileUrlRef.current = url;
+      setPreviewUrl(url);
     }
 
     setFile(selectedFile);
@@ -302,17 +319,23 @@ export default function Upload() {
                     minWidth: '100%',
                     display: 'flex',
                     justifyContent: 'center',
-                    alignItems: 'center'
+                    alignItems: 'center',
+                    position: 'relative'
                   }}>
-                    <img
+                    <Image
                       src={previewUrl}
                       alt="File preview"
+                      width={500}
+                      height={500}
                       style={{
                         transform: `scale(${zoomLevel})`,
                         transformOrigin: 'center center',
                         maxWidth: zoomLevel <= 1 ? '100%' : 'none',
-                        transition: 'transform 0.2s ease'
+                        transition: 'transform 0.2s ease',
+                        width: 'auto',
+                        height: 'auto'
                       }}
+                      unoptimized={true}
                     />
                   </div>
                 </div>

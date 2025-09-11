@@ -13,12 +13,14 @@ from functools import wraps
 # 導入配置管理器
 try:
     from config_loader import config_loader, api_key_manager
+
     CONFIG_AVAILABLE = True
 except ImportError:
     CONFIG_AVAILABLE = False
     logging.warning("Config loader not available, using fallback methods")
 
 logger = logging.getLogger(__name__)
+
 
 def get_api_key_and_model() -> tuple[str, str]:
     """獲取 API key 和模型名稱"""
@@ -30,37 +32,50 @@ def get_api_key_and_model() -> tuple[str, str]:
             return api_key, model_name
         except Exception as e:
             logger.error(f"Failed to get API key from config loader: {e}")
-    
+
     # 備用方法：從環境變量獲取
-    api_key = os.getenv('GEMINI_API_KEY_1') or os.getenv('GEMINI_API_KEY') or os.getenv('API_KEY')
-    model_name = os.getenv('MODEL_NAME', 'gemini-2.5-flash-preview-05-20')
-    
+    api_key = (
+        os.getenv("GEMINI_API_KEY_1")
+        or os.getenv("GEMINI_API_KEY")
+        or os.getenv("API_KEY")
+    )
+    model_name = os.getenv("MODEL_NAME", "gemini-2.5-flash-preview-05-20")
+
     if not api_key:
         raise ValueError("No Gemini API key found in environment variables or config")
-    
+
     return api_key, model_name
+
 
 def configure_gemini_with_retry(api_key: str, max_retries: int = 3):
     """配置 Gemini API 並支持重試機制"""
     for attempt in range(max_retries):
         try:
             genai.configure(api_key=api_key)
-            logger.info(f"✅ Gemini API configured successfully (attempt {attempt + 1})")
+            logger.info(
+                f"✅ Gemini API configured successfully (attempt {attempt + 1})"
+            )
             return True
         except Exception as e:
-            logger.warning(f"⚠️  Failed to configure Gemini API (attempt {attempt + 1}): {e}")
+            logger.warning(
+                f"⚠️  Failed to configure Gemini API (attempt {attempt + 1}): {e}"
+            )
             if attempt == max_retries - 1:
-                raise ValueError(f"Failed to configure Gemini API after {max_retries} attempts: {e}")
+                raise ValueError(
+                    f"Failed to configure Gemini API after {max_retries} attempts: {e}"
+                )
             time.sleep(1)  # Wait before retry
     return False
 
+
 def api_error_handler(func):
     """API 錯誤處理裝飾器"""
+
     @wraps(func)
     async def wrapper(*args, **kwargs):
         max_retries = 3
         last_exception = None
-        
+
         for attempt in range(max_retries):
             try:
                 # 如果有API key manager，嘗試獲取不同的key
@@ -69,26 +84,34 @@ def api_error_handler(func):
                         new_api_key = api_key_manager.get_next_key()
                         configure_gemini_with_retry(new_api_key)
                         # 更新函數參數中的api_key
-                        if 'api_key' in kwargs:
-                            kwargs['api_key'] = new_api_key
+                        if "api_key" in kwargs:
+                            kwargs["api_key"] = new_api_key
                         elif len(args) >= 4:  # 假設api_key是第4個參數
                             args = list(args)
                             args[3] = new_api_key
                             args = tuple(args)
                     except Exception as e:
                         logger.warning(f"Could not rotate API key: {e}")
-                
+
                 return await func(*args, **kwargs)
-                
+
             except Exception as e:
                 last_exception = e
                 error_msg = str(e).lower()
-                
+
                 # 檢查是否是可重試的錯誤
-                retryable_errors = ['quota', 'rate limit', 'timeout', 'connection', 'service unavailable']
+                retryable_errors = [
+                    "quota",
+                    "rate limit",
+                    "timeout",
+                    "connection",
+                    "service unavailable",
+                ]
                 if any(err in error_msg for err in retryable_errors):
-                    logger.warning(f"API error (attempt {attempt + 1}/{max_retries}): {e}")
-                    
+                    logger.warning(
+                        f"API error (attempt {attempt + 1}/{max_retries}): {e}"
+                    )
+
                     # 標記當前API key有問題
                     if CONFIG_AVAILABLE:
                         try:
@@ -96,9 +119,9 @@ def api_error_handler(func):
                             api_key_manager.mark_key_error(current_api_key)
                         except Exception:
                             pass  # 如果無法獲取當前key，忽略標記
-                    
+
                     if attempt < max_retries - 1:
-                        wait_time = (2 ** attempt) + 1  # 指數退避
+                        wait_time = (2**attempt) + 1  # 指數退避
                         logger.info(f"Waiting {wait_time}s before retry...")
                         await asyncio.sleep(wait_time)
                         continue
@@ -106,11 +129,11 @@ def api_error_handler(func):
                     # 不可重試的錯誤直接拋出
                     logger.error(f"Non-retryable API error: {e}")
                     raise e
-        
+
         # 所有重試都失敗了
         logger.error(f"All API retry attempts failed. Last error: {last_exception}")
         raise last_exception
-    
+
     return wrapper
 
 
@@ -275,7 +298,7 @@ async def extract_text_from_image(
     # 如果沒有提供 API key 和模型名稱，從配置獲取
     if not api_key or not model_name:
         api_key, model_name = get_api_key_and_model()
-    
+
     processed_image = PIL.Image.open(image_path)
 
     # 配置 Gemini API（帶重試）
@@ -359,7 +382,7 @@ async def extract_text_from_pdf(
     # 如果沒有提供 API key 和模型名稱，從配置獲取
     if not api_key or not model_name:
         api_key, model_name = get_api_key_and_model()
-    
+
     # 配置 Gemini API（帶重試）
     configure_gemini_with_retry(api_key)
 
@@ -561,7 +584,7 @@ def main():
                     try:
                         choice = int(
                             input(
-                                f"Select provider for {selected_doc_type} #{i+1} (enter number): "
+                                f"Select provider for {selected_doc_type} #{i + 1} (enter number): "
                             )
                         )
                         if 1 <= choice <= len(providers):

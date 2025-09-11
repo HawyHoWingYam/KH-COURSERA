@@ -6,10 +6,15 @@ from typing import Dict, List, Any, Union
 
 # --- 日誌設定 (Setup Logging) ---
 # 建立一個 logger，用於在程式執行時輸出資訊
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
-def flatten_json_recursive(data: Any, parent_key: str = '', sep: str = '.') -> List[Dict[str, Any]]:
+
+def flatten_json_recursive(
+    data: Any, parent_key: str = "", sep: str = "."
+) -> List[Dict[str, Any]]:
     """
     遞迴地將複雜的巢狀 JSON (字典和列表) 轉換為扁平化的記錄列表。
     每一筆記錄都代表 Excel 中的一列。
@@ -22,7 +27,7 @@ def flatten_json_recursive(data: Any, parent_key: str = '', sep: str = '.') -> L
     Returns:
         List[Dict[str, Any]]: 一個扁平化的字典列表，準備好轉換為 DataFrame。
     """
-    
+
     # 用於存放最終扁平化結果的列表
     flattened_records = []
 
@@ -37,7 +42,7 @@ def flatten_json_recursive(data: Any, parent_key: str = '', sep: str = '.') -> L
         for k, v in data.items():
             # 建立新的鍵名，例如 'statement_details.number'
             new_key = f"{parent_key}{sep}{k}" if parent_key else k
-            
+
             # 如果值是列表且包含字典，則視為需要展開的巢狀列表
             if isinstance(v, list) and v and all(isinstance(i, dict) for i in v):
                 nested_list_items[new_key] = v
@@ -52,15 +57,17 @@ def flatten_json_recursive(data: Any, parent_key: str = '', sep: str = '.') -> L
             # 這是核心的「展開」邏輯
             # 取得第一個需要展開的列表
             list_key, list_to_explode = list(nested_list_items.items())[0]
-            
+
             # 取得其他尚未處理的巢狀列表
-            remaining_nested_lists = {k: v for i, (k, v) in enumerate(nested_list_items.items()) if i > 0}
+            remaining_nested_lists = {
+                k: v for i, (k, v) in enumerate(nested_list_items.items()) if i > 0
+            }
 
             # 遍歷要展開的列表中的每一個項目
             for item in list_to_explode:
                 # 建立一個新的基礎記錄，包含父層級的簡單鍵值對
                 new_record_base = simple_items.copy()
-                
+
                 # 將列表中的項目 (它本身是一個字典) 與剩餘的巢狀列表合併
                 # 這樣可以遞迴地處理多層巢狀列表
                 combined_item = {**item, **remaining_nested_lists}
@@ -68,8 +75,10 @@ def flatten_json_recursive(data: Any, parent_key: str = '', sep: str = '.') -> L
                 # 遞迴呼叫函式，處理這個合併後的項目
                 # 將父層級的鍵名傳入，以維持正確的層級關係
                 # 例如，處理 'charge_description' 時，父鍵是 'statement_details'
-                sub_records = flatten_json_recursive(combined_item, parent_key=parent_key, sep=sep)
-                
+                sub_records = flatten_json_recursive(
+                    combined_item, parent_key=parent_key, sep=sep
+                )
+
                 # 將父層級的簡單資料，與遞迴展開後的子記錄合併
                 for sub_record in sub_records:
                     final_record = {**new_record_base, **sub_record}
@@ -83,6 +92,7 @@ def flatten_json_recursive(data: Any, parent_key: str = '', sep: str = '.') -> L
 
     return flattened_records
 
+
 def sanitize_sheet_name(name: str) -> str:
     """
     清理字串，使其符合 Excel 工作表名稱的規範。
@@ -91,20 +101,23 @@ def sanitize_sheet_name(name: str) -> str:
     """
     if not name:
         return "Data"
-    
-    invalid_chars = ['\\', '/', '*', '?', '[', ']', ':', "'", '"']
+
+    invalid_chars = ["\\", "/", "*", "?", "[", "]", ":", "'", '"']
     sanitized = name
     for char in invalid_chars:
-        sanitized = sanitized.replace(char, '')
-    
-    sanitized = sanitized.strip('_')
-    
+        sanitized = sanitized.replace(char, "")
+
+    sanitized = sanitized.strip("_")
+
     if not sanitized:
         sanitized = "Data"
-    
+
     return sanitized[:31]
 
-def json_to_excel(json_data: Union[Dict, List], output_path: str, doc_type_code: str = "Sheet1") -> str:
+
+def json_to_excel(
+    json_data: Union[Dict, List], output_path: str, doc_type_code: str = "Sheet1"
+) -> str:
     """
     將 JSON 資料轉換為極度扁平化的 Excel 檔案。
 
@@ -117,10 +130,10 @@ def json_to_excel(json_data: Union[Dict, List], output_path: str, doc_type_code:
         str: 輸出檔案的路徑。
     """
     logger.info("開始將 JSON 轉換為扁平化記錄...")
-    
+
     # 呼叫核心遞迴函式，將 JSON 轉換為扁平化的字典列表
     flattened_data = flatten_json_recursive(json_data)
-    
+
     if not flattened_data:
         logger.warning("在 JSON 中找不到可處理的資料，將建立一個空的 Excel 檔案。")
         df = pd.DataFrame({"Message": ["No data found in the JSON input."]})
@@ -134,23 +147,28 @@ def json_to_excel(json_data: Union[Dict, List], output_path: str, doc_type_code:
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
             sheet_name = sanitize_sheet_name(doc_type_code)
             logger.info(f"正在寫入資料到工作表: '{sheet_name}'...")
-            
+
             df.to_excel(writer, sheet_name=sheet_name, index=False)
-            
+
             # --- 自動調整欄位寬度與套用篩選 ---
             worksheet = writer.sheets[sheet_name]
             worksheet.auto_filter.ref = worksheet.dimensions
 
             for idx, col in enumerate(df.columns):
                 series = df[col]
-                max_len = max(
-                    series.astype(str).map(len).max(),
-                    len(str(series.name))
-                ) + 2
-                
+                max_len = (
+                    max(series.astype(str).map(len).max(), len(str(series.name))) + 2
+                )
+
                 # 將欄位索引轉換為字母 (A, B, C...)
-                col_letter = chr(65 + idx) if idx < 26 else chr(65 + idx // 26 - 1) + chr(65 + idx % 26)
-                worksheet.column_dimensions[col_letter].width = min(max_len, 60) # 寬度上限為 60
+                col_letter = (
+                    chr(65 + idx)
+                    if idx < 26
+                    else chr(65 + idx // 26 - 1) + chr(65 + idx % 26)
+                )
+                worksheet.column_dimensions[col_letter].width = min(
+                    max_len, 60
+                )  # 寬度上限為 60
 
         logger.info(f"成功建立 Excel 檔案: {output_path}")
 
@@ -160,27 +178,30 @@ def json_to_excel(json_data: Union[Dict, List], output_path: str, doc_type_code:
 
     return output_path
 
+
 # --- 主程式執行區塊 ---
-if __name__ == '__main__':
+if __name__ == "__main__":
     # --- 範例使用 ---
     # 1. 讀取您的 results.json 檔案
     try:
         # 假設有一個名為 'results.json' 的檔案在同一個資料夾
-        input_filename = 'results.json'
-        with open(input_filename, 'r', encoding='utf-8') as f:
+        input_filename = "results.json"
+        with open(input_filename, "r", encoding="utf-8") as f:
             data = json.load(f)
         logger.info(f"成功讀取 {input_filename} 檔案。")
-        
+
         # 2. 設定輸出檔案的路徑
         # 自動產生輸出檔名，例如 'results_converted.xlsx'
         base_name = os.path.splitext(input_filename)[0]
-        output_filename = f'{base_name}_converted.xlsx'
-        
+        output_filename = f"{base_name}_converted.xlsx"
+
         # 3. 執行轉換
         json_to_excel(data, output_filename, doc_type_code="Sheet1")
 
     except FileNotFoundError:
-        logger.error(f"錯誤: '{input_filename}' 檔案不存在。請確認檔案是否在正確的路徑下。")
+        logger.error(
+            f"錯誤: '{input_filename}' 檔案不存在。請確認檔案是否在正確的路徑下。"
+        )
     except json.JSONDecodeError:
         logger.error(f"錯誤: '{input_filename}' 內容不是有效的 JSON 格式。")
     except Exception as e:
