@@ -17,7 +17,8 @@ concurrency:
 
 env:
   DOCKER_REGISTRY: docker.io
-  DOCKER_REPOSITORY: karasho62/hya-ocr-sandbox
+  DOCKER_REPOSITORY_SANDBOX: karasho62/hya-ocr-sandbox
+  DOCKER_REPOSITORY_PRODUCTION: karasho62/hya-ocr-production
   
 jobs:
   # Detect changes to optimize builds
@@ -74,6 +75,16 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0  # Full history for proper versioning
+    
+    - name: Set Docker repository based on branch/tag
+      run: |
+        if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" =~ ^refs/tags/v ]]; then
+          echo "DOCKER_REPOSITORY=${{ env.DOCKER_REPOSITORY_PRODUCTION }}" >> $GITHUB_ENV
+          echo "Using production repository: ${{ env.DOCKER_REPOSITORY_PRODUCTION }}"
+        else
+          echo "DOCKER_REPOSITORY=${{ env.DOCKER_REPOSITORY_SANDBOX }}" >> $GITHUB_ENV
+          echo "Using sandbox repository: ${{ env.DOCKER_REPOSITORY_SANDBOX }}"
+        fi
     
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3.6.1
@@ -477,7 +488,7 @@ jobs:
         cd GeminiOCR
         docker compose -f docker-compose.ci.yml down -v
 
-  # Publish Phase (only for main branch and tags)
+  # Publish Phase (for develop, main branch and tags)
   publish:
     name: Publish to Docker Hub
     runs-on: ubuntu-latest
@@ -485,7 +496,7 @@ jobs:
     needs: [detect-changes, build-and-test, integration-test]
     if: |
       github.event_name == 'push' && 
-      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/')) &&
       (needs.detect-changes.outputs.backend == 'true' || needs.detect-changes.outputs.frontend == 'true' || startsWith(github.ref, 'refs/tags/'))
     
     strategy:
@@ -507,6 +518,22 @@ jobs:
       with:
         fetch-depth: 0
     
+    - name: Set Docker repository based on branch/tag
+      run: |
+        if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" =~ ^refs/tags/v ]]; then
+          echo "DOCKER_REPOSITORY=${{ env.DOCKER_REPOSITORY_PRODUCTION }}" >> $GITHUB_ENV
+          echo "ENVIRONMENT=production" >> $GITHUB_ENV
+          echo "🏭 Using PRODUCTION repository: ${{ env.DOCKER_REPOSITORY_PRODUCTION }}"
+        elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+          echo "DOCKER_REPOSITORY=${{ env.DOCKER_REPOSITORY_SANDBOX }}" >> $GITHUB_ENV
+          echo "ENVIRONMENT=staging" >> $GITHUB_ENV
+          echo "🧪 Using SANDBOX repository: ${{ env.DOCKER_REPOSITORY_SANDBOX }}"
+        else
+          echo "DOCKER_REPOSITORY=${{ env.DOCKER_REPOSITORY_SANDBOX }}" >> $GITHUB_ENV
+          echo "ENVIRONMENT=development" >> $GITHUB_ENV
+          echo "🔧 Using SANDBOX repository: ${{ env.DOCKER_REPOSITORY_SANDBOX }}"
+        fi
+    
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3.6.1
     
@@ -526,6 +553,9 @@ jobs:
           type=ref,event=branch,enable={{is_default_branch}},prefix=${{ matrix.service }}-
           type=ref,event=branch,enable={{is_default_branch}},prefix=${{ matrix.service }}-,suffix=-{{sha}}
           type=raw,value=${{ matrix.service }}-latest,enable={{is_default_branch}}
+          type=ref,event=branch,pattern=develop,prefix=${{ matrix.service }}-
+          type=ref,event=branch,pattern=develop,prefix=${{ matrix.service }}-,suffix=-{{sha}}
+          type=raw,value=${{ matrix.service }}-develop,enable=${{ github.ref == 'refs/heads/develop' }}
         labels: |
           org.opencontainers.image.title=GeminiOCR-${{ matrix.service }}
           org.opencontainers.image.description=GeminiOCR ${{ matrix.service }} service
@@ -559,13 +589,13 @@ jobs:
         sbom: true
         provenance: true
 
-  # Deploy to Staging (for main branch)
+  # Deploy to Staging (for develop branch) 
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: publish
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/develop'
     # environment:
     #   name: staging  # Temporarily disabled - requires GitHub environment configuration
     
@@ -575,16 +605,18 @@ jobs:
     
     - name: Deploy to staging
       run: |
-        echo "🚀 Deploying to staging environment..."
-        echo "Backend image: ${{ env.DOCKER_REPOSITORY }}:backend-latest"
-        echo "Frontend image: ${{ env.DOCKER_REPOSITORY }}:frontend-latest"
+        echo "🧪 Deploying to UAT/Staging environment..."
+        echo "Backend image: ${{ env.DOCKER_REPOSITORY_SANDBOX }}:backend-develop"
+        echo "Frontend image: ${{ env.DOCKER_REPOSITORY_SANDBOX }}:frontend-develop"
+        echo "Environment: UAT/Staging"
+        echo "Repository: Sandbox"
         
         # Here you would add actual deployment steps to your staging environment
         # For example, using SSH to deploy to a staging server:
         # - Setup SSH keys
-        # - Connect to staging server
-        # - Pull new images
-        # - Run deployment script
+        # - Connect to staging server  
+        # - Pull new images from sandbox repository
+        # - Run deployment script with develop tags
         
         echo "✅ Staging deployment completed"
 
@@ -605,21 +637,29 @@ jobs:
       with:
         name: Release ${{ github.ref_name }}
         body: |
-          ## GeminiOCR Release ${{ github.ref_name }}
+          ## 🏭 GeminiOCR Production Release ${{ github.ref_name }}
           
-          ### Docker Images Published
-          - `${{ env.DOCKER_REPOSITORY }}:backend-${{ github.ref_name }}`
-          - `${{ env.DOCKER_REPOSITORY }}:frontend-${{ github.ref_name }}`
-          - `${{ env.DOCKER_REPOSITORY }}:backend-latest`
-          - `${{ env.DOCKER_REPOSITORY }}:frontend-latest`
+          ### 📦 Docker Images Published (Production)
+          - `${{ env.DOCKER_REPOSITORY_PRODUCTION }}:backend-${{ github.ref_name }}`
+          - `${{ env.DOCKER_REPOSITORY_PRODUCTION }}:frontend-${{ github.ref_name }}`
+          - `${{ env.DOCKER_REPOSITORY_PRODUCTION }}:backend-latest`
+          - `${{ env.DOCKER_REPOSITORY_PRODUCTION }}:frontend-latest`
           
-          ### Deployment Command
+          ### 🚀 Production Deployment Commands
           ```bash
-          # For production deployment
+          # Pull and deploy production images
           export VERSION=${{ github.ref_name }}
+          export DOCKER_REPOSITORY=${{ env.DOCKER_REPOSITORY_PRODUCTION }}
           docker compose -f docker-compose.prod.yml pull
           docker compose -f docker-compose.prod.yml up -d
+          
+          # Verify deployment
+          docker compose -f docker-compose.prod.yml ps
+          curl -f http://localhost/health
           ```
+          
+          ### 🧪 Development Images (Sandbox)
+          For UAT/Testing: `${{ env.DOCKER_REPOSITORY_SANDBOX }}:backend-develop`, `${{ env.DOCKER_REPOSITORY_SANDBOX }}:frontend-develop`
           
           ### Changes
           See commit history for detailed changes.
