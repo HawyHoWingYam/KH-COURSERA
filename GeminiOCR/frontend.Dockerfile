@@ -11,9 +11,7 @@ RUN npm install -g npm@latest
 COPY frontend/package.json frontend/package-lock.json ./
 
 # 安装依赖 (Phase 2.1 security fix: cross-spawn ^7.0.5 override)
-RUN npm ci && npm cache clean --force
-
-RUN npm install -D tailwindcss postcss autoprefixer @tailwindcss/postcss
+RUN npm ci --production=false && npm cache clean --force
 
 # 复制源代码
 COPY frontend/ .

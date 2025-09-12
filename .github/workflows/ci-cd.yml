@@ -598,7 +598,7 @@ jobs:
           VERSION=${{ steps.docker-meta.outputs.version }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
-        platforms: linux/amd64,linux/arm64  # Multi-platform for production deployment
+        platforms: linux/amd64  # Single platform for faster CI/CD testing
         sbom: true
         provenance: true
 

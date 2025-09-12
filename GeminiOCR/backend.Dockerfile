@@ -33,9 +33,11 @@ WORKDIR /app
 # 升级核心Python工具以修复setuptools/pip漏洞
 RUN python -m pip install --upgrade pip setuptools wheel
 
-# 复制并安装Python依赖
+# 复制并安装Python依赖（分层缓存优化）
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip cache purge
 
 # 复制应用代码
 COPY backend/ .
