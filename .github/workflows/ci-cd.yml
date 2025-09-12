@@ -357,6 +357,19 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
     
+    - name: Set Docker repository based on branch/tag
+      run: |
+        if [[ "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" =~ ^refs/tags/v ]]; then
+          echo "DOCKER_REPOSITORY=${{ env.DOCKER_REPOSITORY_PRODUCTION }}" >> $GITHUB_ENV
+          echo "🏭 Using PRODUCTION repository: ${{ env.DOCKER_REPOSITORY_PRODUCTION }}"
+        elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+          echo "DOCKER_REPOSITORY=${{ env.DOCKER_REPOSITORY_SANDBOX }}" >> $GITHUB_ENV
+          echo "🧪 Using SANDBOX repository: ${{ env.DOCKER_REPOSITORY_SANDBOX }}"
+        else
+          echo "DOCKER_REPOSITORY=${{ env.DOCKER_REPOSITORY_SANDBOX }}" >> $GITHUB_ENV
+          echo "🔧 Using SANDBOX repository: ${{ env.DOCKER_REPOSITORY_SANDBOX }}"
+        fi
+    
     - name: Download backend image
       if: needs.detect-changes.outputs.backend == 'true'
       uses: actions/download-artifact@v4

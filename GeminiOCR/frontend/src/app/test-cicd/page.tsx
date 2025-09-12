@@ -34,7 +34,7 @@ export default function CICDTestPage() {
     expectedTags: {
       develop: ['backend-develop', 'frontend-develop'],
       main: ['backend-latest', 'frontend-latest'],
-      version: ['backend-v1.3.0', 'frontend-v1.3.0']
+      version: ['backend-v1.3.2', 'frontend-v1.3.2']
     }
   };
 

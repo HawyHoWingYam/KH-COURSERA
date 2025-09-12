@@ -39,7 +39,7 @@ class CICDTestFeature:
             "expected_tags": {
                 "develop": ["backend-develop", "frontend-develop"],
                 "main": ["backend-latest", "frontend-latest"],
-                "version": ["backend-v1.3.0", "frontend-v1.3.0"]
+                "version": ["backend-v1.3.2", "frontend-v1.3.2"]
             }
         }
     
@@ -60,7 +60,7 @@ class CICDTestFeature:
         return True
     
     def generate_test_report(self) -> str:
-        """生成测试报告"""
+        """生成完整的CI/CD集成测试报告"""
         info = self.get_test_info()
         is_valid = self.validate_cicd_config()
         
