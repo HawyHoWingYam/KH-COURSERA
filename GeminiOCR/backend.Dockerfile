@@ -1,5 +1,5 @@
-# 使用Python 3.9官方镜像作为基础镜像
-FROM python:3.9-slim AS base
+# 使用Python 3.11官方镜像作为基础镜像
+FROM python:3.11-slim AS base
 
 # 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -29,6 +29,9 @@ RUN apt-get update && apt-get install -y \
 
 # 创建应用目录
 WORKDIR /app
+
+# 升级核心Python工具以修复setuptools/pip漏洞
+RUN python -m pip install --upgrade pip setuptools wheel
 
 # 复制并安装Python依赖
 COPY backend/requirements.txt .

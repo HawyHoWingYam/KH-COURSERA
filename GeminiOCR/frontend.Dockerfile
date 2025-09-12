@@ -1,13 +1,16 @@
-# 多阶段构建 - 构建阶段
-FROM node:18-alpine AS builder
+# 多阶段构建 - 构建阶段 (Phase 2.2: Updated Node.js for npm security fixes)
+FROM node:20-alpine AS builder
 
 # 设置工作目录
 WORKDIR /app
 
+# 升级npm以修復系統級安全漏洞 (Phase 2.2)
+RUN npm install -g npm@latest
+
 # 复制package files
 COPY frontend/package.json frontend/package-lock.json ./
 
-# 安装依赖
+# 安装依赖 (Phase 2.1 security fix: cross-spawn ^7.0.5 override)
 RUN npm ci && npm cache clean --force
 
 RUN npm install -D tailwindcss postcss autoprefixer @tailwindcss/postcss
@@ -18,8 +21,8 @@ COPY frontend/ .
 # 构建应用
 RUN npm run build
 
-# 生产阶段
-FROM node:18-alpine AS production
+# 生产阶段 (Phase 2.2: Updated Node.js for npm security fixes)  
+FROM node:20-alpine AS production
 
 # 设置环境变量
 ENV NODE_ENV=production

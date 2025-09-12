@@ -90,23 +90,34 @@ DEPLOY_VERSION=v1.0.0 ./deploy.sh blue-green hub
 
 ## 🔁 CI/CD（GitHub Actions）
 
-流水线包含：构建与测试 → 安全扫描（Trivy）→ 集成测试（Compose）→ 发布镜像（Docker Hub）→（可选）Staging 部署 → 创建 Release。
+完整的四阶段流水线：**功能开发** → **UAT测试** → **生产发布** → **维护回滚**
 
-### 仓库与凭据
-- Docker Hub 仓库：`karash062/hya-ocr-sandbox`
-- GitHub Secrets：
-  - `DOCKERHUB_USERNAME`
-  - `DOCKERHUB_TOKEN`
+### 🐳 双仓库架构
+- **开发/测试环境**: `karasho62/hya-ocr-sandbox`
+  - 触发：`develop` 分支、`feature/*` 分支（仅测试）
+  - 用于：UAT、集成测试、开发验证
+- **生产环境**: `karasho62/hya-ocr-production` 
+  - 触发：`main` 分支、`v*` 标签
+  - 用于：生产部署、正式发布
 
-### 触发策略
-- push 到 `main` / `develop`
-- `v*` 标签（语义化版本）
-- PR 到 `main`（仅构建与测试，不发布）
+### 🚀 分支策略与触发条件
+- **`feature/*`** → 构建测试（不推送镜像）
+- **`develop`** → 推送到 sandbox 仓库，UAT 部署
+- **`main`** → 推送到 production 仓库
+- **`v*.*.*`** → 版本发布到 production 仓库，创建 GitHub Release
 
-### 镜像命名（推荐）
-- 统一单仓库：通过标签区分服务
-  - `karash062/hya-ocr-sandbox:backend-<version>`
-  - `karash062/hya-ocr-sandbox:frontend-<version>`
+### 🏷️ 镜像标签规范
+**Sandbox 仓库**:
+- `karasho62/hya-ocr-sandbox:backend-develop`
+- `karasho62/hya-ocr-sandbox:frontend-develop`
+
+**Production 仓库**:
+- `karasho62/hya-ocr-production:backend-v1.0.0`
+- `karasho62/hya-ocr-production:frontend-latest`
+
+### 🔐 GitHub Secrets 配置
+- `DOCKERHUB_USERNAME`: Docker Hub 用户名
+- `DOCKERHUB_TOKEN`: Docker Hub 访问令牌
 
 ### 集成测试要点
 - 使用 Compose v2 启动 `db / redis / backend / frontend`
@@ -204,7 +215,11 @@ cd GeminiOCR
 
 **镜像拉取失败**
 ```bash
-docker manifest inspect karash062/hya-ocr-sandbox:backend-latest
+# 检查 sandbox 镜像
+docker manifest inspect karasho62/hya-ocr-sandbox:backend-develop
+
+# 检查 production 镜像
+docker manifest inspect karasho62/hya-ocr-production:backend-latest
 ```
 
 ---
