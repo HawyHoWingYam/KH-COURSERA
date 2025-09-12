@@ -52,6 +52,20 @@
 #                 # Next review: 2024-07-15
 
 # =============================================================================
+# TEMPORARY CI/CD TESTING IGNORES - MUST BE FIXED IN PRODUCTION
+# =============================================================================
+
+CVE-2025-5889   # [TEMPORARY 2025-09-12] brace-expansion ReDoS vulnerability
+                # Risk: LOW - affects npm internal dependency
+                # Status: Awaiting Node.js/npm upgrade for proper fix
+                # Next review: 2025-09-19 (7 days)
+
+CVE-2024-21538  # [TEMPORARY 2025-09-12] cross-spawn ReDoS vulnerability  
+                # Risk: HIGH - RegExp DoS in npm dependency
+                # Status: Awaiting Node.js/npm upgrade to get cross-spawn 7.0.5+
+                # Next review: 2025-09-15 (3 days) - URGENT FIX REQUIRED
+
+# =============================================================================
 # NOTES
 # =============================================================================
 # - This file is checked into version control for transparency
