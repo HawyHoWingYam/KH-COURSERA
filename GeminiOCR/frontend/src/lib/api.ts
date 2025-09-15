@@ -202,7 +202,12 @@ export async function uploadFile(file: globalThis.File, path: string): Promise<{
 
 // WebSocket connection
 export function connectWebSocket(jobId: number, onMessage: (data: unknown) => void) {
-  const socket = new WebSocket(`ws://${process.env.API_BASE_URL || 'localhost'}:${process.env.PORT || 8000}/ws/${jobId}`);
+  // Derive WS base from configured HTTP API URL to avoid using the Next.js PORT (3000)
+  const httpBase = (process.env.NEXT_PUBLIC_API_URL || process.env.API_BASE_URL || 'http://localhost:8000');
+  const apiUrl = new URL(httpBase);
+  const wsProtocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsBase = `${wsProtocol}//${apiUrl.host}`;
+  const socket = new WebSocket(`${wsBase}/ws/${jobId}`);
   socket.onopen = () => {
     console.log(`WebSocket connection established for job ${jobId}`);
   };

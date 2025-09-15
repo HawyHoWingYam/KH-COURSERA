@@ -42,5 +42,8 @@ pytest==7.4.3
 pytest-asyncio==0.21.1
 requests==2.32.4
 
+# Database migrations
+alembic==1.13.1
+
 # Standard library dependencies (already included in Python)
 # asyncio, json, os, logging, time, uuid, datetime, tempfile, re, functools, urllib.parse, typing

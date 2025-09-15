@@ -600,17 +600,19 @@ jobs:
         cache-to: type=gha,mode=max
         platforms: linux/amd64  # Single platform for faster CI/CD testing
         sbom: true
-        provenance: true
+      provenance: true
+
+  # (Removed) Sandbox auto-migration: keep migrations gated on UAT/Prod approvals
 
   # Deploy to Staging (for develop branch) 
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: publish
+    needs: [publish, db-migrate-uat]
     if: github.ref == 'refs/heads/develop'
-    # environment:
-    #   name: staging  # Temporarily disabled - requires GitHub environment configuration
+    environment:
+      name: uat  # Requires environment approval in GitHub settings
     
     steps:
     - name: Checkout code
@@ -638,7 +640,7 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: publish
+    needs: [publish, db-migrate-prod]
     if: startsWith(github.ref, 'refs/tags/')
     
     steps:
@@ -678,3 +680,135 @@ jobs:
           See commit history for detailed changes.
         draft: false
         prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+
+  # Pre-release migration with approval for UAT (develop)
+  db-migrate-uat:
+    name: DB Migrate (UAT)
+    runs-on: ubuntu-latest
+    needs: publish
+    if: github.ref == 'refs/heads/develop' && (secrets.AWS_ROLE_TO_ASSUME != '' || secrets.AWS_ACCESS_KEY_ID != '')
+    environment:
+      name: uat  # Gate with approval
+    env:
+      WORKING_DIR: GeminiOCR/backend
+      AWS_REGION: ap-southeast-1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Configure AWS credentials (role)
+        if: ${{ secrets.AWS_ROLE_TO_ASSUME != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials (keys)
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Resolve DATABASE_URL from Secrets Manager (uat/database)
+        run: |
+          RAW=$(aws secretsmanager get-secret-value --secret-id "uat/database" --query SecretString --output text)
+          DB_URL=$(python - <<'PY'
+import json, os
+raw = os.environ['RAW']
+data = json.loads(raw)
+print(data.get('database_url',''))
+PY
+)
+          if [ -z "$DB_URL" ]; then
+            echo "No database_url in secret uat/database" >&2
+            exit 1
+          fi
+          echo "DATABASE_URL=$DB_URL" >> $GITHUB_ENV
+        env:
+          RAW: ${{ steps.resolve_secrets_uat.outputs.raw || '' }}
+      - name: Run Alembic upgrade head (UAT)
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+        run: |
+          echo "Migrating UAT DB: $(python - <<'PY'
+import os, re
+url = os.environ.get('DATABASE_URL','')
+print(re.sub(r"^.*@","", url))
+PY
+)"
+          bash ./scripts/manage_migrations.sh upgrade head
+
+  # Pre-release migration with approval for Production (tags)
+  db-migrate-prod:
+    name: DB Migrate (Production)
+    runs-on: ubuntu-latest
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/') && (secrets.AWS_ROLE_TO_ASSUME != '' || secrets.AWS_ACCESS_KEY_ID != '')
+    environment:
+      name: production  # Gate with approval
+    env:
+      WORKING_DIR: GeminiOCR/backend
+      AWS_REGION: ap-southeast-1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Configure AWS credentials (role)
+        if: ${{ secrets.AWS_ROLE_TO_ASSUME != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials (keys)
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Resolve DATABASE_URL from Secrets Manager (prod/database)
+        run: |
+          RAW=$(aws secretsmanager get-secret-value --secret-id "prod/database" --query SecretString --output text)
+          DB_URL=$(python - <<'PY'
+import json, os
+raw = os.environ['RAW']
+data = json.loads(raw)
+print(data.get('database_url',''))
+PY
+)
+          if [ -z "$DB_URL" ]; then
+            echo "No database_url in secret prod/database" >&2
+            exit 1
+          fi
+          echo "DATABASE_URL=$DB_URL" >> $GITHUB_ENV
+        env:
+          RAW: ${{ steps.resolve_secrets_prod.outputs.raw || '' }}
+      - name: Run Alembic upgrade head (Prod)
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+        run: |
+          echo "Migrating PROD DB: $(python - <<'PY'
+import os, re
+url = os.environ.get('DATABASE_URL','')
+print(re.sub(r"^.*@","", url))
+PY
+)"
+          bash ./scripts/manage_migrations.sh upgrade head

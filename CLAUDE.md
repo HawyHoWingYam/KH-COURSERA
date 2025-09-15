@@ -247,3 +247,194 @@ Real-time job progress via WebSocket endpoints:
 - Connect to `/ws/{job_id}` for individual job updates
 - Frontend components in `src/app/jobs/` handle WebSocket connections
 - Backend WebSocket handlers in `app.py`
+
+## 🗄️ Database Infrastructure Management
+
+### Multi-Environment Database Support
+
+GeminiOCR now supports flexible database environment switching with Terraform-managed Aurora PostgreSQL clusters:
+
+#### Environments
+- **Local**: PostgreSQL on localhost (development)
+- **Sandbox**: AWS Aurora PostgreSQL (integration testing)
+- **UAT**: AWS Aurora PostgreSQL (user acceptance testing)
+- **Production**: AWS Aurora PostgreSQL (production workloads)
+
+### Quick Database Operations
+
+#### Environment Switching
+```bash
+# Switch to local development
+python scripts/switch_db_env.py --env local
+
+# Switch to sandbox for integration testing
+python scripts/switch_db_env.py --env sandbox
+
+# Check current environment status
+python scripts/switch_db_env.py --status
+
+# Test database connection
+python scripts/switch_db_env.py --test
+```
+
+#### Database Migration Management
+```bash
+# Create new migration
+python scripts/manage_migrations.py create -m "Add new feature table"
+
+# Apply all pending migrations
+python scripts/manage_migrations.py upgrade
+
+# Check migration status
+python scripts/manage_migrations.py status
+
+# Rollback one migration
+python scripts/manage_migrations.py downgrade
+
+# Environment-specific operations
+python scripts/manage_migrations.py --env production status
+```
+
+### Terraform Infrastructure Management
+
+#### Deploy Aurora Clusters
+```bash
+# Sandbox environment
+cd terraform/environments/sandbox
+terraform init
+terraform plan -var="database_master_password=secure_password"
+terraform apply
+
+# Production environment (requires approval)
+cd terraform/environments/production
+terraform plan -var="database_master_password=secure_password"
+terraform apply
+```
+
+#### Infrastructure Components
+- **Aurora PostgreSQL Clusters**: Environment-specific sizing
+- **Security Groups**: VPC-restricted access
+- **KMS Encryption**: Data encryption at rest
+- **CloudWatch Monitoring**: Performance and health metrics
+- **Automated Backups**: Environment-specific retention policies
+
+### Application Integration
+
+#### Python Database Manager
+```python
+from database_manager import get_database_manager, health_check
+
+# Get database manager (automatically detects environment)
+db_manager = await get_database_manager()
+
+# Synchronous operations
+session = db_manager.get_session()
+
+# Asynchronous operations with read/write splitting
+async with db_manager.get_async_connection() as conn:
+    result = await conn.fetch("SELECT * FROM users")
+
+# Read-only operations (uses read replica if available)
+async with db_manager.get_async_connection(readonly=True) as conn:
+    reports = await conn.fetch("SELECT * FROM reports")
+
+# Health check
+health = await health_check()
+```
+
+#### FastAPI Integration
+```python
+from database_manager import get_database_manager
+
+@app.get("/health/database")
+async def database_health():
+    return await health_check()
+
+@app.get("/users")
+async def get_users():
+    db_manager = await get_database_manager()
+    async with db_manager.get_async_connection(readonly=True) as conn:
+        users = await conn.fetch("SELECT * FROM users")
+        return users
+```
+
+### Configuration Files
+
+#### Database Environment Configs
+- `config/database/local.yml`: Local PostgreSQL settings
+- `config/database/sandbox.yml`: Sandbox Aurora configuration
+- `config/database/uat.yml`: UAT Aurora configuration  
+- `config/database/production.yml`: Production Aurora configuration
+
+#### Key Features
+- **Connection Pooling**: Environment-optimized pool sizes
+- **SSL/TLS**: Enforced encryption for AWS environments
+- **Read/Write Splitting**: Automatic routing to appropriate endpoints
+- **Health Monitoring**: Connection latency and pool status tracking
+- **AWS Integration**: Secrets Manager and Parameter Store support
+
+### Monitoring and Alerting
+
+#### CloudWatch Metrics
+- CPU utilization thresholds
+- Database connection counts
+- Query performance metrics
+- Replication lag monitoring
+
+#### Automated Alerts
+- **Sandbox**: Basic monitoring (7-day retention)
+- **UAT**: Enhanced monitoring (14-day retention)
+- **Production**: Full monitoring with SNS alerts (30-day retention)
+
+### Security Best Practices
+
+#### Access Control
+- VPC-only database access
+- Security group IP restrictions
+- IAM-based authentication where possible
+- Encrypted connections required
+
+#### Credential Management
+- AWS Secrets Manager integration
+- Automatic password rotation (production)
+- Environment-specific access policies
+- No hardcoded credentials
+
+### CI/CD Integration
+
+#### Automated Database Deployment
+- **GitHub Actions**: `database-deployment.yml` workflow
+- **Terraform Planning**: Infrastructure change validation
+- **Migration Testing**: Automated migration validation
+- **Environment Promotion**: Staging → Production deployment
+- **Health Checks**: Post-deployment verification
+
+#### Deployment Safety
+- **Backup Verification**: Pre-migration backup checks
+- **Migration Validation**: Test migrations on clean databases
+- **Rollback Capability**: Automated rollback on failures
+- **Manual Approval**: Production deployments require approval
+
+### Troubleshooting
+
+#### Common Issues
+```bash
+# Connection problems
+python scripts/switch_db_env.py --info
+python scripts/switch_db_env.py --test
+
+# Migration issues
+python scripts/manage_migrations.py status
+python scripts/manage_migrations.py current
+
+# Health checks
+python -c "import asyncio; from database_manager import health_check; print(asyncio.run(health_check()))"
+```
+
+#### Performance Optimization
+- **Connection Pooling**: Optimized per environment
+- **Read Replicas**: Automatic read/write splitting
+- **Query Monitoring**: Slow query detection and logging
+- **Performance Insights**: Enabled for UAT/Production
+
+For detailed documentation, see: `database-infrastructure-README.md`

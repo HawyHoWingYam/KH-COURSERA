@@ -1,22 +1,23 @@
 import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {
-  /* config options here */
+// Resolve backend base URL once, avoiding accidental use of the Next.js PORT (3000)
+const apiBase = (process.env.NEXT_PUBLIC_API_URL || process.env.API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 
-  // Allow cross-origin requests to our API
+const nextConfig: NextConfig = {
   async rewrites() {
     return [
       {
-        source: '/api/:path*',
-        destination: `http://${process.env.API_BASE_URL || 'localhost'}:${process.env.PORT || 8000}/:path*`,
+        // Proxy API calls to the FastAPI backend
+        source: "/api/:path*",
+        destination: `${apiBase}/:path*`,
       },
       {
-        // Add this new rewrite rule to handle file previews
-        source: '/files/:fileId/preview',
-        destination: '/api/files/:fileId/preview',
-      }
+        // File previews route (kept for clarity; proxies through /api rule above)
+        source: "/files/:fileId/preview",
+        destination: "/api/files/:fileId/preview",
+      },
     ];
-  }
+  },
 };
 
 export default nextConfig;

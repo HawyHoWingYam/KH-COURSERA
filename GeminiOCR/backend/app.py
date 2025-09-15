@@ -55,15 +55,19 @@ except Exception as e:
     logging.error(f"Failed to load configuration: {e}")
     raise
 
-# Create all tables (with error handling)
+# Create tables only in development/test environments; rely on Alembic elsewhere
 try:
-    if engine:
-        Base.metadata.create_all(bind=engine)
-        logger.info("✅ Database tables created/verified successfully")
+    env = app_config.get("environment", "development") if 'app_config' in globals() else os.getenv("ENVIRONMENT", "development")
+    if env in {"development", "test"}:
+        if engine:
+            Base.metadata.create_all(bind=engine)
+            logger.info("✅ Database tables created/verified (dev/test mode)")
+        else:
+            logger.warning("⚠️  Database engine not initialized, tables not created")
     else:
-        logger.warning("⚠️  Database engine not initialized, tables not created")
+        logger.info("ℹ️ Skipping Base.metadata.create_all outside dev/test (use Alembic)")
 except Exception as e:
-    logger.error(f"❌ Failed to create database tables: {e}")
+    logger.error(f"❌ Failed during table initialization: {e}")
 
 app = FastAPI(title="Document Processing API")
 

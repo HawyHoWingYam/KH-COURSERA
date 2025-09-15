@@ -119,6 +119,16 @@ DEPLOY_VERSION=v1.0.0 ./deploy.sh blue-green hub
 - `DOCKERHUB_USERNAME`: Docker Hub 用户名
 - `DOCKERHUB_TOKEN`: Docker Hub 访问令牌
 
+### 🏁 环境与审批（UAT/Prod）
+- 在仓库 Settings → Environments 中新建 `uat` 与 `production` 环境，并为二者设置 Required reviewers（发布前审批点）。
+- 在 AWS 中为每个环境创建 Secrets Manager 项：`sandbox/database`、`uat/database`、`prod/database`，JSON 必须含 `{"database_url": "postgresql://...:5432/postgres?sslmode=require"}`。
+- 在仓库 Secrets 配置 AWS 访问（任选其一）：
+  - `AWS_ROLE_TO_ASSUME`（推荐，OIDC 方式），或
+  - `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`。
+- 流程：
+  - develop 分支：先执行 UAT 迁移（需 `uat` 审批）→ 再部署到 Staging。
+  - 标记版本（tags）：先执行 Prod 迁移（需 `production` 审批）→ 再创建 Release。
+
 ### 集成测试要点
 - 使用 Compose v2 启动 `db / redis / backend / frontend`
 - 后端健康探针命中 `/health`，根路径 404 不视为失败
@@ -173,6 +183,51 @@ NEXT_PUBLIC_API_URL=http://localhost:8001
 **注意**
 - 不要提交 `.env`、`.env.local`
 - 配置优先级：环境变量 > AWS Secrets > .env > 默认值
+
+## 🗄️ 数据库与环境（Aurora + 本地 Postgres）
+
+统一由 `GeminiOCR/backend/config_loader.py` 读取数据库配置，优先级：环境变量 > AWS Secrets Manager > 配置文件。
+
+- 开发切换（不改文件，直接导出变量）：
+  - 本地：`source GeminiOCR/scripts/use-db.sh local`（`sslmode=disable`）
+  - 云端：`source GeminiOCR/scripts/use-db.sh sandbox|uat|production`（注入 `DATABASE_SECRET_NAME=<env>/database`）
+  - 也可直接：`export DATABASE_URL=postgresql://user:pass@host:5432/db?sslmode=...`
+
+- 迁移（Alembic）：
+  - `cd GeminiOCR/backend && pip install -r requirements.txt`
+  - `bash ./scripts/manage_migrations.sh upgrade head`
+  - 约定：生产/UAT依赖 Alembic；仅在 `ENVIRONMENT ∈ {development,test}` 时后端会执行 `Base.metadata.create_all` 便于本地起步。
+
+- CI/CD 迁移（带审批）：
+  - 手动：`.github/workflows/db-migrate.yml`（选择 `sandbox/uat/production/custom_url`）
+  - UAT：部署到 Staging 前自动执行迁移（Environment `uat` 审批）
+  - Prod：创建 Release 前自动执行迁移（Environment `production` 审批）
+
+- Terraform（Aurora 脚手架）：
+  - 目录：`terraform/modules/aurora-postgresql/` 与 `terraform/environments/{sandbox,uat,production}`
+  - 变量：`region`、`vpc_id`、`subnet_ids`（私有子网）`allowed_sg_ids`（允许访问 5432 的应用 SG 列表）`secret_name`
+  - 示例：
+    ```hcl
+    module "aurora" {
+      source         = "../../modules/aurora-postgresql"
+      name           = "geminiocr-sandbox"
+      region         = "ap-southeast-1"
+      vpc_id         = "vpc-xxxx"
+      subnet_ids     = ["subnet-a","subnet-b","subnet-c"]
+      allowed_sg_ids = ["sg-app"]
+      secret_name    = "sandbox/database"
+    }
+    ```
+  - 运行：
+    ```bash
+    cd terraform/environments/sandbox
+    terraform init && terraform apply \
+      -var="region=ap-southeast-1" \
+      -var="vpc_id=vpc-xxxx" \
+      -var='subnet_ids=["subnet-a","subnet-b","subnet-c"]' \
+      -var='allowed_sg_ids=["sg-app"]'
+    ```
+  - 输出：`cluster_endpoint`、`secret_arn`；后端只需设置 `DATABASE_SECRET_NAME=<env>/database` 即可切换。
 
 ---
 
