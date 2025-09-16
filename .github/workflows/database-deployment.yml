@@ -4,14 +4,14 @@ on:
   push:
     branches: [ main, develop ]
     paths:
-      - 'GeminiOCR/backend/migrations/**'
+      - 'migrations/**'
       - 'GeminiOCR/backend/db/**'
       - 'terraform/**'
       - '.github/workflows/database-deployment.yml'
   pull_request:
     branches: [ main ]
     paths:
-      - 'GeminiOCR/backend/migrations/**'
+      - 'migrations/**'
       - 'GeminiOCR/backend/db/**'
       - 'terraform/**'
 
@@ -53,7 +53,7 @@ jobs:
           terraform:
             - 'terraform/**'
           migrations:
-            - 'GeminiOCR/backend/migrations/**'
+            - 'migrations/**'
           models:
             - 'GeminiOCR/backend/db/**'
 

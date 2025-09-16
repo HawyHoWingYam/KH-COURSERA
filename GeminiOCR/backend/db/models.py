@@ -1,6 +1,7 @@
 from sqlalchemy import (
     Boolean,
     Column,
+    Enum,
     ForeignKey,
     Integer,
     String,
@@ -11,6 +12,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 import enum
+from sqlalchemy.dialects.postgresql import JSON
 from .database import Base
 from datetime import datetime
 
@@ -20,6 +22,11 @@ class FileCategory(enum.Enum):
     processed_image = "processed_image"
     json_output = "json_output"
     excel_output = "excel_output"
+
+
+class StorageType(enum.Enum):
+    local = "local"
+    s3 = "s3"
 
 
 class Department(Base):
@@ -111,8 +118,10 @@ class CompanyDocumentConfig(Base):
     doc_type_id = Column(
         Integer, ForeignKey("document_types.doc_type_id"), nullable=False
     )
-    prompt_path = Column(String(255), nullable=False)
-    schema_path = Column(String(255), nullable=False)
+    prompt_path = Column(String(500), nullable=False, comment='Path to prompt file (supports local paths and S3 URIs like s3://bucket/prompts/...)')
+    schema_path = Column(String(500), nullable=False, comment='Path to schema file (supports local paths and S3 URIs like s3://bucket/schemas/...)')
+    storage_type = Column(Enum(StorageType), nullable=False, default=StorageType.local, comment='Storage backend type for prompts and schemas')
+    storage_metadata = Column(JSON, nullable=True, comment='Additional metadata for storage backend (e.g., S3 bucket info, cache settings)')
     active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

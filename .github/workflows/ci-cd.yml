@@ -40,13 +40,13 @@ jobs:
         filters: |
           backend:
             - 'GeminiOCR/backend/**'
-            - 'GeminiOCR/backend.Dockerfile'
-            - 'GeminiOCR/docker-compose*.yml'
+            - 'docker/backend.Dockerfile'
+            - 'docker/docker-compose*.yml'
             - '.github/workflows/**'
           frontend:
             - 'GeminiOCR/frontend/**'
-            - 'GeminiOCR/frontend.Dockerfile'
-            - 'GeminiOCR/docker-compose*.yml'
+            - 'docker/frontend.Dockerfile'
+            - 'docker/docker-compose*.yml'
             - '.github/workflows/**'
 
   # Build and Test Phase
@@ -75,6 +75,30 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0  # Full history for proper versioning
+
+    - name: Secret scan (Gitleaks)
+      uses: gitleaks/gitleaks-action@v2
+      with:
+        args: detect --source . --no-git --redact --exit-code 1
+
+    - name: Secret scan (TruffleHog)
+      uses: trufflesecurity/trufflehog@v3
+      with:
+        path: .
+        json: false
+        only_verified: true
+        # scan recent changes on PRs; full repo on push
+        base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+        head: ${{ github.sha }}
+
+    - name: IaC scan (Checkov)
+      uses: bridgecrewio/checkov-action@v12
+      with:
+        directory: terraform
+        framework: terraform
+        download_external_modules: true
+        quiet: true
+        soft_fail: false
     
     - name: Set Docker repository based on branch/tag
       run: |
@@ -112,7 +136,7 @@ jobs:
         chmod +x /tmp/hadolint
         
         # Lint the Dockerfile for this service
-        /tmp/hadolint GeminiOCR/${{ matrix.service }}.Dockerfile || echo "Dockerfile linting completed with warnings"
+        /tmp/hadolint docker/${{ matrix.service }}.Dockerfile || echo "Dockerfile linting completed with warnings"
     
     - name: Generate build metadata
       id: meta
@@ -141,8 +165,8 @@ jobs:
       uses: docker/build-push-action@v5
       timeout-minutes: 15
       with:
-        context: ./GeminiOCR
-        file: ./GeminiOCR/${{ matrix.service }}.Dockerfile
+        context: .
+        file: ./docker/${{ matrix.service }}.Dockerfile
         load: true
         tags: |
           ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ steps.meta.outputs.VERSION }}
@@ -402,7 +426,6 @@ jobs:
     
     - name: Start integration test environment
       run: |
-        cd GeminiOCR
         # Create test environment file
         cat > .env.test << EOF
         POSTGRES_USER=test_user
@@ -432,24 +455,23 @@ jobs:
           docker pull $FRONTEND_IMAGE || echo "Warning: Could not pull fallback frontend image"
         fi
         
-        docker compose -f docker-compose.ci.yml up -d
+        docker compose -f docker/docker-compose.ci.yml up -d
     
     - name: Run integration tests
       run: |
-        cd GeminiOCR
         # Wait for services to be ready
         sleep 60
         
         # Check container status first
         echo "=== Container Status ==="
-        docker compose -f docker-compose.ci.yml ps
+        docker compose -f docker/docker-compose.ci.yml ps
         
         # Show logs if any container is unhealthy
         echo "=== Backend Logs ==="
-        docker compose -f docker-compose.ci.yml logs backend || true
+        docker compose -f docker/docker-compose.ci.yml logs backend || true
         
         echo "=== Database Logs ==="
-        docker compose -f docker-compose.ci.yml logs db || true
+        docker compose -f docker/docker-compose.ci.yml logs db || true
         
         # Test backend health with retry logic
         echo "=== Testing Backend Health ==="
@@ -461,7 +483,7 @@ jobs:
             echo "❌ Backend health check attempt $i/5 failed, retrying in 10s..."
             if [ $i -eq 5 ]; then
               echo "Backend logs:"
-              docker compose -f docker-compose.ci.yml logs backend
+              docker compose -f docker/docker-compose.ci.yml logs backend
               exit 1
             fi
             sleep 10
@@ -478,7 +500,7 @@ jobs:
             echo "❌ Frontend health check attempt $i/5 failed, retrying in 15s..."
             if [ $i -eq 5 ]; then
               echo "Frontend logs:"
-              docker compose -f docker-compose.ci.yml logs frontend
+              docker compose -f docker/docker-compose.ci.yml logs frontend
               exit 1
             fi
             sleep 15
@@ -489,7 +511,7 @@ jobs:
         echo "=== Testing API Documentation ==="
         curl -fsS http://localhost:8000/docs > /dev/null || {
           echo "❌ API docs endpoint failed"
-          docker compose -f docker-compose.ci.yml logs backend
+          docker compose -f docker/docker-compose.ci.yml logs backend
           exit 1
         }
         
@@ -499,7 +521,7 @@ jobs:
       if: always()
       run: |
         cd GeminiOCR
-        docker compose -f docker-compose.ci.yml down -v
+        docker compose -f docker/docker-compose.ci.yml down -v
 
   # Publish Phase (for develop, main branch and tags)
   publish:
@@ -587,8 +609,8 @@ jobs:
       uses: docker/build-push-action@v5
       timeout-minutes: 20
       with:
-        context: ./GeminiOCR
-        file: ./GeminiOCR/${{ matrix.service }}.Dockerfile
+        context: .
+        file: ./docker/${{ matrix.service }}.Dockerfile
         push: true
         tags: ${{ steps.docker-meta.outputs.tags }}
         labels: ${{ steps.docker-meta.outputs.labels }}
@@ -665,11 +687,11 @@ jobs:
           # Pull and deploy production images
           export VERSION=${{ github.ref_name }}
           export DOCKER_REPOSITORY=${{ env.DOCKER_REPOSITORY_PRODUCTION }}
-          docker compose -f docker-compose.prod.yml pull
-          docker compose -f docker-compose.prod.yml up -d
+          docker compose -f docker/docker-compose.prod.yml pull
+          docker compose -f docker/docker-compose.prod.yml up -d
           
           # Verify deployment
-          docker compose -f docker-compose.prod.yml ps
+          docker compose -f docker/docker-compose.prod.yml ps
           curl -f http://localhost/health
           ```
           
@@ -690,7 +712,7 @@ jobs:
     environment:
       name: uat  # Gate with approval
     env:
-      WORKING_DIR: GeminiOCR/backend
+      WORKING_DIR: .
       AWS_REGION: ap-southeast-1
     steps:
       - name: Checkout code
@@ -745,7 +767,7 @@ url = os.environ.get('DATABASE_URL','')
 print(re.sub(r"^.*@","", url))
 PY
 )"
-          bash ./scripts/manage_migrations.sh upgrade head
+          bash scripts/manage_migrations.sh upgrade head
 
   # Pre-release migration with approval for Production (tags)
   db-migrate-prod:
@@ -756,7 +778,7 @@ PY
     environment:
       name: production  # Gate with approval
     env:
-      WORKING_DIR: GeminiOCR/backend
+      WORKING_DIR: .
       AWS_REGION: ap-southeast-1
     steps:
       - name: Checkout code
@@ -811,4 +833,4 @@ url = os.environ.get('DATABASE_URL','')
 print(re.sub(r"^.*@","", url))
 PY
 )"
-          bash ./scripts/manage_migrations.sh upgrade head
+          bash scripts/manage_migrations.sh upgrade head

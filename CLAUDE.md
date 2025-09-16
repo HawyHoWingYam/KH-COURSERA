@@ -8,15 +8,22 @@ GeminiOCR is a document processing platform with FastAPI backend and Next.js fro
 
 ### Core Structure
 ```
-GeminiOCR/
-├── backend/           # FastAPI application
-│   ├── app.py        # Main FastAPI app with WebSocket support
-│   ├── main.py       # OCR processing logic
-│   ├── config_loader.py # Centralized configuration management
-│   ├── db/           # Database models and connection
-│   └── utils/        # S3 storage, Excel conversion, API key management
-├── frontend/         # Next.js React application
-│   └── src/app/      # App router with admin, jobs, upload pages
+KH-COURSERA/
+├── GeminiOCR/         # Application code
+│   ├── backend/       # FastAPI application
+│   │   ├── app.py    # Main FastAPI app with WebSocket support
+│   │   ├── main.py   # OCR processing logic
+│   │   ├── config_loader.py # Centralized configuration management
+│   │   ├── db/       # Database models and connection
+│   │   └── utils/    # S3 storage, Excel conversion, API key management
+│   └── frontend/     # Next.js React application
+│       └── src/app/  # App router with admin, jobs, upload pages
+├── env/              # Environment configuration files (.env, .env.example)
+├── docker/           # Docker configuration (Dockerfiles, docker-compose.yml, deploy.sh)
+├── migrations/       # Database migrations (Alembic)
+├── scripts/          # Database and deployment scripts
+├── terraform/        # Infrastructure as Code
+└── config/           # Application configuration files
 ```
 
 ### Key Architectural Patterns
@@ -25,6 +32,7 @@ GeminiOCR/
 - **Dual Storage**: Local file storage with optional S3 integration
 - **WebSocket Integration**: Real-time job progress updates
 - **Batch Processing**: ZIP file handling with individual job tracking
+- **Centralized File Organization**: Infrastructure files organized by type (env/, docker/, scripts/, terraform/, migrations/)
 
 ## 🚀 Quick Start Guide
 
@@ -42,7 +50,7 @@ conda activate gemini-sandbox
 export AWS_ACCESS_KEY_ID=your_aws_access_key_id
 export AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
 export AWS_DEFAULT_REGION=ap-southeast-1
-uvicorn app:app --host 0.0.0.0 --port 8001
+uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 **Frontend (Terminal 2):**
@@ -53,8 +61,8 @@ npm run dev
 
 **Access URLs:**
 - Frontend: http://localhost:3000
-- Backend API: http://localhost:8001
-- API Docs: http://localhost:8001/docs
+- Backend API: http://localhost:8000
+- API Docs: http://localhost:8000/docs
 
 ## Development Commands
 
@@ -94,8 +102,8 @@ export AWS_ACCESS_KEY_ID=your_aws_access_key_id
 export AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
 export AWS_DEFAULT_REGION=ap-southeast-1
 
-# Start backend server (sandbox environment - port 8001)
-uvicorn app:app --host 0.0.0.0 --port 8001
+# Start backend server (sandbox environment - port 8000)
+uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 
 # Check database connection
 python check_db.py
@@ -128,31 +136,31 @@ npm install
 ### Docker Development
 ```bash
 # Start development environment
-docker-compose -f docker-compose.dev.yml up -d
+docker-compose -f docker/docker-compose.dev.yml up -d
 
 # View development logs
-docker-compose -f docker-compose.dev.yml logs -f
+docker-compose -f docker/docker-compose.dev.yml logs -f
 
 # Access development tools container
-docker-compose -f docker-compose.dev.yml exec devtools bash
+docker-compose -f docker/docker-compose.dev.yml exec devtools bash
 
 # Run database check in container
-docker-compose -f docker-compose.dev.yml exec backend python check_db.py
+docker-compose -f docker/docker-compose.dev.yml exec backend python check_db.py
 ```
 
 ### Production Deployment
 ```bash
 # Deploy with zero-downtime (blue-green)
-./deploy.sh blue-green
+docker/deploy.sh blue-green
 
 # Deploy with rolling updates
-./deploy.sh rolling
+docker/deploy.sh rolling
 
 # Standard production deployment
-docker-compose up -d
+docker-compose -f docker/docker-compose.yml up -d
 
 # Using AWS RDS configuration
-docker-compose -f docker-compose.prod.yml up -d
+docker-compose -f docker/docker-compose.prod.yml up -d
 ```
 
 ## Configuration System
@@ -161,20 +169,21 @@ The application uses a sophisticated configuration system managed by `config_loa
 
 1. **Environment Variables** (highest priority)
 2. **AWS Secrets Manager** (production)
-3. **Local .env file** (`backend/env/.env`)
+3. **Local .env file** (`env/.env`)
 4. **config.json** (non-sensitive settings)
 5. **Default values** (lowest priority)
 
 ### Environment Variables
 
-**Sandbox Environment (backend/env/.env):**
+**Sandbox Environment (env/.env.sandbox):**
 ```bash
 # Environment Configuration
 ENVIRONMENT=sandbox
-PORT=8001
+PORT=8000
 
 # Database (Aurora RDS Sandbox)
-DATABASE_URL="postgresql://HYA_OCR:1JnQlgFO<t)<D8dLGn#3BBUTlE#Q@hya-ocr-sandbox.c94k46soeqmk.ap-southeast-1.rds.amazonaws.com:5432/postgres"
+# Note: credentials live in env/.env only. Example (do not commit real values):
+# DATABASE_URL="postgresql://HYA_OCR:<ENCODED_PASSWORD>@hya-ocr-sandbox.c94k46soeqmk.ap-southeast-1.rds.amazonaws.com:5432/document_processing_platform"
 
 # Gemini API Keys (supports multiple with automatic failover)
 GEMINI_API_KEY_1=your_sandbox_gemini_key
@@ -189,13 +198,13 @@ AWS_DEFAULT_REGION=ap-southeast-1
 
 # API URLs
 API_BASE_URL=18.142.68.48
-NEXT_PUBLIC_API_URL=http://localhost:8001
+NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
-**Frontend Environment (frontend/.env.local):**
+**Frontend Environment (env/.env.local):**
 ```bash
 # Frontend API Configuration
-NEXT_PUBLIC_API_URL=http://localhost:8001
+NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
 ## Database Schema
@@ -228,18 +237,23 @@ python check_db.py  # Database connectivity test
 ## Important File Locations & URLs
 
 ### Configuration Files
-- **Backend config**: `backend/env/.env` (never commit)
-- **Frontend env**: `frontend/.env.local`
-- **Docker configs**: `docker-compose.yml`, `docker-compose.dev.yml`, `docker-compose.prod.yml`
-- **Deployment script**: `deploy.sh` (automated zero-downtime deployment)
+- **Backend config**: `env/.env` (never commit)
+- **Frontend env**: `env/.env.local`
+- **Docker configs**: `docker/docker-compose.yml`, `docker/docker-compose.dev.yml`, `docker/docker-compose.prod.yml`
+- **Deployment script**: `docker/deploy.sh` (automated zero-downtime deployment)
 
 ### Service URLs (Sandbox Environment)
-- **Backend API**: http://localhost:8001
-- **API Documentation**: http://localhost:8001/docs
-- **Health Check**: http://localhost:8001/health
+- **Backend API**: http://localhost:8000
+- **API Documentation**: http://localhost:8000/docs
+- **Health Check**: http://localhost:8000/health
 - **Frontend**: http://localhost:3000
 - **Database**: hya-ocr-sandbox.c94k46soeqmk.ap-southeast-1.rds.amazonaws.com:5432
 - **S3 Bucket**: hya-ocr-sandbox
+
+### Service URLs (Production Environment)
+- **Database**: hya-ocr-instance-dev.c94k46soeqmk.ap-southeast-1.rds.amazonaws.com:5432
+- **Database Name**: document_processing_platform
+- **Database User**: HYA_OCR
 
 ## WebSocket Architecture
 

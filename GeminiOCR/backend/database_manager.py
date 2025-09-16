@@ -19,6 +19,7 @@ import logging
 from typing import Dict, Any, Optional, Union
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from urllib.parse import quote_plus
 from pathlib import Path
 
 import boto3
@@ -51,9 +52,10 @@ class DatabaseConfig:
     environment: str = "local"
     
     def get_connection_url(self, readonly: bool = False) -> str:
-        """构建数据库连接URL"""
+        """构建数据库连接URL; 对密码进行 URL 编码以支持特殊字符"""
         host = self.readonly_host if readonly and self.readonly_host else self.host
-        return f"postgresql://{self.username}:{self.password}@{host}:{self.port}/{self.database}"
+        safe_pass = quote_plus(self.password) if self.password is not None else ""
+        return f"postgresql://{self.username}:{safe_pass}@{host}:{self.port}/{self.database}"
 
 
 class DatabaseManager:

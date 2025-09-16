@@ -27,6 +27,8 @@ class S3StorageManager:
         self.upload_prefix = "upload/"
         self.results_prefix = "results/"
         self.exports_prefix = "exports/"
+        self.prompts_prefix = "prompts/"
+        self.schemas_prefix = "schemas/"
         self._s3_client = None
         self._s3_resource = None
 
@@ -494,6 +496,341 @@ class S3StorageManager:
             logger.error(f"❌ 列出文件失败：{e}")
             return []
 
+    def upload_prompt(
+        self,
+        company_code: str,
+        doc_type_code: str,
+        prompt_content: str,
+        filename: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> Optional[str]:
+        """
+        上传prompt文件到S3
+
+        Args:
+            company_code: 公司代码
+            doc_type_code: 文档类型代码
+            prompt_content: prompt内容
+            filename: 文件名（可选，默认为prompt.txt）
+            metadata: 文件元数据
+
+        Returns:
+            Optional[str]: S3键名，失败时返回None
+        """
+        try:
+            if not filename:
+                filename = "prompt.txt"
+
+            # 构建S3键名
+            key = f"{company_code}/{doc_type_code}/{filename}"
+            full_key = f"{self.prompts_prefix}{key}"
+
+            # 准备元数据
+            upload_metadata = {
+                "company_code": company_code,
+                "doc_type_code": doc_type_code,
+                "file_type": "prompt",
+                "uploaded_at": datetime.now().isoformat(),
+            }
+            if metadata:
+                upload_metadata.update(metadata)
+
+            # 上传内容
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=full_key,
+                Body=prompt_content.encode("utf-8"),
+                ContentType="text/plain",
+                ContentEncoding="utf-8",
+                Metadata=upload_metadata,
+            )
+
+            logger.info(f"✅ Prompt上传成功：s3://{self.bucket_name}/{full_key}")
+            return key
+
+        except Exception as e:
+            logger.error(f"❌ Prompt上传失败：{e}")
+            return None
+
+    def get_prompt(self, company_code: str, doc_type_code: str, filename: Optional[str] = None) -> Optional[str]:
+        """
+        从S3获取prompt内容
+
+        Args:
+            company_code: 公司代码
+            doc_type_code: 文档类型代码
+            filename: 文件名（可选，默认为prompt.txt）
+
+        Returns:
+            Optional[str]: prompt内容，失败时返回None
+        """
+        try:
+            if not filename:
+                filename = "prompt.txt"
+
+            key = f"{company_code}/{doc_type_code}/{filename}"
+            full_key = f"{self.prompts_prefix}{key}"
+
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=full_key)
+            content = response["Body"].read().decode("utf-8")
+
+            logger.info(f"✅ Prompt获取成功：s3://{self.bucket_name}/{full_key}")
+            return content
+
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                logger.warning(f"⚠️ Prompt文件不存在：s3://{self.bucket_name}/{self.prompts_prefix}{company_code}/{doc_type_code}/{filename or 'prompt.txt'}")
+            else:
+                logger.error(f"❌ Prompt获取失败：{e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Prompt获取时发生未知错误：{e}")
+            return None
+
+    def upload_schema(
+        self,
+        company_code: str,
+        doc_type_code: str,
+        schema_data: dict,
+        filename: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> Optional[str]:
+        """
+        上传schema文件到S3
+
+        Args:
+            company_code: 公司代码
+            doc_type_code: 文档类型代码
+            schema_data: schema JSON数据
+            filename: 文件名（可选，默认为schema.json）
+            metadata: 文件元数据
+
+        Returns:
+            Optional[str]: S3键名，失败时返回None
+        """
+        try:
+            if not filename:
+                filename = "schema.json"
+
+            # 验证schema格式
+            if not isinstance(schema_data, dict):
+                raise ValueError("Schema data must be a dictionary")
+
+            # 构建S3键名
+            key = f"{company_code}/{doc_type_code}/{filename}"
+            full_key = f"{self.schemas_prefix}{key}"
+
+            # 准备元数据
+            upload_metadata = {
+                "company_code": company_code,
+                "doc_type_code": doc_type_code,
+                "file_type": "schema",
+                "uploaded_at": datetime.now().isoformat(),
+            }
+            if metadata:
+                upload_metadata.update(metadata)
+
+            # 转换为JSON字符串
+            schema_content = json.dumps(schema_data, ensure_ascii=False, indent=2)
+
+            # 上传内容
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=full_key,
+                Body=schema_content.encode("utf-8"),
+                ContentType="application/json",
+                ContentEncoding="utf-8",
+                Metadata=upload_metadata,
+            )
+
+            logger.info(f"✅ Schema上传成功：s3://{self.bucket_name}/{full_key}")
+            return key
+
+        except Exception as e:
+            logger.error(f"❌ Schema上传失败：{e}")
+            return None
+
+    def get_schema(self, company_code: str, doc_type_code: str, filename: Optional[str] = None) -> Optional[dict]:
+        """
+        从S3获取schema数据
+
+        Args:
+            company_code: 公司代码
+            doc_type_code: 文档类型代码
+            filename: 文件名（可选，默认为schema.json）
+
+        Returns:
+            Optional[dict]: schema数据，失败时返回None
+        """
+        try:
+            if not filename:
+                filename = "schema.json"
+
+            key = f"{company_code}/{doc_type_code}/{filename}"
+            full_key = f"{self.schemas_prefix}{key}"
+
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=full_key)
+            content = response["Body"].read().decode("utf-8")
+            schema_data = json.loads(content)
+
+            logger.info(f"✅ Schema获取成功：s3://{self.bucket_name}/{full_key}")
+            return schema_data
+
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                logger.warning(f"⚠️ Schema文件不存在：s3://{self.bucket_name}/{self.schemas_prefix}{company_code}/{doc_type_code}/{filename or 'schema.json'}")
+            else:
+                logger.error(f"❌ Schema获取失败：{e}")
+            return None
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Schema JSON解析失败：{e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Schema获取时发生未知错误：{e}")
+            return None
+
+    def list_prompts(self, company_code: Optional[str] = None, doc_type_code: Optional[str] = None) -> list:
+        """
+        列出prompt文件
+
+        Args:
+            company_code: 公司代码（可选）
+            doc_type_code: 文档类型代码（可选）
+
+        Returns:
+            list: prompt文件信息列表
+        """
+        try:
+            # 构建前缀
+            prefix = ""
+            if company_code and doc_type_code:
+                prefix = f"{company_code}/{doc_type_code}/"
+            elif company_code:
+                prefix = f"{company_code}/"
+
+            return self.list_files(prefix=prefix, folder="prompts")
+
+        except Exception as e:
+            logger.error(f"❌ 列出prompt文件失败：{e}")
+            return []
+
+    def list_schemas(self, company_code: Optional[str] = None, doc_type_code: Optional[str] = None) -> list:
+        """
+        列出schema文件
+
+        Args:
+            company_code: 公司代码（可选）
+            doc_type_code: 文档类型代码（可选）
+
+        Returns:
+            list: schema文件信息列表
+        """
+        try:
+            # 构建前缀
+            prefix = ""
+            if company_code and doc_type_code:
+                prefix = f"{company_code}/{doc_type_code}/"
+            elif company_code:
+                prefix = f"{company_code}/"
+
+            return self.list_files(prefix=prefix, folder="schemas")
+
+        except Exception as e:
+            logger.error(f"❌ 列出schema文件失败：{e}")
+            return []
+
+    def delete_prompt(self, company_code: str, doc_type_code: str, filename: Optional[str] = None) -> bool:
+        """
+        删除prompt文件
+
+        Args:
+            company_code: 公司代码
+            doc_type_code: 文档类型代码
+            filename: 文件名（可选，默认为prompt.txt）
+
+        Returns:
+            bool: 删除是否成功
+        """
+        try:
+            if not filename:
+                filename = "prompt.txt"
+
+            key = f"{company_code}/{doc_type_code}/{filename}"
+            return self.delete_file(key, folder="prompts")
+
+        except Exception as e:
+            logger.error(f"❌ 删除prompt文件失败：{e}")
+            return False
+
+    def delete_schema(self, company_code: str, doc_type_code: str, filename: Optional[str] = None) -> bool:
+        """
+        删除schema文件
+
+        Args:
+            company_code: 公司代码
+            doc_type_code: 文档类型代码
+            filename: 文件名（可选，默认为schema.json）
+
+        Returns:
+            bool: 删除是否成功
+        """
+        try:
+            if not filename:
+                filename = "schema.json"
+
+            key = f"{company_code}/{doc_type_code}/{filename}"
+            return self.delete_file(key, folder="schemas")
+
+        except Exception as e:
+            logger.error(f"❌ 删除schema文件失败：{e}")
+            return False
+
+    def prompt_exists(self, company_code: str, doc_type_code: str, filename: Optional[str] = None) -> bool:
+        """
+        检查prompt文件是否存在
+
+        Args:
+            company_code: 公司代码
+            doc_type_code: 文档类型代码
+            filename: 文件名（可选，默认为prompt.txt）
+
+        Returns:
+            bool: 文件是否存在
+        """
+        try:
+            if not filename:
+                filename = "prompt.txt"
+
+            key = f"{company_code}/{doc_type_code}/{filename}"
+            return self.file_exists(key, folder="prompts")
+
+        except Exception as e:
+            logger.error(f"❌ 检查prompt文件存在时出错：{e}")
+            return False
+
+    def schema_exists(self, company_code: str, doc_type_code: str, filename: Optional[str] = None) -> bool:
+        """
+        检查schema文件是否存在
+
+        Args:
+            company_code: 公司代码
+            doc_type_code: 文档类型代码
+            filename: 文件名（可选，默认为schema.json）
+
+        Returns:
+            bool: 文件是否存在
+        """
+        try:
+            if not filename:
+                filename = "schema.json"
+
+            key = f"{company_code}/{doc_type_code}/{filename}"
+            return self.file_exists(key, folder="schemas")
+
+        except Exception as e:
+            logger.error(f"❌ 检查schema文件存在时出错：{e}")
+            return False
+
     @staticmethod
     def generate_file_key(
         company_code: str,
@@ -543,7 +880,7 @@ class S3StorageManager:
                 "bucket": self.bucket_name,
                 "region": location.get("LocationConstraint", "us-east-1"),
                 "accessible": True,
-                "folders": ["upload", "results", "exports"],
+                "folders": ["upload", "results", "exports", "prompts", "schemas"],
             }
         except Exception as e:
             return {

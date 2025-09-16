@@ -12,7 +12,7 @@ from functools import wraps
 
 # 導入配置管理器
 try:
-    from config_loader import config_loader, api_key_manager
+    from config_loader import config_loader, get_api_key_manager
 
     CONFIG_AVAILABLE = True
 except ImportError:
@@ -26,7 +26,7 @@ def get_api_key_and_model() -> tuple[str, str]:
     """獲取 API key 和模型名稱"""
     if CONFIG_AVAILABLE:
         try:
-            api_key = api_key_manager.get_least_used_key()
+            api_key = get_api_key_manager().get_least_used_key()
             app_config = config_loader.get_app_config()
             model_name = app_config.get("model_name", "gemini-2.5-flash-preview-05-20")
             return api_key, model_name
@@ -81,7 +81,7 @@ def api_error_handler(func):
                 # 如果有API key manager，嘗試獲取不同的key
                 if CONFIG_AVAILABLE and attempt > 0:
                     try:
-                        new_api_key = api_key_manager.get_next_key()
+                        new_api_key = get_api_key_manager().get_next_key()
                         configure_gemini_with_retry(new_api_key)
                         # 更新函數參數中的api_key
                         if "api_key" in kwargs:
@@ -115,8 +115,8 @@ def api_error_handler(func):
                     # 標記當前API key有問題
                     if CONFIG_AVAILABLE:
                         try:
-                            current_api_key = api_key_manager.get_current_key()
-                            api_key_manager.mark_key_error(current_api_key)
+                            current_api_key = get_api_key_manager().get_current_key()
+                            get_api_key_manager().mark_key_error(current_api_key)
                         except Exception:
                             pass  # 如果無法獲取當前key，忽略標記
 

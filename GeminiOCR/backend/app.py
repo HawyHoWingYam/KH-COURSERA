@@ -24,7 +24,7 @@ from sqlalchemy import func
 import time
 
 # 導入配置管理器
-from config_loader import config_loader, api_key_manager, validate_and_log_config
+from config_loader import config_loader, get_api_key_manager, validate_and_log_config
 
 from db.database import get_db, engine, get_database_info
 from db.models import (
@@ -42,6 +42,7 @@ from main import extract_text_from_image, extract_text_from_pdf
 from utils.excel_converter import json_to_excel
 from utils.s3_storage import get_s3_manager, is_s3_enabled
 from utils.file_storage import get_file_storage
+from utils.prompt_schema_manager import get_prompt_schema_manager, load_prompt_and_schema
 
 # 獲取應用配置
 try:
@@ -675,16 +676,23 @@ async def process_document(
                 detail=f"No active configuration found for company ID {company_id} and document type ID {doc_type_id}",
             )
 
-        # Verify prompt_path and schema_path exist
-        if not config.prompt_path or not os.path.exists(config.prompt_path):
+        # Verify prompt and schema are accessible (supports both local and S3)
+        prompt_schema_manager = get_prompt_schema_manager()
+        
+        # Check if prompt exists
+        prompt_test = await prompt_schema_manager.get_prompt(company.company_code, doc_type.type_code)
+        if not prompt_test:
             raise HTTPException(
                 status_code=500,
-                detail=f"Prompt template not found: {config.prompt_path}",
+                detail=f"Prompt template not found for {company.company_code}/{doc_type.type_code}",
             )
-
-        if not config.schema_path or not os.path.exists(config.schema_path):
+        
+        # Check if schema exists
+        schema_test = await prompt_schema_manager.get_schema(company.company_code, doc_type.type_code)
+        if not schema_test:
             raise HTTPException(
-                status_code=500, detail=f"Schema file not found: {config.schema_path}"
+                status_code=500, 
+                detail=f"Schema file not found for {company.company_code}/{doc_type.type_code}"
             )
 
         # 使用文件存储服务保存上传的文件
@@ -718,8 +726,6 @@ async def process_document(
             process_document_task,
             job_id,
             file_path,
-            config.prompt_path,
-            config.schema_path,
             company.company_code,
             doc_type.type_code,
         )
@@ -745,8 +751,6 @@ async def process_document(
 async def process_document_task(
     job_id: int,
     file_path: str,
-    prompt_path: str,
-    schema_path: str,
     company_code: str,
     doc_type_code: str,
 ):
@@ -773,16 +777,18 @@ async def process_document_task(
             job_id, {"status": "processing", "message": "Document processing started"}
         )
 
-        # Load prompt and schema
-        with open(prompt_path, "r") as f:
-            prompt_template = f.read()
-
-        with open(schema_path, "r") as f:
-            schema_json = json.load(f)
+        # Load prompt and schema using the new manager (supports both S3 and local)
+        prompt_template, schema_json = await load_prompt_and_schema(company_code, doc_type_code)
+        
+        if not prompt_template:
+            raise ValueError(f"Prompt not found for {company_code}/{doc_type_code}")
+        
+        if not schema_json:
+            raise ValueError(f"Schema not found for {company_code}/{doc_type_code}")
 
         # Get API key and model from config loader
         try:
-            api_key = api_key_manager.get_least_used_key()
+            api_key = get_api_key_manager().get_least_used_key()
             model_name = app_config.get("model_name", "gemini-2.5-flash-preview-05-20")
         except ValueError as e:
             raise ValueError(f"API key configuration error: {e}")
@@ -1297,6 +1303,236 @@ def download_file(file_id: int, db: Session = Depends(get_db)):
         )
 
 
+# Prompt and Schema Management API endpoints
+@app.get("/health/prompts-schemas", response_model=dict)
+async def get_prompt_schema_health():
+    """Get prompt and schema management system health status"""
+    try:
+        prompt_schema_manager = get_prompt_schema_manager()
+        health = prompt_schema_manager.get_health_status()
+        return health
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.get("/prompts-schemas/templates", response_model=dict)
+async def list_templates(company_code: Optional[str] = None):
+    """List available prompt and schema templates"""
+    try:
+        prompt_schema_manager = get_prompt_schema_manager()
+        templates = await prompt_schema_manager.list_available_templates(company_code)
+        return {
+            "status": "success",
+            "data": templates,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list templates: {e}")
+
+
+@app.get("/prompts-schemas/{company_code}/{doc_type_code}/prompt", response_model=dict)
+async def get_prompt(company_code: str, doc_type_code: str, filename: str = "prompt.txt"):
+    """Get prompt content for a specific company and document type"""
+    try:
+        prompt_schema_manager = get_prompt_schema_manager()
+        prompt_content = await prompt_schema_manager.get_prompt(company_code, doc_type_code, filename)
+        
+        if not prompt_content:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Prompt not found for {company_code}/{doc_type_code}/{filename}"
+            )
+        
+        return {
+            "status": "success",
+            "data": {
+                "company_code": company_code,
+                "doc_type_code": doc_type_code,
+                "filename": filename,
+                "content": prompt_content,
+                "content_length": len(prompt_content)
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get prompt: {e}")
+
+
+@app.get("/prompts-schemas/{company_code}/{doc_type_code}/schema", response_model=dict)
+async def get_schema(company_code: str, doc_type_code: str, filename: str = "schema.json"):
+    """Get schema data for a specific company and document type"""
+    try:
+        prompt_schema_manager = get_prompt_schema_manager()
+        schema_data = await prompt_schema_manager.get_schema(company_code, doc_type_code, filename)
+        
+        if not schema_data:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Schema not found for {company_code}/{doc_type_code}/{filename}"
+            )
+        
+        return {
+            "status": "success",
+            "data": {
+                "company_code": company_code,
+                "doc_type_code": doc_type_code,
+                "filename": filename,
+                "schema": schema_data
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get schema: {e}")
+
+
+@app.post("/prompts-schemas/{company_code}/{doc_type_code}/prompt", response_model=dict)
+async def upload_prompt(
+    company_code: str, 
+    doc_type_code: str, 
+    prompt_data: dict,
+    filename: str = "prompt.txt"
+):
+    """Upload a new prompt for a specific company and document type"""
+    try:
+        if "content" not in prompt_data:
+            raise HTTPException(status_code=400, detail="Missing 'content' field in request body")
+        
+        content = prompt_data["content"]
+        metadata = prompt_data.get("metadata", {})
+        
+        prompt_schema_manager = get_prompt_schema_manager()
+        success = await prompt_schema_manager.upload_prompt(
+            company_code, doc_type_code, content, filename, metadata
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to upload prompt")
+        
+        return {
+            "status": "success",
+            "message": f"Prompt uploaded successfully for {company_code}/{doc_type_code}/{filename}",
+            "data": {
+                "company_code": company_code,
+                "doc_type_code": doc_type_code,
+                "filename": filename,
+                "content_length": len(content)
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload prompt: {e}")
+
+
+@app.post("/prompts-schemas/{company_code}/{doc_type_code}/schema", response_model=dict)
+async def upload_schema(
+    company_code: str, 
+    doc_type_code: str, 
+    schema_request: dict,
+    filename: str = "schema.json"
+):
+    """Upload a new schema for a specific company and document type"""
+    try:
+        if "schema" not in schema_request:
+            raise HTTPException(status_code=400, detail="Missing 'schema' field in request body")
+        
+        schema_data = schema_request["schema"]
+        metadata = schema_request.get("metadata", {})
+        
+        prompt_schema_manager = get_prompt_schema_manager()
+        success = await prompt_schema_manager.upload_schema(
+            company_code, doc_type_code, schema_data, filename, metadata
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to upload schema")
+        
+        return {
+            "status": "success",
+            "message": f"Schema uploaded successfully for {company_code}/{doc_type_code}/{filename}",
+            "data": {
+                "company_code": company_code,
+                "doc_type_code": doc_type_code,
+                "filename": filename,
+                "schema_properties": len(schema_data.get("properties", {}))
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload schema: {e}")
+
+
+@app.post("/prompts-schemas/{company_code}/{doc_type_code}/validate", response_model=dict)
+async def validate_prompt_schema(company_code: str, doc_type_code: str):
+    """Validate that both prompt and schema exist and are valid for a company/doc_type combination"""
+    try:
+        prompt_schema_manager = get_prompt_schema_manager()
+        
+        # Load both prompt and schema
+        prompt_content, schema_data = await load_prompt_and_schema(company_code, doc_type_code)
+        
+        validation_results = {
+            "company_code": company_code,
+            "doc_type_code": doc_type_code,
+            "prompt": {
+                "exists": prompt_content is not None,
+                "valid": False,
+                "message": ""
+            },
+            "schema": {
+                "exists": schema_data is not None,
+                "valid": False,
+                "message": ""
+            }
+        }
+        
+        # Validate prompt
+        if prompt_content:
+            from utils.prompt_schema_manager import PromptSchemaValidator
+            validator = PromptSchemaValidator()
+            is_valid, message = validator.validate_prompt(prompt_content)
+            validation_results["prompt"]["valid"] = is_valid
+            validation_results["prompt"]["message"] = message
+            validation_results["prompt"]["length"] = len(prompt_content)
+        else:
+            validation_results["prompt"]["message"] = "Prompt not found"
+        
+        # Validate schema
+        if schema_data:
+            from utils.prompt_schema_manager import PromptSchemaValidator
+            validator = PromptSchemaValidator()
+            is_valid, message = validator.validate_schema(schema_data)
+            validation_results["schema"]["valid"] = is_valid
+            validation_results["schema"]["message"] = message
+            validation_results["schema"]["properties_count"] = len(schema_data.get("properties", {}))
+        else:
+            validation_results["schema"]["message"] = "Schema not found"
+        
+        overall_valid = (validation_results["prompt"]["valid"] and 
+                        validation_results["schema"]["valid"])
+        
+        return {
+            "status": "success",
+            "data": validation_results,
+            "overall_valid": overall_valid,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to validate prompt/schema: {e}")
+
+
 # Initialize database function
 @app.on_event("startup")
 async def startup_db_client():
@@ -1459,16 +1695,23 @@ async def process_zip_file(
                 detail=f"No active configuration found for company ID {company_id} and document type ID {doc_type_id}",
             )
 
-        # Verify prompt_path and schema_path exist
-        if not config.prompt_path or not os.path.exists(config.prompt_path):
+        # Verify prompt and schema are accessible (supports both local and S3)
+        prompt_schema_manager = get_prompt_schema_manager()
+        
+        # Check if prompt exists
+        prompt_test = await prompt_schema_manager.get_prompt(company.company_code, doc_type.type_code)
+        if not prompt_test:
             raise HTTPException(
                 status_code=500,
-                detail=f"Prompt template not found: {config.prompt_path}",
+                detail=f"Prompt template not found for {company.company_code}/{doc_type.type_code}",
             )
-
-        if not config.schema_path or not os.path.exists(config.schema_path):
+        
+        # Check if schema exists
+        schema_test = await prompt_schema_manager.get_schema(company.company_code, doc_type.type_code)
+        if not schema_test:
             raise HTTPException(
-                status_code=500, detail=f"Schema file not found: {config.schema_path}"
+                status_code=500, 
+                detail=f"Schema file not found for {company.company_code}/{doc_type.type_code}"
             )
 
         # Save the uploaded zip file
@@ -1509,8 +1752,6 @@ async def process_zip_file(
             process_zip_task,
             batch_id,
             zip_path,
-            config.prompt_path,
-            config.schema_path,
             company.company_code,
             doc_type.type_code,
         )
@@ -1535,8 +1776,6 @@ async def process_zip_file(
 async def process_zip_task(
     batch_id: int,
     zip_path: str,
-    prompt_path: str,
-    schema_path: str,
     company_code: str,
     doc_type_code: str,
 ):
@@ -1584,16 +1823,18 @@ async def process_zip_task(
             with tempfile.TemporaryDirectory() as temp_dir:
                 zip_ref.extractall(temp_dir)
 
-                # Load prompt and schema
-                with open(prompt_path, "r") as f:
-                    prompt_template = f.read()
-
-                with open(schema_path, "r") as f:
-                    schema_json = json.load(f)
+                # Load prompt and schema using the new manager (supports both S3 and local)
+                prompt_template, schema_json = await load_prompt_and_schema(company_code, doc_type_code)
+                
+                if not prompt_template:
+                    raise ValueError(f"Prompt not found for {company_code}/{doc_type_code}")
+                
+                if not schema_json:
+                    raise ValueError(f"Schema not found for {company_code}/{doc_type_code}")
 
                 # Get API key from config loader
                 try:
-                    api_key = api_key_manager.get_least_used_key()
+                    api_key = get_api_key_manager().get_least_used_key()
                     model_name = app_config.get(
                         "model_name", "gemini-2.5-flash-preview-05-20"
                     )

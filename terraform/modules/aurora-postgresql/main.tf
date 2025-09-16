@@ -49,8 +49,9 @@ resource "aws_rds_cluster" "this" {
   engine                  = "aurora-postgresql"
   engine_version          = var.engine_version
   database_name           = "postgres"
-  master_username         = "app_user"
-  master_password         = "ChangeMe123!" # replace via secret rotation in real use
+  # Use variables; do not hardcode credentials
+  master_username         = var.master_username
+  master_password         = var.master_password
   db_subnet_group_name    = aws_db_subnet_group.this.name
   vpc_security_group_ids  = [aws_security_group.aurora.id]
   backup_retention_period = var.backup_retention
@@ -68,11 +69,14 @@ resource "aws_secretsmanager_secret" "db" {
 }
 
 resource "aws_secretsmanager_secret_version" "db" {
-  secret_id     = aws_secretsmanager_secret.db.id
-  secret_string = jsonencode({ database_url = "postgresql://app_user:ChangeMe123!@${aws_rds_cluster.this.endpoint}:5432/postgres?sslmode=require" })
+  secret_id = aws_secretsmanager_secret.db.id
+  # Store a connection string constructed from variables; the actual secret value
+  # is provided at apply time via Terraform variables or a secure pipeline.
+  secret_string = jsonencode({
+    database_url = "postgresql://${var.master_username}:${var.master_password}@${aws_rds_cluster.this.endpoint}:5432/postgres?sslmode=require"
+  })
 }
 
 output "cluster_endpoint" { value = aws_rds_cluster.this.endpoint }
 output "security_group_id" { value = aws_security_group.aurora.id }
 output "secret_arn" { value = aws_secretsmanager_secret.db.arn }
-
