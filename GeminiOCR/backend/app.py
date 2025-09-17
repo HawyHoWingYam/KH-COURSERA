@@ -11,6 +11,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
@@ -43,6 +44,8 @@ from utils.excel_converter import json_to_excel
 from utils.s3_storage import get_s3_manager, is_s3_enabled
 from utils.file_storage import get_file_storage
 from utils.prompt_schema_manager import get_prompt_schema_manager, load_prompt_and_schema
+from utils.company_file_manager import FileType
+from utils.force_delete_manager import ForceDeleteManager
 
 # 獲取應用配置
 try:
@@ -71,6 +74,13 @@ except Exception as e:
     logger.error(f"❌ Failed during table initialization: {e}")
 
 app = FastAPI(title="Document Processing API")
+
+# Request models for migration
+class MigrateJobsRequest(BaseModel):
+    target_company_id: int
+
+class MigrateDocTypeJobsRequest(BaseModel):
+    target_doc_type_id: int
 
 # CORS configuration
 app.add_middleware(
@@ -301,14 +311,31 @@ def update_company(company_id: int, company_data: dict, db: Session = Depends(ge
 
 @app.delete("/companies/{company_id}")
 def delete_company(company_id: int, db: Session = Depends(get_db)):
+    from utils.dependency_checker import check_can_delete_company
+    
+    # 使用統一的依賴檢查服務
+    can_delete, error_message = check_can_delete_company(db, company_id)
+    
+    if not can_delete:
+        if "not found" in error_message:
+            raise HTTPException(status_code=404, detail=error_message)
+        else:
+            raise HTTPException(status_code=400, detail=error_message)
+    
+    # 獲取公司信息
     company = db.query(Company).filter(Company.company_id == company_id).first()
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-
-    db.delete(company)
-    db.commit()
-
-    return {"message": "Company deleted successfully"}
+    
+    try:
+        db.delete(company)
+        db.commit()
+        return {"message": f"Company '{company.company_name}' deleted successfully"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting company {company_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete company: {str(e)}"
+        )
 
 
 # Document Types API endpoints
@@ -397,16 +424,170 @@ def update_document_type(
 
 @app.delete("/document-types/{doc_type_id}")
 def delete_document_type(doc_type_id: int, db: Session = Depends(get_db)):
-    doc_type = (
-        db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
-    )
-    if not doc_type:
-        raise HTTPException(status_code=404, detail="Document type not found")
+    from utils.dependency_checker import check_can_delete_document_type
+    
+    # 使用統一的依賴檢查服務
+    can_delete, error_message = check_can_delete_document_type(db, doc_type_id)
+    
+    if not can_delete:
+        if "not found" in error_message:
+            raise HTTPException(status_code=404, detail=error_message)
+        else:
+            raise HTTPException(status_code=400, detail=error_message)
+    
+    # 獲取文檔類型信息
+    doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+    
+    try:
+        db.delete(doc_type)
+        db.commit()
+        return {"message": f"Document type '{doc_type.type_name}' deleted successfully"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting document type {doc_type_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete document type: {str(e)}"
+        )
 
-    db.delete(doc_type)
-    db.commit()
 
-    return {"message": "Document type deleted successfully"}
+# Dependency Management API endpoints
+@app.get("/companies/{company_id}/dependencies")
+def get_company_dependencies(company_id: int, db: Session = Depends(get_db)):
+    """獲取公司的詳細依賴關係信息"""
+    from utils.dependency_checker import DependencyChecker
+    
+    checker = DependencyChecker(db)
+    dependencies = checker.check_company_dependencies(company_id)
+    
+    if not dependencies["exists"]:
+        raise HTTPException(status_code=404, detail=dependencies["error"])
+    
+    # 如果有依賴，獲取詳細信息和遷移建議
+    if not dependencies["can_delete"]:
+        dependencies["detailed_dependencies"] = checker.get_detailed_dependencies("company", company_id)
+        dependencies["migration_targets"] = checker.suggest_migration_targets("company", company_id)
+    
+    return dependencies
+
+
+@app.get("/document-types/{doc_type_id}/dependencies")
+def get_document_type_dependencies(doc_type_id: int, db: Session = Depends(get_db)):
+    """獲取文檔類型的詳細依賴關係信息"""
+    from utils.dependency_checker import DependencyChecker
+    
+    checker = DependencyChecker(db)
+    dependencies = checker.check_document_type_dependencies(doc_type_id)
+    
+    if not dependencies["exists"]:
+        raise HTTPException(status_code=404, detail=dependencies["error"])
+    
+    # 如果有依賴，獲取詳細信息和遷移建議
+    if not dependencies["can_delete"]:
+        dependencies["detailed_dependencies"] = checker.get_detailed_dependencies("document_type", doc_type_id)
+        dependencies["migration_targets"] = checker.suggest_migration_targets("document_type", doc_type_id)
+    
+    return dependencies
+
+
+@app.post("/companies/{company_id}/migrate-jobs")
+def migrate_company_jobs(
+    company_id: int, 
+    request: MigrateJobsRequest,
+    db: Session = Depends(get_db)
+):
+    """將公司的處理作業遷移到另一個公司"""
+    from utils.dependency_checker import DependencyChecker
+    
+    # 驗證源公司和目標公司存在
+    source_company = db.query(Company).filter(Company.company_id == company_id).first()
+    target_company = db.query(Company).filter(Company.company_id == request.target_company_id).first()
+    
+    if not source_company:
+        raise HTTPException(status_code=404, detail="Source company not found")
+    if not target_company:
+        raise HTTPException(status_code=404, detail="Target company not found")
+    
+    try:
+        # 遷移 processing jobs
+        processing_jobs_updated = (
+            db.query(ProcessingJob)
+            .filter(ProcessingJob.company_id == company_id)
+            .update({"company_id": request.target_company_id})
+        )
+        
+        # 遷移 batch jobs
+        batch_jobs_updated = (
+            db.query(BatchJob)
+            .filter(BatchJob.company_id == company_id)
+            .update({"company_id": request.target_company_id})
+        )
+        
+        db.commit()
+        
+        return {
+            "message": f"Successfully migrated jobs from '{source_company.company_name}' to '{target_company.company_name}'",
+            "processing_jobs_migrated": processing_jobs_updated,
+            "batch_jobs_migrated": batch_jobs_updated
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error migrating company jobs: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to migrate jobs: {str(e)}"
+        )
+
+
+@app.post("/document-types/{doc_type_id}/migrate-jobs")
+def migrate_document_type_jobs(
+    doc_type_id: int, 
+    request: MigrateDocTypeJobsRequest,
+    db: Session = Depends(get_db)
+):
+    """將文檔類型的處理作業遷移到另一個文檔類型"""
+    from utils.dependency_checker import DependencyChecker
+    
+    # 驗證源文檔類型和目標文檔類型存在
+    source_doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+    target_doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == request.target_doc_type_id).first()
+    
+    if not source_doc_type:
+        raise HTTPException(status_code=404, detail="Source document type not found")
+    if not target_doc_type:
+        raise HTTPException(status_code=404, detail="Target document type not found")
+    
+    try:
+        # 遷移 processing jobs
+        processing_jobs_updated = (
+            db.query(ProcessingJob)
+            .filter(ProcessingJob.doc_type_id == doc_type_id)
+            .update({"doc_type_id": request.target_doc_type_id})
+        )
+        
+        # 遷移 batch jobs
+        batch_jobs_updated = (
+            db.query(BatchJob)
+            .filter(BatchJob.doc_type_id == doc_type_id)
+            .update({"doc_type_id": request.target_doc_type_id})
+        )
+        
+        db.commit()
+        
+        return {
+            "message": f"Successfully migrated jobs from '{source_doc_type.type_name}' to '{target_doc_type.type_name}'",
+            "processing_jobs_migrated": processing_jobs_updated,
+            "batch_jobs_migrated": batch_jobs_updated
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error migrating document type jobs: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to migrate jobs: {str(e)}"
+        )
 
 
 # Configuration API endpoints
@@ -470,8 +651,10 @@ def create_configuration(config_data: dict, db: Session = Depends(get_db)):
     config = CompanyDocumentConfig(
         company_id=config_data["company_id"],
         doc_type_id=config_data["doc_type_id"],
-        prompt_path=config_data["prompt_path"],
-        schema_path=config_data["schema_path"],
+        prompt_path=config_data.get("prompt_path"),  # Allow None for new configs
+        schema_path=config_data.get("schema_path"),  # Allow None for new configs
+        original_prompt_filename=config_data.get("original_prompt_filename"),
+        original_schema_filename=config_data.get("original_schema_filename"),
         active=config_data.get("active", True),
     )
 
@@ -529,9 +712,17 @@ def update_configuration(
     if not config:
         raise HTTPException(status_code=404, detail="Configuration not found")
 
-    config.prompt_path = config_data["prompt_path"]
-    config.schema_path = config_data["schema_path"]
-    config.active = config_data.get("active", config.active)
+    # Update only provided fields (support partial updates)
+    if "prompt_path" in config_data:
+        config.prompt_path = config_data["prompt_path"]
+    if "schema_path" in config_data:
+        config.schema_path = config_data["schema_path"]
+    if "original_prompt_filename" in config_data:
+        config.original_prompt_filename = config_data["original_prompt_filename"]
+    if "original_schema_filename" in config_data:
+        config.original_schema_filename = config_data["original_schema_filename"]
+    if "active" in config_data:
+        config.active = config_data["active"]
 
     db.commit()
     db.refresh(config)
@@ -566,23 +757,601 @@ def delete_configuration(config_id: int, db: Session = Depends(get_db)):
     return {"message": "Configuration deleted successfully"}
 
 
+# Configuration file download endpoint (S3-only)
+@app.get("/configs/{config_id}/download/{file_type}")
+def download_config_file(config_id: int, file_type: str, db: Session = Depends(get_db)):
+    """
+    Download prompt or schema file for a configuration (S3-only)
+    
+    Args:
+        config_id: Configuration ID
+        file_type: "prompt" or "schema"
+    """
+    # Validate file_type parameter
+    if file_type not in ["prompt", "schema"]:
+        raise HTTPException(status_code=400, detail="file_type must be 'prompt' or 'schema'")
+    
+    # Get configuration from database
+    config = (
+        db.query(CompanyDocumentConfig)
+        .filter(CompanyDocumentConfig.config_id == config_id)
+        .first()
+    )
+    if not config:
+        raise HTTPException(status_code=404, detail="Configuration not found")
+    
+    # Get company and document type for S3 path construction
+    company = config.company
+    doc_type = config.document_type
+    if not company or not doc_type:
+        raise HTTPException(status_code=500, detail="Configuration missing company or document type")
+    
+    logger.info(f"📥 S3-only download request - Config ID: {config_id}, Type: {file_type}, Company: {company.company_code}, DocType: {doc_type.type_code}")
+    
+    try:
+        # Always try S3 download first
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available - S3 is required for downloads")
+        
+        # Extract filename from stored path or use default
+        stored_path = config.prompt_path if file_type == "prompt" else config.schema_path
+        if stored_path and "/" in stored_path:
+            filename = stored_path.split("/")[-1]
+        else:
+            # Default filename based on type
+            filename = f"{file_type}.{'txt' if file_type == 'prompt' else 'json'}"
+        
+        # 🚀 SMART DYNAMIC FILE DISCOVERY - Multiple strategies for resilient file finding
+        file_content = None
+        successful_path = None
+        
+        # === PRIORITY STRATEGY: STORED DATABASE PATH (highest priority) ===
+        logger.info("🎯 Trying STORED database path first")
+        try:
+            if stored_path:
+                logger.info(f"📍 Found stored path in database: {stored_path}")
+                
+                # Use the new S3 manager method for direct path download
+                file_content = s3_manager.download_file_by_stored_path(stored_path)
+                
+                if file_content is not None:
+                    successful_path = stored_path
+                    
+                    # Get filename from path
+                    if "/" in stored_path:
+                        filename = stored_path.split("/")[-1]
+                    
+                    logger.info(f"✅ Downloaded using STORED database path: {stored_path}")
+                    logger.info(f"📂 Download filename: {filename}")
+                else:
+                    logger.info(f"⚠️ Could not download from stored path: {stored_path}")
+            else:
+                logger.info("⚠️ No stored path in database, trying other strategies...")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ STORED path download failed: {e}")
+        
+        # === STRATEGY 0: CLEAN PATH STRUCTURE (highest priority fallback) ===
+        if file_content is None:
+            logger.info("🎯 Trying CLEAN path structure with database-stored filename first")
+            try:
+                # Get original filename from database first
+                original_filename = None
+                if file_type == "prompt" and config.original_prompt_filename:
+                    original_filename = config.original_prompt_filename
+                elif file_type == "schema" and config.original_schema_filename:
+                    original_filename = config.original_schema_filename
+                
+                # Try with original filename from database
+                if original_filename:
+                    logger.info(f"📁 Using original filename from database: {original_filename}")
+                    
+                    # Construct clean S3 path: companies/{company_id}/{type}/{doc_type_id}/{config_id}/filename
+                    clean_s3_path = f"companies/{company.company_id}/{'prompts' if file_type == 'prompt' else 'schemas'}/{doc_type.doc_type_id}/{config_id}/{original_filename}"
+                    
+                    # Try to download directly using clean path
+                    if file_type == "prompt":
+                        file_content = s3_manager.download_prompt_by_id(
+                            company_id=company.company_id,
+                            doc_type_id=doc_type.doc_type_id,
+                            config_id=config_id,
+                            filename=original_filename
+                        )
+                    else:
+                        schema_data = s3_manager.download_schema_by_id(
+                            company_id=company.company_id,
+                            doc_type_id=doc_type.doc_type_id,
+                            config_id=config_id,
+                            filename=original_filename
+                        )
+                        if schema_data:
+                            import json
+                            file_content = json.dumps(schema_data, indent=2, ensure_ascii=False).encode('utf-8')
+                    
+                    if file_content is not None:
+                        successful_path = clean_s3_path
+                        filename = original_filename  # Use original filename for download
+                        logger.info(f"✅ Found using CLEAN path structure: {successful_path}")
+                        logger.info(f"📂 Download filename: {filename}")
+                    else:
+                        logger.info("⚠️ CLEAN path not found, trying fallback strategies...")
+                else:
+                    logger.info("⚠️ No original filename in database, trying fallback strategies...")
+                    
+            except Exception as e:
+                logger.info(f"⚠️ CLEAN path download failed: {e}")
+        
+        # === STRATEGY 1: CONFIG-SPECIFIC paths (most unique) ===
+        config_specific_paths = [
+            f"config_{config_id}",  # config_6, config_5 (unique per config)
+            f"company_{company.company_id}/doctype_{doc_type.doc_type_id}/config_{config_id}",  # company_1/doctype_11/config_6
+            f"c{company.company_id}/d{doc_type.doc_type_id}/cfg{config_id}",  # c1/d11/cfg6
+        ]
+        
+        # === STRATEGY 2: ID-based paths (stable) ===
+        id_based_paths = [
+            f"company_{company.company_id}/doctype_{doc_type.doc_type_id}",  # company_1/doctype_11
+            f"c{company.company_id}/d{doc_type.doc_type_id}",  # c1/d11 (shorter)
+            f"{company.company_id}_{doc_type.doc_type_id}",    # 1_11 (minimal)
+        ]
+        
+        # === STRATEGY 3: Current name-based paths ===
+        name_based_paths = []
+        
+        # Company variants
+        company_variants = [
+            company.company_code if company.company_code else "unknown",
+            company.company_code.lower() if company.company_code else "unknown",
+            company.company_code.upper() if company.company_code else "unknown",
+            company.company_name.lower().replace(" ", "_") if company.company_name else "unknown",
+            "hana",  # Common fallback
+        ]
+        
+        # Document type variants  
+        doc_type_variants = [
+            doc_type.type_code if doc_type.type_code else "unknown",
+            doc_type.type_name if doc_type.type_name else "unknown", 
+            # Handle common transformations
+            doc_type.type_code.replace("[Admin]", "[Finance]") if doc_type.type_code and "[Admin]" in doc_type.type_code else None,
+            doc_type.type_code.replace("[Finance]", "[Admin]") if doc_type.type_code and "[Finance]" in doc_type.type_code else None,
+            doc_type.type_code.replace("[Production]", "[Admin]") if doc_type.type_code and "[Production]" in doc_type.type_code else None,
+            # Remove prefixes and clean up
+            doc_type.type_code.replace("[Admin]_", "").replace("[Finance]_", "").replace("[Production]_", "") if doc_type.type_code else None,
+            # Common patterns
+            "[Finance]_hkbn_billing",  # Known working pattern
+            "hkbn_billing", "admin_hkbn_billing", "finance_hkbn_billing",
+        ]
+        
+        # Remove None and duplicates
+        doc_type_variants = list(set([v for v in doc_type_variants if v]))
+        
+        # Build all name-based combinations
+        for company_variant in set(company_variants):
+            for doc_type_variant in doc_type_variants:
+                name_based_paths.append(f"{company_variant}/{doc_type_variant}")
+        
+        # === STRATEGY 4: Enhanced wildcard search in S3 with disambiguation ===
+        def try_wildcard_search():
+            logger.info(f"🔍 Attempting enhanced wildcard search for config_id={config_id}")
+            # List all files and find matches by filename pattern
+            all_prompts = s3_manager.list_prompts() if file_type == "prompt" else []
+            all_schemas = s3_manager.list_schemas() if file_type == "schema" else []
+            all_files = all_prompts if file_type == "prompt" else all_schemas
+            
+            # Enhanced search terms with priority scoring
+            high_priority_terms = [
+                f"config_{config_id}",  # Highest priority: exact config match
+                f"cfg{config_id}",
+                str(config_id),
+            ]
+            
+            medium_priority_terms = [
+                f"{company.company_id}_{doc_type.doc_type_id}",
+                company.company_code.lower() if company.company_code else "",
+                doc_type.type_code.lower() if doc_type.type_code else "",
+            ]
+            
+            low_priority_terms = [
+                filename.replace('.txt', '').replace('.json', ''),
+                "hkbn", "billing",
+                company.company_name.lower() if company.company_name else "",
+                doc_type.type_name.lower().replace("[", "").replace("]", "") if doc_type.type_name else ""
+            ]
+            
+            # Find files with scoring system
+            scored_matches = []
+            
+            for file_info in all_files:
+                file_key = file_info['key'].lower()
+                score = 0
+                
+                # High priority matches (config-specific)
+                for term in high_priority_terms:
+                    if term and term.lower() in file_key:
+                        score += 100
+                        logger.info(f"🎯 HIGH PRIORITY match: {term} in {file_info['key']}")
+                
+                # Medium priority matches 
+                for term in medium_priority_terms:
+                    if term and term.lower() in file_key:
+                        score += 10
+                        logger.info(f"🔍 MEDIUM PRIORITY match: {term} in {file_info['key']}")
+                
+                # Low priority matches
+                for term in low_priority_terms:
+                    if term and term.lower() in file_key:
+                        score += 1
+                        logger.info(f"🔍 LOW PRIORITY match: {term} in {file_info['key']}")
+                
+                if score > 0:
+                    scored_matches.append((score, file_info))
+            
+            # Sort by score (highest first) and return best match
+            if scored_matches:
+                scored_matches.sort(key=lambda x: x[0], reverse=True)
+                best_score, best_file = scored_matches[0]
+                logger.info(f"🏆 Best match with score {best_score}: {best_file['key']}")
+                
+                # Extract company and doctype from the found path
+                path_parts = best_file['key'].split('/')
+                if len(path_parts) >= 2:
+                    found_company, found_doctype = path_parts[0], path_parts[1]
+                    found_filename = path_parts[-1]
+                    
+                    if file_type == "prompt":
+                        return s3_manager.download_prompt_raw(found_company, found_doctype, found_filename), f"{found_company}/{found_doctype}/{found_filename}"
+                    else:
+                        return s3_manager.download_schema_raw(found_company, found_doctype, found_filename), f"{found_company}/{found_doctype}/{found_filename}"
+            
+            logger.warning(f"❌ No matches found via wildcard search for config_id={config_id}")
+            return None, None
+        
+        # === EXECUTE SEARCH STRATEGIES ===
+        all_paths_to_try = config_specific_paths + id_based_paths + name_based_paths
+        
+        # Try all path combinations
+        for path in all_paths_to_try:
+            if file_content is not None:
+                break
+                
+            if '/' in path:
+                company_part, doc_type_part = path.split('/', 1)
+                logger.info(f"🔍 Trying path: {path}/{filename}")
+                
+                if file_type == "prompt":
+                    file_content = s3_manager.download_prompt_raw(company_part, doc_type_part, filename)
+                else:
+                    file_content = s3_manager.download_schema_raw(company_part, doc_type_part, filename)
+                
+                if file_content is not None:
+                    successful_path = f"{path}/{filename}"
+                    logger.info(f"✅ Found file at: {successful_path}")
+                    break
+        
+        # Try alternative filenames if primary filename fails - with unique identifiers
+        if file_content is None:
+            alternative_filenames = [
+                # Config-specific filenames (most unique)
+                f"config_{config_id}_{file_type}.{'txt' if file_type == 'prompt' else 'json'}",  # config_6_prompt.txt
+                f"cfg{config_id}_{file_type}.{'txt' if file_type == 'prompt' else 'json'}",      # cfg6_prompt.txt
+                f"{config_id}_{file_type}.{'txt' if file_type == 'prompt' else 'json'}",        # 6_prompt.txt
+                
+                # Company+DocType+Config combinations
+                f"{company.company_id}_{doc_type.doc_type_id}_{config_id}_{file_type}.{'txt' if file_type == 'prompt' else 'json'}",  # 2_3_6_prompt.txt
+                f"c{company.company_id}_d{doc_type.doc_type_id}_cfg{config_id}_{file_type}.{'txt' if file_type == 'prompt' else 'json'}",  # c2_d3_cfg6_prompt.txt
+                
+                # Timestamp-based alternatives
+                f"{filename.split('.')[0]}_config_{config_id}.{'txt' if file_type == 'prompt' else 'json'}",  # invoice_prompt_config_6.txt
+                f"{config_id}_{filename}",  # 6_invoice_prompt.txt
+                
+                # Original alternatives
+                "prompt.txt" if file_type == "prompt" else "schema.json",
+                f"{company.company_id}_{doc_type.doc_type_id}_{file_type}.{'txt' if file_type == 'prompt' else 'json'}",
+                filename.replace(" ", "_").replace(".", "_").replace("_txt", ".txt").replace("_json", ".json"),
+            ]
+            
+            for alt_filename in alternative_filenames:
+                if file_content is not None:
+                    break
+                    
+                for path in all_paths_to_try:
+                    if file_content is not None:
+                        break
+                    
+                    if '/' in path:
+                        company_part, doc_type_part = path.split('/', 1)
+                        logger.info(f"🔍 Trying alternative: {path}/{alt_filename}")
+                        
+                        if file_type == "prompt":
+                            file_content = s3_manager.download_prompt_raw(company_part, doc_type_part, alt_filename)
+                        else:
+                            file_content = s3_manager.download_schema_raw(company_part, doc_type_part, alt_filename)
+                        
+                        if file_content is not None:
+                            filename = alt_filename
+                            successful_path = f"{path}/{alt_filename}"
+                            logger.info(f"✅ Found file with alternative name: {successful_path}")
+                            break
+        
+        # Last resort: wildcard search
+        if file_content is None:
+            logger.info("🔍 Attempting wildcard search as last resort")
+            file_content, successful_path = try_wildcard_search()
+            if successful_path:
+                filename = successful_path.split('/')[-1]
+        
+        if file_content is None:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"{file_type.title()} file not found in S3 for {company.company_code}/{doc_type.type_code}"
+            )
+        
+        # PRIORITY 1: Try to get original filename from database (most reliable)
+        original_filename = filename  # fallback to current filename
+        try:
+            if file_type == "prompt" and config.original_prompt_filename:
+                original_filename = config.original_prompt_filename
+                logger.info(f"📁 Using original filename from database: {original_filename}")
+            elif file_type == "schema" and config.original_schema_filename:
+                original_filename = config.original_schema_filename
+                logger.info(f"📁 Using original filename from database: {original_filename}")
+            else:
+                logger.info(f"⚠️ No original filename in database for {file_type}, trying S3 metadata")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to get original filename from database: {e}")
+        
+        # PRIORITY 2: Try to get original filename from S3 metadata (backup method)
+        # Only try S3 metadata if database didn't provide original filename
+        if (original_filename == filename and successful_path):
+            try:
+                # Extract the S3 key from successful_path and get file info
+                s3_key = successful_path
+                if s3_key.startswith('companies/'):
+                    # For ID-based paths, use company file manager to get proper folder
+                    folder_type = "prompts" if file_type == "prompt" else "schemas"
+                    file_info = s3_manager.get_file_info(s3_key.replace("companies/", ""), folder_type)
+                else:
+                    # For legacy paths, use the path directly
+                    folder_type = "prompts" if file_type == "prompt" else "schemas"
+                    file_info = s3_manager.get_file_info(s3_key, folder_type)
+                
+                if file_info and "metadata" in file_info:
+                    metadata = file_info["metadata"]
+                    if "original_filename" in metadata:
+                        original_filename = metadata["original_filename"]
+                        logger.info(f"📁 Retrieved original filename from S3 metadata: {original_filename}")
+                    else:
+                        logger.info("⚠️ No original_filename in S3 metadata, using stored filename")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to retrieve original filename from S3 metadata: {e}")
+        
+        # Create temporary file for FileResponse
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{original_filename}") as temp_file:
+            # Ensure file_content is bytes for writing
+            if isinstance(file_content, str):
+                temp_file.write(file_content.encode('utf-8'))
+            else:
+                temp_file.write(file_content)
+            temp_file_path = temp_file.name
+        
+        # Determine content type
+        content_type = "text/plain" if file_type == "prompt" else "application/json"
+        
+        logger.info(f"✅ S3 file download successful: {company.company_code}/{doc_type.type_code}/{original_filename}")
+        return FileResponse(
+            path=temp_file_path,
+            filename=original_filename,
+            media_type=content_type
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ S3-only config file download failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to download {file_type} file from S3: {str(e)}")
+
+
 # File upload endpoint
 @app.post("/upload", response_model=dict)
 async def upload_file(file: UploadFile = File(...), path: str = Form(...)):
+    import json  # Import here to ensure availability for exception handling
+    
     try:
-        # Create directories if they don't exist
-        directory = os.path.join("uploads", os.path.dirname(path))
-        os.makedirs(directory, exist_ok=True)
+        # Check if this is a prompt or schema file for S3 upload
+        path_parts = path.split('/')
+        
+        # NEW ID-BASED FORMAT: document_type/{doc_type_id}/{company_id}/prompt|schema/{filename}
+        if (len(path_parts) >= 5 and 
+            path_parts[0] == "document_type" and 
+            path_parts[3] in ["prompt", "schema"]):
+            
+            # Parse IDs from path
+            try:
+                doc_type_id = int(path_parts[1])  # Now expecting ID, not code
+                company_id = int(path_parts[2])   # Now expecting ID, not code  
+            except ValueError:
+                # Fallback to legacy name-based format for compatibility
+                doc_type_code = path_parts[1]
+                company_code = path_parts[2]
+                
+                # Convert codes to IDs by querying database
+                db = next(get_db())
+                try:
+                    company = db.query(Company).filter(Company.company_code == company_code).first()
+                    doc_type = db.query(DocumentType).filter(DocumentType.type_code == doc_type_code).first()
+                    
+                    if not company or not doc_type:
+                        raise HTTPException(status_code=404, detail="Company or document type not found")
+                    
+                    company_id = company.company_id
+                    doc_type_id = doc_type.doc_type_id
+                finally:
+                    db.close()
+            
+            file_type = path_parts[3]  # "prompt" or "schema"
+            filename = path_parts[4]
+            
+            logger.info(f"Uploading {file_type} file using ID-based path: company_id={company_id}, doc_type_id={doc_type_id}, filename={filename}")
+            
+            # Parse config_id from filename if it follows the new format
+            config_id = None
+            if filename.startswith('config_'):
+                try:
+                    config_id = int(filename.split('_')[1])
+                except (IndexError, ValueError):
+                    logger.warning(f"Could not parse config_id from filename: {filename}")
+            
+            # Get S3 manager for direct ID-based upload
+            s3_manager = get_s3_manager()
+            if not s3_manager:
+                raise HTTPException(status_code=500, detail="S3 storage not available")
+            
+            # Read file content
+            file_content = await file.read()
+            
+            # Use new ID-based upload methods
+            if file_type == "prompt":
+                # For prompt files, decode to text
+                content_text = file_content.decode('utf-8')
+                
+                # Use original filename from the upload, not the path filename
+                original_filename = file.filename if hasattr(file, 'filename') else filename
+                
+                # Prepare metadata with original filename
+                upload_metadata = {
+                    "original_filename": original_filename,
+                    "upload_source": "admin_config"
+                }
+                
+                if config_id:
+                    # Use ID-based method with config_id and original filename
+                    s3_path = s3_manager.upload_prompt_by_id(
+                        company_id=company_id,
+                        doc_type_id=doc_type_id,
+                        config_id=config_id,
+                        prompt_content=content_text,
+                        filename=original_filename,  # Use original filename instead
+                        metadata=upload_metadata
+                    )
+                else:
+                    # Use generic company file method with original filename
+                    s3_path = s3_manager.upload_company_file(
+                        company_id=company_id,
+                        file_type=FileType.PROMPT,
+                        content=content_text,
+                        filename=original_filename,  # Use original filename instead
+                        doc_type_id=doc_type_id,
+                        metadata=upload_metadata
+                    )
+                    
+                if s3_path:
+                    full_s3_path = f"s3://{s3_manager.bucket_name}/{s3_path}"
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to upload prompt to S3")
+                
+            else:  # schema
+                # For schema files, parse JSON
+                content_text = file_content.decode('utf-8')
+                try:
+                    schema_data = json.loads(content_text)
+                except json.JSONDecodeError as e:
+                    raise HTTPException(status_code=400, detail=f"Invalid JSON format: {str(e)}")
+                
+                # Use original filename from the upload, not the path filename
+                original_filename = file.filename if hasattr(file, 'filename') else filename
+                
+                # Prepare metadata with original filename
+                upload_metadata = {
+                    "original_filename": original_filename,
+                    "upload_source": "admin_config"
+                }
+                
+                if config_id:
+                    # Use ID-based method with config_id and original filename
+                    s3_path = s3_manager.upload_schema_by_id(
+                        company_id=company_id,
+                        doc_type_id=doc_type_id,
+                        config_id=config_id,
+                        schema_data=schema_data,
+                        filename=original_filename,  # Use original filename instead
+                        metadata=upload_metadata
+                    )
+                else:
+                    # Use generic company file method with original filename
+                    s3_path = s3_manager.upload_company_file(
+                        company_id=company_id,
+                        file_type=FileType.SCHEMA,
+                        content=content_text,
+                        filename=original_filename,  # Use original filename instead
+                        doc_type_id=doc_type_id,
+                        metadata=upload_metadata
+                    )
+                
+                if s3_path:
+                    full_s3_path = f"s3://{s3_manager.bucket_name}/{s3_path}"
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to upload schema to S3")
+            
+            logger.info(f"✅ Successfully uploaded {file_type} using clean path structure: {full_s3_path}")
+            logger.info(f"🎯 Clean S3 path format: companies/{company_id}/{file_type}s/{doc_type_id}/{config_id if config_id else 'temp'}/{original_filename}")
+            
+            # Auto-update configuration with file path if config_id exists
+            if config_id:
+                try:
+                    db = next(get_db())
+                    try:
+                        config = db.query(CompanyDocumentConfig).filter(
+                            CompanyDocumentConfig.config_id == config_id
+                        ).first()
+                        
+                        if config:
+                            # Store clean S3 path and original filename
+                            original_filename = file.filename if hasattr(file, 'filename') else filename
+                            
+                            if file_type == "prompt":
+                                config.prompt_path = full_s3_path
+                                config.original_prompt_filename = original_filename
+                                logger.info(f"📝 Updated config {config_id} with clean prompt_path: {full_s3_path} and original_filename: {original_filename}")
+                            else:  # schema
+                                config.schema_path = full_s3_path
+                                config.original_schema_filename = original_filename
+                                logger.info(f"📝 Updated config {config_id} with clean schema_path: {full_s3_path} and original_filename: {original_filename}")
+                            
+                            db.commit()
+                        else:
+                            logger.warning(f"⚠️ Config {config_id} not found for path update")
+                    finally:
+                        db.close()
+                except Exception as e:
+                    logger.error(f"❌ Failed to update config {config_id} with file path: {e}")
+                    # Don't fail the upload if config update fails
+            
+            return {"file_path": full_s3_path}
+        
+        else:
+            # For other file types, use local storage (backward compatibility)
+            logger.info(f"Uploading non-prompt/schema file to local storage: {path}")
+            
+            # Create directories if they don't exist
+            directory = os.path.join("uploads", os.path.dirname(path))
+            os.makedirs(directory, exist_ok=True)
 
-        # Generate full file path
-        file_path = os.path.join("uploads", path)
+            # Generate full file path
+            file_path = os.path.join("uploads", path)
 
-        # Save file
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            # Save file
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
 
-        return {"file_path": file_path}
+            return {"file_path": file_path}
 
+    except json.JSONDecodeError as e:
+        logger.error(f"Error parsing schema JSON: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Invalid JSON format in schema file: {str(e)}")
+    except UnicodeDecodeError as e:
+        logger.error(f"Error decoding file content: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"File encoding error - ensure UTF-8 encoding: {str(e)}")
     except Exception as e:
         logger.error(f"Error uploading file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
@@ -1477,8 +2246,6 @@ async def upload_schema(
 async def validate_prompt_schema(company_code: str, doc_type_code: str):
     """Validate that both prompt and schema exist and are valid for a company/doc_type combination"""
     try:
-        prompt_schema_manager = get_prompt_schema_manager()
-        
         # Load both prompt and schema
         prompt_content, schema_data = await load_prompt_and_schema(company_code, doc_type_code)
         
@@ -2205,6 +2972,129 @@ def get_file_by_path(path: str, db: Session = Depends(get_db)):
         "file_path": file.file_path,
         "file_type": file.file_type,
     }
+
+
+# Force Delete API Endpoints
+@app.delete("/document-types/{doc_type_id}/force-delete")
+def force_delete_document_type(
+    doc_type_id: int,
+    db: Session = Depends(get_db)
+):
+    """強制刪除文檔類型及其所有依賴"""
+    try:
+        force_delete_manager = ForceDeleteManager(db)
+        result = force_delete_manager.force_delete_document_type(doc_type_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Force delete document type failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Force delete failed: {str(e)}"
+        )
+
+
+@app.delete("/companies/{company_id}/force-delete")
+def force_delete_company(
+    company_id: int,
+    db: Session = Depends(get_db)
+):
+    """強制刪除公司及其所有依賴"""
+    try:
+        force_delete_manager = ForceDeleteManager(db)
+        result = force_delete_manager.force_delete_company(company_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Force delete company failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Force delete failed: {str(e)}"
+        )
+
+
+@app.delete("/configs/{config_id}/force-delete")
+def force_delete_config(
+    config_id: int,
+    db: Session = Depends(get_db)
+):
+    """強制刪除配置及其相關文件"""
+    try:
+        force_delete_manager = ForceDeleteManager(db)
+        result = force_delete_manager.force_delete_config(config_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Force delete config failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Force delete failed: {str(e)}"
+        )
+
+
+# 為 Configurations 添加依賴檢查端點
+@app.get("/configs/{config_id}/dependencies")
+def get_config_dependencies(config_id: int, db: Session = Depends(get_db)):
+    """獲取配置的依賴信息"""
+    try:
+        from utils.dependency_checker import DependencyChecker
+        
+        # 獲取配置信息
+        config = db.query(CompanyDocumentConfig).filter(
+            CompanyDocumentConfig.config_id == config_id
+        ).first()
+        
+        if not config:
+            raise HTTPException(status_code=404, detail="Configuration not found")
+        
+        # 檢查是否有相關的處理任務（通過 company_id 和 doc_type_id）
+        processing_jobs_count = db.query(ProcessingJob).filter(
+            ProcessingJob.company_id == config.company_id,
+            ProcessingJob.doc_type_id == config.doc_type_id
+        ).count()
+        
+        batch_jobs_count = db.query(BatchJob).filter(
+            BatchJob.company_id == config.company_id,
+            BatchJob.doc_type_id == config.doc_type_id
+        ).count()
+        
+        s3_files_count = 0
+        if config.prompt_path and config.prompt_path.startswith('s3://'):
+            s3_files_count += 1
+        if config.schema_path and config.schema_path.startswith('s3://'):
+            s3_files_count += 1
+        
+        total_dependencies = processing_jobs_count + batch_jobs_count + s3_files_count
+        can_delete = total_dependencies == 0
+        
+        config_name = f"{config.company.company_name} - {config.document_type.type_name}"
+        
+        dependencies = {
+            "exists": True,
+            "config_name": config_name,
+            "can_delete": can_delete,
+            "total_dependencies": total_dependencies,
+            "dependencies": {
+                "processing_jobs": processing_jobs_count,
+                "batch_jobs": batch_jobs_count,
+                "s3_files": s3_files_count
+            },
+            "blocking_message": None if can_delete else f"Cannot delete configuration '{config_name}': {processing_jobs_count} processing job(s), {batch_jobs_count} batch job(s), {s3_files_count} S3 file(s) exist."
+        }
+        
+        return dependencies
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking config dependencies: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check dependencies: {str(e)}"
+        )
 
 
 if __name__ == "__main__":

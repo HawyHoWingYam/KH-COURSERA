@@ -11,10 +11,10 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
 
-  // Note: allowedDevOrigins will be needed in future Next.js versions
-  // experimental: {
-  //   allowedDevOrigins: ['52.220.245.213']
-  // },
+  // Configure allowed development origins to prevent cross-origin warnings
+  experimental: {
+    allowedDevOrigins: ['18.142.68.48', '52.220.245.213']
+  },
 
   // Allow cross-origin requests to our API
   async rewrites() {

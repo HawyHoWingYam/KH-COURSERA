@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { DocumentType } from '@/lib/api';
+import SmartDeleteDialog from '@/components/ui/SmartDeleteDialog';
 // Get base URL and port from config
 const API_BASE_URL = '/api';
 
@@ -46,6 +47,15 @@ export default function DocumentTypesPage() {
   
   const [isCreating, setIsCreating] = useState(false);
   const [editingDocType, setEditingDocType] = useState<DocumentType | null>(null);
+  
+  // Smart delete dialog state
+  const [deleteDialog, setDeleteDialog] = useState<{
+    isOpen: boolean;
+    entity: { type: 'document-type'; id: number; name: string } | null;
+  }>({
+    isOpen: false,
+    entity: null,
+  });
   
   const [formData, setFormData] = useState({
     type_name: '',
@@ -122,19 +132,32 @@ export default function DocumentTypesPage() {
     }
   };
   
-  // Handle document type deletion
-  const handleDelete = async (id: number) => {
-    if (!window.confirm('Are you sure you want to delete this document type?')) {
-      return;
-    }
-    
-    try {
-      await deleteDocumentType(id);
-      setDocumentTypes(prev => prev.filter(dt => dt.doc_type_id !== id));
-    } catch (err) {
-      setError('Failed to delete document type');
-      console.error(err);
-    }
+  // Handle document type deletion - now uses smart delete dialog
+  const handleDelete = (docType: DocumentType) => {
+    setDeleteDialog({
+      isOpen: true,
+      entity: {
+        type: 'document-type',
+        id: docType.doc_type_id,
+        name: docType.type_name,
+      },
+    });
+  };
+
+  // Handle successful deletion
+  const handleDeleteSuccess = () => {
+    setDocumentTypes(prev => 
+      prev.filter(dt => dt.doc_type_id !== deleteDialog.entity?.id)
+    );
+    setError(''); // Clear any previous errors
+  };
+
+  // Close delete dialog
+  const handleDeleteCancel = () => {
+    setDeleteDialog({
+      isOpen: false,
+      entity: null,
+    });
   };
   
   // Cancel editing/creating
@@ -282,7 +305,7 @@ export default function DocumentTypesPage() {
                       Edit
                     </button>
                     <button
-                      onClick={() => handleDelete(docType.doc_type_id)}
+                      onClick={() => handleDelete(docType)}
                       className="text-red-600 hover:text-red-900"
                     >
                       Delete
@@ -294,6 +317,14 @@ export default function DocumentTypesPage() {
           </table>
         </div>
       )}
+
+      {/* Smart Delete Dialog */}
+      <SmartDeleteDialog
+        isOpen={deleteDialog.isOpen}
+        onClose={handleDeleteCancel}
+        onSuccess={handleDeleteSuccess}
+        entity={deleteDialog.entity!}
+      />
     </div>
   );
 } 

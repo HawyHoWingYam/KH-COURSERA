@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { DocumentType, Company } from '@/lib/api';
+import SmartDeleteDialog from '@/components/ui/SmartDeleteDialog';
 
 // Define ConfigType for document configurations
 interface ConfigType {
@@ -98,6 +99,15 @@ export default function ConfigsPage() {
 
     const [promptFile, setPromptFile] = useState<File | null>(null);
     const [schemaFile, setSchemaFile] = useState<File | null>(null);
+    
+    // Smart delete dialog state
+    const [deleteDialog, setDeleteDialog] = useState<{
+        isOpen: boolean;
+        entity: { type: 'config'; id: number; name: string } | null;
+    }>({
+        isOpen: false,
+        entity: null,
+    });
 
     // Load configs, companies and document types on mount
     useEffect(() => {
@@ -181,7 +191,11 @@ export default function ConfigsPage() {
                     throw new Error('Invalid company or document type');
                 }
 
-                const promptPath = `document_type/${docType.type_code}/${company.company_code}/prompt/${promptFile.name}`;
+                // Use original filename - let backend handle uniqueness via S3 path structure
+                const filename = promptFile.name;
+
+                // NEW ID-BASED PATH FORMAT: document_type/{doc_type_id}/{company_id}/prompt/{filename}
+                const promptPath = `document_type/${docType.doc_type_id}/${company.company_id}/prompt/${filename}`;
                 updatedFormData.prompt_path = await uploadFile(promptFile, promptPath);
             }
 
@@ -193,7 +207,11 @@ export default function ConfigsPage() {
                     throw new Error('Invalid company or document type');
                 }
 
-                const schemaPath = `document_type/${docType.type_code}/${company.company_code}/schema/${schemaFile.name}`;
+                // Use original filename - let backend handle uniqueness via S3 path structure
+                const filename = schemaFile.name;
+
+                // NEW ID-BASED PATH FORMAT: document_type/{doc_type_id}/{company_id}/schema/{filename}
+                const schemaPath = `document_type/${docType.doc_type_id}/${company.company_id}/schema/${filename}`;
                 updatedFormData.schema_path = await uploadFile(schemaFile, schemaPath);
             }
 
@@ -230,19 +248,33 @@ export default function ConfigsPage() {
         }
     };
 
-    // Handle config deletion
-    const handleDelete = async (id: number) => {
-        if (!window.confirm('Are you sure you want to delete this configuration?')) {
-            return;
-        }
+    // Handle config deletion - now uses smart delete dialog
+    const handleDelete = (config: ConfigType) => {
+        const configName = `${config.company_name || 'Unknown Company'} - ${config.type_name || 'Unknown Type'}`;
+        setDeleteDialog({
+            isOpen: true,
+            entity: {
+                type: 'config',
+                id: config.config_id,
+                name: configName,
+            },
+        });
+    };
 
-        try {
-            await deleteConfig(id);
-            setConfigs(prev => prev.filter(c => c.config_id !== id));
-        } catch (err) {
-            setError('Failed to delete configuration');
-            console.error(err);
-        }
+    // Handle successful deletion
+    const handleDeleteSuccess = () => {
+        setConfigs(prev => 
+            prev.filter(c => c.config_id !== deleteDialog.entity?.id)
+        );
+        setError(''); // Clear any previous errors
+    };
+
+    // Close delete dialog
+    const handleDeleteCancel = () => {
+        setDeleteDialog({
+            isOpen: false,
+            entity: null,
+        });
     };
 
     // Cancel editing/creating
@@ -269,6 +301,57 @@ export default function ConfigsPage() {
     const getDocTypeName = (id: number) => {
         const docType = documentTypes.find(dt => dt.doc_type_id === id);
         return docType?.type_name || 'Unknown';
+    };
+
+    // Helper function to display S3 paths in a user-friendly way
+    const formatFilePath = (path: string) => {
+        if (path.startsWith('s3://')) {
+            // Extract filename from S3 URI: s3://prompts/company/doctype/filename.txt
+            const parts = path.split('/');
+            const filename = parts[parts.length - 1];
+            const fileType = parts.includes('prompts') ? '📄 Prompt' : '🔧 Schema';
+            return `${fileType}: ${filename}`;
+        }
+        // For local paths, show the filename part
+        const parts = path.split('/');
+        return parts[parts.length - 1] || path;
+    };
+
+    // Download file function
+    const downloadFile = async (configId: number, fileType: 'prompt' | 'schema') => {
+        try {
+            const response = await fetch(`${API_BASE_URL}/configs/${configId}/download/${fileType}`);
+            
+            if (!response.ok) {
+                throw new Error(`Failed to download ${fileType} file`);
+            }
+
+            // Get the filename from the response headers or use a default
+            const contentDisposition = response.headers.get('content-disposition');
+            let filename = `${fileType}.${fileType === 'prompt' ? 'txt' : 'json'}`;
+            
+            if (contentDisposition) {
+                const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                if (filenameMatch && filenameMatch[1]) {
+                    filename = filenameMatch[1].replace(/['"]/g, '');
+                }
+            }
+
+            // Create blob and download
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+
+        } catch (err) {
+            setError(`Failed to download ${fileType} file`);
+            console.error(err);
+        }
     };
 
     return (
@@ -343,13 +426,23 @@ export default function ConfigsPage() {
                             <label className="block text-gray-700 mb-2">Prompt File(txt)</label>
                             {editingConfig && !promptFile ? (
                                 <div className="flex items-center mb-2">
-                                    <span className="text-gray-600 mr-2">{formData.prompt_path}</span>
+                                    <span className="text-gray-600 mr-2 text-sm" title={formData.prompt_path}>
+                                        Current: {formatFilePath(formData.prompt_path)}
+                                    </span>
                                     <button
                                         type="button"
                                         onClick={() => document.getElementById('prompt_file')?.click()}
-                                        className="text-blue-600 hover:text-blue-800 text-sm"
+                                        className="text-blue-600 hover:text-blue-800 text-sm mr-2"
                                     >
                                         Replace
+                                    </button>
+                                    <span className="text-gray-400 text-sm mr-2">|</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => downloadFile(editingConfig.config_id, 'prompt')}
+                                        className="text-green-600 hover:text-green-800 text-sm"
+                                    >
+                                        Download
                                     </button>
                                 </div>
                             ) : null}
@@ -374,13 +467,23 @@ export default function ConfigsPage() {
                             <label className="block text-gray-700 mb-2">Schema File(json)</label>
                             {editingConfig && !schemaFile ? (
                                 <div className="flex items-center mb-2">
-                                    <span className="text-gray-600 mr-2">{formData.schema_path}</span>
+                                    <span className="text-gray-600 mr-2 text-sm" title={formData.schema_path}>
+                                        Current: {formatFilePath(formData.schema_path)}
+                                    </span>
                                     <button
                                         type="button"
                                         onClick={() => document.getElementById('schema_file')?.click()}
-                                        className="text-blue-600 hover:text-blue-800 text-sm"
+                                        className="text-blue-600 hover:text-blue-800 text-sm mr-2"
                                     >
                                         Replace
+                                    </button>
+                                    <span className="text-gray-400 text-sm mr-2">|</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => downloadFile(editingConfig.config_id, 'schema')}
+                                        className="text-green-600 hover:text-green-800 text-sm"
+                                    >
+                                        Download
                                     </button>
                                 </div>
                             ) : null}
@@ -479,11 +582,11 @@ export default function ConfigsPage() {
                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                         {getDocTypeName(config.doc_type_id)}
                                     </td>
-                                    <td className="px-6 py-4 text-sm text-gray-500 max-w-xs truncate">
-                                        {config.prompt_path}
+                                    <td className="px-6 py-4 text-sm text-gray-500 max-w-xs truncate" title={config.prompt_path}>
+                                        {formatFilePath(config.prompt_path)}
                                     </td>
-                                    <td className="px-6 py-4 text-sm text-gray-500 max-w-xs truncate">
-                                        {config.schema_path}
+                                    <td className="px-6 py-4 text-sm text-gray-500 max-w-xs truncate" title={config.schema_path}>
+                                        {formatFilePath(config.schema_path)}
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap">
                                         <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${config.active
@@ -501,7 +604,7 @@ export default function ConfigsPage() {
                                             Edit
                                         </button>
                                         <button
-                                            onClick={() => handleDelete(config.config_id)}
+                                            onClick={() => handleDelete(config)}
                                             className="text-red-600 hover:text-red-900"
                                         >
                                             Delete
@@ -513,6 +616,14 @@ export default function ConfigsPage() {
                     </table>
                 </div>
             )}
+
+            {/* Smart Delete Dialog */}
+            <SmartDeleteDialog
+                isOpen={deleteDialog.isOpen}
+                onClose={handleDeleteCancel}
+                onSuccess={handleDeleteSuccess}
+                entity={deleteDialog.entity!}
+            />
         </div>
     );
 }

@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { fetchJobStatus, fetchJobFiles, getFileDownloadUrl, FileInfo } from '@/lib/api';
+import { fetchJobStatus, fetchJobFiles, getFileDownloadUrl, fetchFilePreview, FileInfo } from '@/lib/api';
 import type { Job } from '@/lib/api';
 
 // Add these imports for the preview components
@@ -21,6 +21,8 @@ export default function JobDetails() {
   const [wsMessages, setWsMessages] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  const [previewStates, setPreviewStates] = useState<Record<number, boolean>>({});
+  const [filePreviewData, setFilePreviewData] = useState<Record<number, { loading?: boolean; error?: string; [key: string]: unknown }>>({});
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -125,12 +127,51 @@ export default function JobDetails() {
     }
   }, [jobId, job?.status]);
 
+  // Toggle preview for a file and fetch content if needed
+  const togglePreview = async (fileId: number) => {
+    const isCurrentlyShown = previewStates[fileId];
+    
+    // Toggle the preview state
+    setPreviewStates(prev => ({ ...prev, [fileId]: !isCurrentlyShown }));
+    
+    // If we're showing the preview and don't have data yet, fetch it
+    if (!isCurrentlyShown && !filePreviewData[fileId]) {
+      try {
+        // Set loading state
+        setFilePreviewData(prev => ({ ...prev, [fileId]: { loading: true } }));
+        
+        const data = await fetchFilePreview(fileId);
+        
+        // For Excel files, we need to handle the blob differently
+        if (data?.type === 'excel') {
+          // For now, show a message that Excel preview is not fully implemented
+          setFilePreviewData(prev => ({ 
+            ...prev, 
+            [fileId]: { 
+              error: 'Excel preview is not yet fully implemented. Please download the file to view it.' 
+            } 
+          }));
+        } else {
+          setFilePreviewData(prev => ({ ...prev, [fileId]: data }));
+        }
+      } catch (error) {
+        console.error('Failed to fetch preview data:', error);
+        setFilePreviewData(prev => ({ 
+          ...prev, 
+          [fileId]: { 
+            error: `Failed to load preview: ${error instanceof Error ? error.message : 'Unknown error'}` 
+          } 
+        }));
+      }
+    }
+  };
 
   // Fix type annotations for renderPreview function
   const renderPreview = (file: FileInfo) => {
     const data = filePreviewData[file.file_id];
     
     if (!data) return <div className="text-center py-4">Loading preview...</div>;
+    if (data.loading) return <div className="text-center py-4">Loading preview...</div>;
     if (data.error) return <div className="text-red-600 py-4">{data.error}</div>;
     
     if (file.file_name.endsWith('.json')) {
@@ -271,14 +312,14 @@ export default function JobDetails() {
                       </p>
                     </div>
                     <div className="flex space-x-2">
-                      {/* {(file.file_name.endsWith('.json') || file.file_name.endsWith('.xlsx') || file.file_name.endsWith('.xls')) && (
+                      {(file.file_name.endsWith('.json') || file.file_name.endsWith('.xlsx') || file.file_name.endsWith('.xls')) && (
                         <button
-                          onClick={() => togglePreview(file.file_id, file.file_type)}
+                          onClick={() => togglePreview(file.file_id)}
                           className="bg-gray-100 text-gray-700 py-2 px-4 rounded hover:bg-gray-200"
                         >
                           {previewStates[file.file_id] ? 'Hide Preview' : 'Show Preview'}
                         </button>
-                      )} */}
+                      )}
                       <a
                         href={getFileDownloadUrl(file.file_id)}
                         target="_blank"

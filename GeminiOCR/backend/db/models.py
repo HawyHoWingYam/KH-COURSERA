@@ -118,10 +118,12 @@ class CompanyDocumentConfig(Base):
     doc_type_id = Column(
         Integer, ForeignKey("document_types.doc_type_id"), nullable=False
     )
-    prompt_path = Column(String(500), nullable=False, comment='Path to prompt file (supports local paths and S3 URIs like s3://bucket/prompts/...)')
-    schema_path = Column(String(500), nullable=False, comment='Path to schema file (supports local paths and S3 URIs like s3://bucket/schemas/...)')
+    prompt_path = Column(String(500), nullable=True, comment='Path to prompt file (supports local paths and S3 URIs like s3://bucket/prompts/...)')
+    schema_path = Column(String(500), nullable=True, comment='Path to schema file (supports local paths and S3 URIs like s3://bucket/schemas/...)')
     storage_type = Column(Enum(StorageType), nullable=False, default=StorageType.local, comment='Storage backend type for prompts and schemas')
     storage_metadata = Column(JSON, nullable=True, comment='Additional metadata for storage backend (e.g., S3 bucket info, cache settings)')
+    original_prompt_filename = Column(String(255), nullable=True, comment='Original filename of uploaded prompt file (e.g., invoice_prompt.txt)')
+    original_schema_filename = Column(String(255), nullable=True, comment='Original filename of uploaded schema file (e.g., invoice_schema.json)')
     active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

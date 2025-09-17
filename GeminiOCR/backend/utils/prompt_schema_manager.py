@@ -10,17 +10,15 @@ Prompt and Schema Management System
 - 支持批量操作和迁移
 """
 
-import os
 import json
 import logging
-import hashlib
-from typing import Optional, Dict, List, Tuple, Union
+from typing import Optional, Dict, Tuple, Union
 from datetime import datetime, timedelta
 from pathlib import Path
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
-from .s3_storage import S3StorageManager, get_s3_manager, is_s3_enabled
+from .s3_storage import get_s3_manager, is_s3_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +211,9 @@ class PromptSchemaManager:
                 self.config = self._get_default_config()
         else:
             self.config = config
+            
+        # 初始化数据库会话（用于查询配置路径）
+        self.db_session = None
         
         # 初始化组件
         self.s3_manager = get_s3_manager()
@@ -246,7 +247,7 @@ class PromptSchemaManager:
         validation_config = self.config.get("validation", {})
         self.validator.update_config(validation_config)
         
-        logger.info(f"✅ PromptSchemaManager初始化完成")
+        logger.info("✅ PromptSchemaManager初始化完成")
         logger.info(f"   - 存储后端: {self.config.get('storage_backend', 'auto')}")
         logger.info(f"   - S3启用: {is_s3_enabled()}")
         logger.info(f"   - 缓存启用: {self.cache is not None}")
@@ -317,6 +318,86 @@ class PromptSchemaManager:
             logger.error(f"❌ 加载本地备份失败: {e}")
             return None
     
+    def _get_db_session(self):
+        """获取数据库会话"""
+        if self.db_session is None:
+            try:
+                from db.database import get_db
+                self.db_session = next(get_db())
+            except Exception as e:
+                logger.error(f"❌ 获取数据库会话失败: {e}")
+                return None
+        return self.db_session
+    
+    def _get_config_paths(self, company_code: str, doc_type_code: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        从数据库获取公司文档配置的路径
+        
+        Args:
+            company_code: 公司代码
+            doc_type_code: 文档类型代码
+            
+        Returns:
+            Tuple[Optional[str], Optional[str]]: (prompt_path, schema_path)
+        """
+        try:
+            db = self._get_db_session()
+            if db is None:
+                return None, None
+                
+            from db.models import Company, DocumentType, CompanyDocumentConfig
+            
+            # 查询配置
+            config = db.query(CompanyDocumentConfig).join(
+                Company, CompanyDocumentConfig.company_id == Company.company_id
+            ).join(
+                DocumentType, CompanyDocumentConfig.doc_type_id == DocumentType.doc_type_id
+            ).filter(
+                Company.company_code == company_code,
+                DocumentType.type_code == doc_type_code,
+                CompanyDocumentConfig.active == True
+            ).first()
+            
+            if config:
+                return config.prompt_path, config.schema_path
+            else:
+                logger.warning(f"⚠️ 未找到配置: {company_code}/{doc_type_code}")
+                return None, None
+                
+        except Exception as e:
+            logger.error(f"❌ 查询数据库配置失败: {e}")
+            return None, None
+    
+    def _extract_s3_key_from_path(self, s3_path: str) -> Optional[str]:
+        """
+        从完整S3路径中提取key
+        
+        Args:
+            s3_path: 完整S3路径，如 s3://bucket/key/path
+            
+        Returns:
+            Optional[str]: S3 key部分，如 key/path
+        """
+        try:
+            if not s3_path or not s3_path.startswith('s3://'):
+                return None
+                
+            # 移除s3://前缀
+            path_without_protocol = s3_path[5:]
+            
+            # 找到第一个/，分离bucket和key
+            slash_index = path_without_protocol.find('/')
+            if slash_index == -1:
+                return None
+                
+            # 返回key部分
+            key = path_without_protocol[slash_index + 1:]
+            return key if key else None
+            
+        except Exception as e:
+            logger.error(f"❌ 解析S3路径失败: {e}")
+            return None
+    
     async def get_prompt(self, company_code: str, doc_type_code: str, filename: str = "prompt.txt") -> Optional[str]:
         """
         获取prompt内容
@@ -336,8 +417,36 @@ class PromptSchemaManager:
                 if cached_content is not None:
                     return cached_content
             
-            # 2. 尝试从S3获取
-            if self.s3_manager:
+            # 2. 从数据库获取实际配置路径
+            prompt_path, _ = self._get_config_paths(company_code, doc_type_code)
+            
+            if prompt_path and self.s3_manager:
+                # 2a. 如果是S3路径，直接从S3读取
+                if prompt_path.startswith('s3://'):
+                    s3_key = self._extract_s3_key_from_path(prompt_path)
+                    if s3_key:
+                        content = await asyncio.get_event_loop().run_in_executor(
+                            self.executor,
+                            self.s3_manager.get_file_by_key,
+                            s3_key
+                        )
+                        
+                        if content is not None:
+                            # 验证内容
+                            is_valid, message = self.validator.validate_prompt(content)
+                            if not is_valid:
+                                logger.warning(f"⚠️ Prompt验证失败: {message}")
+                            
+                            # 缓存结果
+                            if self.cache:
+                                self.cache.set(company_code, doc_type_code, "prompt", filename, content)
+                            
+                            # 保存本地备份
+                            self._save_local_backup(company_code, doc_type_code, filename, "prompt", content)
+                            
+                            return content
+                
+                # 2b. 回退到旧的约定路径方式
                 content = await asyncio.get_event_loop().run_in_executor(
                     self.executor,
                     self.s3_manager.get_prompt,
@@ -396,8 +505,36 @@ class PromptSchemaManager:
                 if cached_content is not None:
                     return cached_content
             
-            # 2. 尝试从S3获取
-            if self.s3_manager:
+            # 2. 从数据库获取实际配置路径
+            _, schema_path = self._get_config_paths(company_code, doc_type_code)
+            
+            if schema_path and self.s3_manager:
+                # 2a. 如果是S3路径，直接从S3读取
+                if schema_path.startswith('s3://'):
+                    s3_key = self._extract_s3_key_from_path(schema_path)
+                    if s3_key:
+                        content = await asyncio.get_event_loop().run_in_executor(
+                            self.executor,
+                            self.s3_manager.get_schema_by_key,
+                            s3_key
+                        )
+                        
+                        if content is not None:
+                            # 验证内容
+                            is_valid, message = self.validator.validate_schema(content)
+                            if not is_valid:
+                                logger.warning(f"⚠️ Schema验证失败: {message}")
+                            
+                            # 缓存结果
+                            if self.cache:
+                                self.cache.set(company_code, doc_type_code, "schema", filename, content)
+                            
+                            # 保存本地备份
+                            self._save_local_backup(company_code, doc_type_code, filename, "schema", content)
+                            
+                            return content
+                
+                # 2b. 回退到旧的约定路径方式
                 content = await asyncio.get_event_loop().run_in_executor(
                     self.executor,
                     self.s3_manager.get_schema,

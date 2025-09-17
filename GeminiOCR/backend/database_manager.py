@@ -16,7 +16,7 @@ import yaml
 import json
 import asyncio
 import logging
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from urllib.parse import quote_plus
@@ -26,7 +26,6 @@ import boto3
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
-from sqlalchemy.exc import OperationalError, TimeoutError
 import asyncpg
 from asyncpg import Pool
 

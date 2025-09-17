@@ -8,27 +8,37 @@ import json
 import uuid
 import mimetypes
 
+from .company_file_manager import CompanyFileManager, FileType
+
 logger = logging.getLogger(__name__)
 
 
 class S3StorageManager:
     """AWS S3文件存储管理器 - 使用单存储桶多文件夹结构"""
 
-    def __init__(self, bucket_name: str, region: str = "ap-southeast-1"):
+    def __init__(self, bucket_name: str, region: str = "ap-southeast-1", enable_legacy_compatibility: bool = True):
         """
         初始化S3存储管理器
 
         Args:
             bucket_name: S3存储桶名称
             region: AWS区域
+            enable_legacy_compatibility: 是否启用旧路径兼容模式
         """
         self.bucket_name = bucket_name
         self.region = region
+        self.enable_legacy_compatibility = enable_legacy_compatibility
+        
+        # Initialize Company File Manager for ID-based paths
+        self.company_file_manager = CompanyFileManager()
+        
+        # Legacy prefixes (kept for backward compatibility)
         self.upload_prefix = "upload/"
         self.results_prefix = "results/"
         self.exports_prefix = "exports/"
         self.prompts_prefix = "prompts/"
         self.schemas_prefix = "schemas/"
+        
         self._s3_client = None
         self._s3_resource = None
 
@@ -587,6 +597,64 @@ class S3StorageManager:
             logger.error(f"❌ Prompt获取时发生未知错误：{e}")
             return None
 
+    def get_file_by_key(self, s3_key: str) -> Optional[str]:
+        """
+        通过完整S3 key获取文件内容（文本文件）
+        
+        Args:
+            s3_key: 完整的S3 key路径
+            
+        Returns:
+            Optional[str]: 文件内容，失败时返回None
+        """
+        try:
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=s3_key)
+            content = response["Body"].read().decode("utf-8")
+            
+            logger.info(f"✅ 文件获取成功：s3://{self.bucket_name}/{s3_key}")
+            return content
+            
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                logger.warning(f"⚠️ 文件不存在：s3://{self.bucket_name}/{s3_key}")
+            else:
+                logger.error(f"❌ 文件获取失败：{e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ 文件获取时发生未知错误：{e}")
+            return None
+
+    def get_schema_by_key(self, s3_key: str) -> Optional[dict]:
+        """
+        通过完整S3 key获取schema文件内容
+        
+        Args:
+            s3_key: 完整的S3 key路径
+            
+        Returns:
+            Optional[dict]: schema数据，失败时返回None
+        """
+        try:
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=s3_key)
+            content = response["Body"].read().decode("utf-8")
+            schema_data = json.loads(content)
+            
+            logger.info(f"✅ Schema获取成功：s3://{self.bucket_name}/{s3_key}")
+            return schema_data
+            
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                logger.warning(f"⚠️ Schema文件不存在：s3://{self.bucket_name}/{s3_key}")
+            else:
+                logger.error(f"❌ Schema获取失败：{e}")
+            return None
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Schema JSON解析失败：{e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Schema获取时发生未知错误：{e}")
+            return None
+
     def upload_schema(
         self,
         company_code: str,
@@ -687,6 +755,76 @@ class S3StorageManager:
             return None
         except Exception as e:
             logger.error(f"❌ Schema获取时发生未知错误：{e}")
+            return None
+
+    def download_prompt_raw(self, company_code: str, doc_type_code: str, filename: Optional[str] = None) -> Optional[bytes]:
+        """
+        从S3下载prompt文件的原始内容（用于文件下载）
+
+        Args:
+            company_code: 公司代码
+            doc_type_code: 文档类型代码
+            filename: 文件名（可选，默认为prompt.txt）
+
+        Returns:
+            Optional[bytes]: 文件原始内容，失败时返回None
+        """
+        try:
+            if not filename:
+                filename = "prompt.txt"
+
+            key = f"{company_code}/{doc_type_code}/{filename}"
+            full_key = f"{self.prompts_prefix}{key}"
+
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=full_key)
+            content = response["Body"].read()
+
+            logger.info(f"✅ Prompt原始内容下载成功：s3://{self.bucket_name}/{full_key}")
+            return content
+
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                logger.warning(f"⚠️ Prompt文件不存在：s3://{self.bucket_name}/{self.prompts_prefix}{company_code}/{doc_type_code}/{filename or 'prompt.txt'}")
+            else:
+                logger.error(f"❌ Prompt原始内容下载失败：{e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Prompt原始内容下载时发生未知错误：{e}")
+            return None
+
+    def download_schema_raw(self, company_code: str, doc_type_code: str, filename: Optional[str] = None) -> Optional[bytes]:
+        """
+        从S3下载schema文件的原始内容（用于文件下载）
+
+        Args:
+            company_code: 公司代码
+            doc_type_code: 文档类型代码
+            filename: 文件名（可选，默认为schema.json）
+
+        Returns:
+            Optional[bytes]: 文件原始内容，失败时返回None
+        """
+        try:
+            if not filename:
+                filename = "schema.json"
+
+            key = f"{company_code}/{doc_type_code}/{filename}"
+            full_key = f"{self.schemas_prefix}{key}"
+
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=full_key)
+            content = response["Body"].read()
+
+            logger.info(f"✅ Schema原始内容下载成功：s3://{self.bucket_name}/{full_key}")
+            return content
+
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                logger.warning(f"⚠️ Schema文件不存在：s3://{self.bucket_name}/{self.schemas_prefix}{company_code}/{doc_type_code}/{filename or 'schema.json'}")
+            else:
+                logger.error(f"❌ Schema原始内容下载失败：{e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Schema原始内容下载时发生未知错误：{e}")
             return None
 
     def list_prompts(self, company_code: Optional[str] = None, doc_type_code: Optional[str] = None) -> list:
@@ -890,6 +1028,396 @@ class S3StorageManager:
                 "accessible": False,
                 "error": str(e),
             }
+
+    # ========================================
+    # NEW ID-BASED METHODS FOR FILE MANAGEMENT
+    # ========================================
+    
+    def upload_company_file(self, 
+                          company_id: int,
+                          file_type: FileType,
+                          content: Union[str, bytes],
+                          filename: str,
+                          doc_type_id: Optional[int] = None,
+                          config_id: Optional[int] = None,
+                          job_id: Optional[str] = None,
+                          export_id: Optional[str] = None,
+                          metadata: Optional[dict] = None) -> Optional[str]:
+        """
+        Upload file using new ID-based path structure
+        
+        Args:
+            company_id: Company ID
+            file_type: Type of file (prompt, schema, upload, result, export)
+            content: File content (string or bytes)
+            filename: Original filename
+            doc_type_id: Document type ID (for prompts/schemas)
+            config_id: Configuration ID (for prompts/schemas)
+            job_id: Job ID (for uploads/results)
+            export_id: Export ID (for exports)
+            metadata: Additional metadata
+            
+        Returns:
+            Optional[str]: S3 key if successful, None if failed
+        """
+        try:
+            # Generate ID-based path
+            s3_path = self.company_file_manager.get_company_file_path(
+                company_id=company_id,
+                file_type=file_type,
+                filename=filename,
+                doc_type_id=doc_type_id,
+                config_id=config_id,
+                job_id=job_id,
+                export_id=export_id
+            )
+            
+            # Prepare metadata
+            upload_metadata = {
+                "company_id": str(company_id),
+                "file_type": file_type.value,
+                "uploaded_at": datetime.now().isoformat(),
+            }
+            
+            # Add type-specific metadata
+            if doc_type_id:
+                upload_metadata["doc_type_id"] = str(doc_type_id)
+            if config_id:
+                upload_metadata["config_id"] = str(config_id)
+            if job_id:
+                upload_metadata["job_id"] = job_id
+            if export_id:
+                upload_metadata["export_id"] = export_id
+                
+            if metadata:
+                upload_metadata.update(metadata)
+            
+            # Determine content type
+            content_type = "text/plain"
+            if file_type == FileType.SCHEMA or filename.endswith('.json'):
+                content_type = "application/json"
+            elif filename.endswith(('.pdf', '.png', '.jpg', '.jpeg')):
+                content_type, _ = mimetypes.guess_type(filename)
+                if not content_type:
+                    content_type = "application/octet-stream"
+            
+            # Convert content to bytes if needed
+            if isinstance(content, str):
+                body = content.encode('utf-8')
+                encoding = "utf-8"
+            else:
+                body = content
+                encoding = None
+                
+            # Upload to S3
+            put_args = {
+                "Bucket": self.bucket_name,
+                "Key": s3_path,
+                "Body": body,
+                "ContentType": content_type,
+                "Metadata": upload_metadata,
+            }
+            
+            if encoding:
+                put_args["ContentEncoding"] = encoding
+            
+            self.s3_client.put_object(**put_args)
+            
+            logger.info(f"✅ ID-based file upload successful: s3://{self.bucket_name}/{s3_path}")
+            return s3_path
+            
+        except Exception as e:
+            logger.error(f"❌ ID-based file upload failed: {e}")
+            return None
+    
+    def download_company_file(self,
+                            company_id: int,
+                            file_type: FileType,
+                            filename: str,
+                            doc_type_id: Optional[int] = None,
+                            config_id: Optional[int] = None,
+                            job_id: Optional[str] = None,
+                            export_id: Optional[str] = None) -> Optional[bytes]:
+        """
+        Download file using new ID-based path structure
+        
+        Args:
+            company_id: Company ID
+            file_type: Type of file
+            filename: Original filename
+            doc_type_id: Document type ID (for prompts/schemas)
+            config_id: Configuration ID (for prompts/schemas)
+            job_id: Job ID (for uploads/results)
+            export_id: Export ID (for exports)
+            
+        Returns:
+            Optional[bytes]: File content if found, None if not found
+        """
+        try:
+            # Generate ID-based path
+            s3_path = self.company_file_manager.get_company_file_path(
+                company_id=company_id,
+                file_type=file_type,
+                filename=filename,
+                doc_type_id=doc_type_id,
+                config_id=config_id,
+                job_id=job_id,
+                export_id=export_id
+            )
+            
+            # Download from S3
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=s3_path)
+            content = response["Body"].read()
+            
+            logger.info(f"✅ ID-based file download successful: s3://{self.bucket_name}/{s3_path}")
+            return content
+            
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchKey':
+                logger.warning(f"⚠️ ID-based file not found: s3://{self.bucket_name}/{s3_path}")
+            else:
+                logger.error(f"❌ ID-based file download failed: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ ID-based file download failed: {e}")
+            return None
+    
+    def upload_prompt_by_id(self,
+                          company_id: int,
+                          doc_type_id: int,
+                          config_id: int,
+                          prompt_content: str,
+                          filename: Optional[str] = None,
+                          metadata: Optional[dict] = None) -> Optional[str]:
+        """
+        Upload prompt using clean ID-based path (convenience method)
+        
+        Args:
+            company_id: Company ID
+            doc_type_id: Document type ID
+            config_id: Configuration ID
+            prompt_content: Prompt content
+            filename: Filename (should be original filename)
+            metadata: Additional metadata
+            
+        Returns:
+            Optional[str]: S3 key if successful
+        """
+        if not filename:
+            filename = "prompt.txt"  # Use clean default filename
+            
+        return self.upload_company_file(
+            company_id=company_id,
+            file_type=FileType.PROMPT,
+            content=prompt_content,
+            filename=filename,
+            doc_type_id=doc_type_id,
+            config_id=config_id,
+            metadata=metadata
+        )
+    
+    def upload_schema_by_id(self,
+                          company_id: int,
+                          doc_type_id: int,
+                          config_id: int,
+                          schema_data: dict,
+                          filename: Optional[str] = None,
+                          metadata: Optional[dict] = None) -> Optional[str]:
+        """
+        Upload schema using clean ID-based path (convenience method)
+        
+        Args:
+            company_id: Company ID
+            doc_type_id: Document type ID
+            config_id: Configuration ID
+            schema_data: Schema data as dict
+            filename: Filename (should be original filename)
+            metadata: Additional metadata
+            
+        Returns:
+            Optional[str]: S3 key if successful
+        """
+        import json
+        
+        if not filename:
+            filename = "schema.json"  # Use clean default filename
+            
+        # Convert schema data to JSON string
+        schema_content = json.dumps(schema_data, indent=2, ensure_ascii=False)
+            
+        return self.upload_company_file(
+            company_id=company_id,
+            file_type=FileType.SCHEMA,
+            content=schema_content,
+            filename=filename,
+            doc_type_id=doc_type_id,
+            config_id=config_id,
+            metadata=metadata
+        )
+    
+    def download_prompt_by_id(self,
+                            company_id: int,
+                            doc_type_id: int,
+                            config_id: int,
+                            filename: Optional[str] = None) -> Optional[str]:
+        """
+        Download prompt using clean ID-based path with fallbacks (convenience method)
+        
+        Returns:
+            Optional[str]: Prompt content as string
+        """
+        if not filename:
+            filename = "prompt.txt"  # Clean default filename
+            
+        # Try primary ID-based path
+        content = self.download_company_file(
+            company_id=company_id,
+            file_type=FileType.PROMPT,
+            filename=filename,
+            doc_type_id=doc_type_id,
+            config_id=config_id
+        )
+        
+        # If not found, try temp path fallback
+        if content is None:
+            logger.info(f"🔄 Primary path not found, trying temp path fallback for config {config_id}")
+            temp_paths = [
+                f"companies/{company_id}/prompts/{doc_type_id}/temp_{config_id}/{filename}",
+                f"companies/{company_id}/prompts/{doc_type_id}/temp_{int(config_id) * 1000}/{filename}",
+                # Try some common temp timestamp patterns
+                f"companies/{company_id}/prompts/{doc_type_id}/temp_1758089852851/{filename}",
+            ]
+            
+            for temp_path in temp_paths:
+                logger.info(f"🔍 Trying temp path: {temp_path}")
+                try:
+                    response = self.s3_client.get_object(Bucket=self.bucket_name, Key=temp_path)
+                    content = response["Body"].read()
+                    logger.info(f"✅ Found prompt at temp path: {temp_path}")
+                    break
+                except ClientError as e:
+                    if e.response['Error']['Code'] != 'NoSuchKey':
+                        logger.warning(f"⚠️ S3 error on temp path {temp_path}: {e}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error trying temp path {temp_path}: {e}")
+        
+        if content:
+            return content.decode('utf-8')
+        return None
+    
+    def download_schema_by_id(self,
+                            company_id: int,
+                            doc_type_id: int,
+                            config_id: int,
+                            filename: Optional[str] = None) -> Optional[dict]:
+        """
+        Download schema using clean ID-based path with fallbacks (convenience method)
+        
+        Returns:
+            Optional[dict]: Schema data as dictionary
+        """
+        if not filename:
+            filename = "schema.json"  # Clean default filename
+            
+        # Try primary ID-based path
+        content = self.download_company_file(
+            company_id=company_id,
+            file_type=FileType.SCHEMA,
+            filename=filename,
+            doc_type_id=doc_type_id,
+            config_id=config_id
+        )
+        
+        # If not found, try temp path fallback
+        if content is None:
+            logger.info(f"🔄 Primary schema path not found, trying temp path fallback for config {config_id}")
+            temp_paths = [
+                f"companies/{company_id}/schemas/{doc_type_id}/temp_{config_id}/{filename}",
+                f"companies/{company_id}/schemas/{doc_type_id}/temp_{int(config_id) * 1000}/{filename}",
+                # Try some common temp timestamp patterns
+                f"companies/{company_id}/schemas/{doc_type_id}/temp_1758089852982/{filename}",
+            ]
+            
+            for temp_path in temp_paths:
+                logger.info(f"🔍 Trying temp schema path: {temp_path}")
+                try:
+                    response = self.s3_client.get_object(Bucket=self.bucket_name, Key=temp_path)
+                    content = response["Body"].read()
+                    logger.info(f"✅ Found schema at temp path: {temp_path}")
+                    break
+                except ClientError as e:
+                    if e.response['Error']['Code'] != 'NoSuchKey':
+                        logger.warning(f"⚠️ S3 error on temp schema path {temp_path}: {e}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error trying temp schema path {temp_path}: {e}")
+        
+        if content:
+            try:
+                import json
+                return json.loads(content.decode('utf-8'))
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ Failed to parse schema JSON: {e}")
+                return None
+        return None
+    
+    def download_file_by_stored_path(self, stored_path: str) -> Optional[bytes]:
+        """
+        Download file using stored database path (S3 URI or relative path)
+        
+        Args:
+            stored_path: Full S3 URI (s3://bucket/key) or relative path within current bucket
+            
+        Returns:
+            Optional[bytes]: File content if found, None if not found
+        """
+        try:
+            if not stored_path:
+                logger.warning("⚠️ Empty stored path provided")
+                return None
+            
+            # Handle S3 URI format: s3://bucket/key/path/file.ext
+            if stored_path.startswith('s3://'):
+                # Parse S3 URI
+                s3_parts = stored_path[5:].split('/', 1)  # Remove 's3://' and split on first '/'
+                if len(s3_parts) != 2:
+                    logger.error(f"❌ Invalid S3 URI format: {stored_path}")
+                    return None
+                    
+                bucket_name = s3_parts[0]
+                s3_key = s3_parts[1]
+                
+                logger.info(f"📥 Downloading from S3 URI: bucket={bucket_name}, key={s3_key}")
+                
+                # Direct S3 download
+                response = self.s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+                content = response["Body"].read()
+                
+                logger.info(f"✅ Successfully downloaded from S3 URI: {stored_path}")
+                return content
+                
+            # Handle relative paths (assume they're relative to current bucket)
+            elif stored_path and not stored_path.startswith('/'):
+                logger.info(f"📥 Downloading relative path from bucket {self.bucket_name}: {stored_path}")
+                
+                response = self.s3_client.get_object(Bucket=self.bucket_name, Key=stored_path)
+                content = response["Body"].read()
+                
+                logger.info(f"✅ Successfully downloaded relative path: {stored_path}")
+                return content
+                
+            else:
+                logger.error(f"❌ Unsupported path format: {stored_path}")
+                return None
+                
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchKey':
+                logger.warning(f"⚠️ File not found at stored path: {stored_path}")
+            else:
+                logger.error(f"❌ S3 error downloading from stored path: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Failed to download from stored path '{stored_path}': {e}")
+            return None
 
 
 # 全局S3存储管理器实例

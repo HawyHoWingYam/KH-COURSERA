@@ -1,0 +1,118 @@
+1Please analyze the provided HKBN Statement PDF document and extract the following information. This is a multi-page billing statement for telecommunication services. Pay close attention to positive and negative numbers (discounts are negative). Prioritize English text over Chinese when both are available.
+
+**Overall Document Type:** HKBN Statement / Telecommunication Bill (香港寬頻月結單)
+
+**IMPORTANT: Focus only on Page 1 (Bill Summary) and Pages 3-7 (Statement Details)**
+
+**I. Page 1 - Header Section (第1頁頂部):**
+
+1. **Account Number (賬戶號碼):**
+   * Label: Look for 'PPS/Account Number' or '賬戶號碼'
+   * Value: Extract the 9-digit number (e.g., 001181070) (Printed Text)
+
+2. **Issue Date (印發日期):**
+   * Label: Look for 'Issue Date' or '印發日期'
+   * Value: Extract date in YYYY-MM-DD format (Printed Text)
+
+3. **Company Name (公司名稱):**
+   * Location: Below account information
+   * Extract the full company name in English (Printed Text)
+   * Example: "HYAKUNOUSHA INTERNATIONAL LIMITED"
+
+**II. Page 1 - Bill Summary Section (賬項總覽):**
+
+1. **Previous Charges Section (前單收費):**
+   * **Previous Charges (前單收費):**
+     - Label: 'Previous Charges'
+     - Value: Positive number with 2 decimal places (Printed Text)
+   
+   * **Previous Payment (繳費):**
+     - Label: 'Payment (Autopay)' or similar
+     - Value: Negative number with 2 decimal places (Printed Text)
+   
+   * **Previous Charges Outstanding (前單結欠):**
+     - Label: 'Previous Charges Outstanding'
+     - Value: Number with 2 decimal places (can be positive or zero) (Printed Text)
+
+2. **Current Charges Section (本期收費):**
+   * **Total Current Charges (本期總收費):**
+     - Label: 'Total Current Charges'
+     - Value: Positive number with 2 decimal places (Printed Text)
+     - Note: This should match 'Total HKBN Mobile Services Charges'
+
+**III. Page 1 - Statement Balance Section (本期應繳賬項):**
+
+1. **Payment Due Date (到期繳款日):**
+   * Label: 'Payment Due Date'
+   * Value: Extract date in YYYY-MM-DD format (Printed Text)
+
+**IV. Pages 3-7 - Statement Details (賬項詳述):**
+
+For EACH phone number listed in the statement details:
+
+1. **Phone Number Group:**
+   * **Number (電話號碼):**
+     - Extract the 8-digit phone number (Printed Text)
+     - This is the grouping identifier for charges
+   
+   * **Subtotal (小計):**
+     - Label: 'Subtotal' at the end of each phone number's charges
+     - Value: Number with 2 decimal places (Printed Text)
+     - This represents the total for this specific phone number
+
+2. **Charge Items for Each Phone Number:**
+   For EACH line item under a phone number, extract:
+   
+   * **Charge Description (收費詳情):**
+     - Extract the English description (prioritize English over Chinese)
+     - Common descriptions include:
+       * "HKBN mobile services (XXX)" - Main service charge
+       * "HKBN mobile services Disc." - Service discount
+       * "Administration Fee" - Admin fee
+       * "Administration Fee Disc." - Admin fee discount
+   
+   * **Service Period (服務日期):**
+     - Label: Period column
+     - Format: YYYY/MM/DD - YYYY/MM/DD
+     - Extract for each charge item (Printed Text)
+   
+   * **Charge Amount (收費):**
+     - Label: Charge column
+     - Value: Number with 2 decimal places
+     - CRITICAL: Pay attention to sign:
+       * Positive for charges (e.g., 108.00)
+       * Negative for discounts (e.g., -30.00)
+     - Extract for each charge item (Printed Text)
+
+**V. Extraction Rules:**
+
+1. **Multiple Charges per Phone Number:**
+   * Each phone number may have 2-4 charge items
+   * Group all charges belonging to the same phone number together
+   * The subtotal should equal the sum of all charges for that phone number
+
+2. **Handling Discounts:**
+   * Items with "Disc." in the description are ALWAYS negative numbers
+   * Ensure negative sign is preserved in the extraction
+
+3. **Page Navigation:**
+   * Skip page 2 (payment methods and important information)
+   * Start extracting phone details from page 3
+   * Continue through all detail pages until you see "Total HKBN Mobile Services Charges"
+
+4. **Data Validation:**
+   * The sum of all phone number subtotals should equal the "Total HKBN Mobile Services Charges"
+   * This total should match the "Current Charges" amount on page 1
+
+**VI. Output Structure Requirements:**
+
+Organize the extracted data maintaining the nested structure:
+- Each phone number is a separate object in statement_details array
+- Each phone number object contains:
+  * "number": the phone number
+  * "subtotal": the subtotal for that number
+  * "charge_description": an array of charge items
+- Each charge item in charge_description contains:
+  * "name": description of the charge
+  * "period": service period
+  * "charge": amount (with correct sign)
