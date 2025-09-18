@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { fetchBatchJobStatus, BatchJob } from '@/lib/api';
+import { fetchBatchJobStatus, BatchJob, deleteBatchJob } from '@/lib/api';
 
 export default function BatchJobDetails() {
   const params = useParams();
@@ -11,6 +11,9 @@ export default function BatchJobDetails() {
   const [batchJob, setBatchJob] = useState<BatchJob | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const batchId = params?.id ? Number(params.id) : 0;
 
@@ -80,6 +83,27 @@ export default function BatchJobDetails() {
     window.open(downloadUrl, '_blank');
   };
 
+  const handleDeleteBatchJob = async () => {
+    if (!batchJob) return;
+
+    setIsDeleting(true);
+    setDeleteError(null);
+
+    try {
+      const result = await deleteBatchJob(batchJob.batch_id);
+      console.log('Delete result:', result);
+      
+      // Show success message and redirect
+      setShowDeleteDialog(false);
+      router.push('/jobs?deleted=true');
+    } catch (err) {
+      console.error('Failed to delete batch job:', err);
+      setDeleteError(err instanceof Error ? err.message : 'Failed to delete batch job');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="max-w-4xl mx-auto p-6">
@@ -129,11 +153,20 @@ export default function BatchJobDetails() {
     <div className="max-w-4xl mx-auto p-6">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold">Batch Job #{batchJob.batch_id}</h1>
-        <Link href="/jobs">
-          <span className="bg-blue-600 text-white py-2 px-4 rounded hover:bg-blue-700 cursor-pointer">
-            Back to Jobs
-          </span>
-        </Link>
+        <div className="flex space-x-3">
+          <button
+            onClick={() => setShowDeleteDialog(true)}
+            className="bg-red-600 text-white py-2 px-4 rounded hover:bg-red-700 transition-colors"
+            disabled={isDeleting}
+          >
+            Delete Job
+          </button>
+          <Link href="/jobs">
+            <span className="bg-blue-600 text-white py-2 px-4 rounded hover:bg-blue-700 cursor-pointer">
+              Back to Jobs
+            </span>
+          </Link>
+        </div>
       </div>
 
       {/* Status Card */}
@@ -232,6 +265,67 @@ export default function BatchJobDetails() {
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Dialog */}
+      {showDeleteDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg max-w-md w-full mx-4">
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-bold text-gray-900">Delete Batch Job</h2>
+                <button
+                  onClick={() => setShowDeleteDialog(false)}
+                  className="text-gray-400 hover:text-gray-600"
+                  disabled={isDeleting}
+                >
+                  ✕
+                </button>
+              </div>
+
+              {deleteError && (
+                <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+                  {deleteError}
+                </div>
+              )}
+
+              <div className="mb-4">
+                <p className="text-gray-700">
+                  Are you sure you want to delete <strong>Batch Job #{batchJob.batch_id}</strong>?
+                </p>
+                <p className="text-sm text-gray-600 mt-2">
+                  This will permanently delete:
+                </p>
+                <ul className="text-sm text-gray-600 mt-2 list-disc ml-6">
+                  <li>The batch job record</li>
+                  <li>All related processing jobs ({batchJob.total_files} files)</li>
+                  <li>All uploaded and generated files</li>
+                  <li>All API usage records</li>
+                </ul>
+                <p className="text-sm text-red-600 mt-2 font-medium">
+                  This action cannot be undone.
+                </p>
+              </div>
+
+              <div className="flex justify-end space-x-4">
+                <button
+                  onClick={() => setShowDeleteDialog(false)}
+                  className="px-4 py-2 text-gray-600 hover:text-gray-800"
+                  disabled={isDeleting}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteBatchJob}
+                  className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
+                  disabled={isDeleting}
+                >
+                  {isDeleting ? 'Deleting...' : 'Delete Job'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

@@ -441,3 +441,87 @@ class ForceDeleteManager:
             logger.warning(f"Error during File record S3 file deletion: {e}")
         
         return deleted_count
+
+    def force_delete_batch_job(self, batch_id: int) -> Dict[str, Any]:
+        """
+        Force delete a single batch job and all its dependencies
+        Deletion order: Related ProcessingJobs → BatchJob files → BatchJob record
+        """
+        try:
+            # Get batch job info
+            batch_job = self.db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
+            if not batch_job:
+                raise ValueError(f"Batch job with ID {batch_id} not found")
+            
+            batch_name = f"Batch #{batch_job.batch_id} ({batch_job.upload_description})"
+            deletion_stats = {
+                "processing_jobs": 0,
+                "document_files": 0,
+                "file_records": 0,
+                "api_usages": 0,
+                "s3_files": 0,
+                "batch_job": 1
+            }
+            
+            logger.info(f"Starting force delete for batch job: {batch_name}")
+            
+            # 1. Delete all related ProcessingJobs and their dependencies
+            processing_jobs = self.db.query(ProcessingJob).filter(
+                ProcessingJob.batch_id == batch_id
+            ).all()
+            
+            for job in processing_jobs:
+                # Delete related API usage records
+                api_usages = self.db.query(ApiUsage).filter(ApiUsage.job_id == job.job_id).all()
+                for api_usage in api_usages:
+                    self.db.delete(api_usage)
+                    deletion_stats["api_usages"] += 1
+                
+                # Delete ProcessingJob S3 files
+                s3_deleted = self._delete_processing_job_s3_files(job)
+                deletion_stats["s3_files"] += s3_deleted
+                
+                # Delete related file records (through document_files association table)
+                document_files = self.db.query(DocumentFile).filter(DocumentFile.job_id == job.job_id).all()
+                for doc_file in document_files:
+                    # Delete actual file record and S3 files
+                    file_record = self.db.query(DBFile).filter(DBFile.file_id == doc_file.file_id).first()
+                    if file_record:
+                        # Delete file's corresponding S3 files
+                        s3_deleted = self._delete_file_record_s3_files(file_record)
+                        deletion_stats["s3_files"] += s3_deleted
+                        self.db.delete(file_record)
+                        deletion_stats["file_records"] += 1
+                    # Delete association record
+                    self.db.delete(doc_file)
+                    deletion_stats["document_files"] += 1
+                
+                # Delete processing job
+                self.db.delete(job)
+                deletion_stats["processing_jobs"] += 1
+            
+            # 2. Delete BatchJob S3 files
+            s3_deleted = self._delete_batch_job_s3_files(batch_job)
+            deletion_stats["s3_files"] += s3_deleted
+            
+            # 3. Delete the BatchJob record itself
+            self.db.delete(batch_job)
+            
+            # Commit transaction
+            self.db.commit()
+            
+            logger.info(f"Successfully force deleted batch job: {batch_name}")
+            logger.info(f"Deletion statistics: {deletion_stats}")
+            
+            return {
+                "success": True,
+                "message": f"Successfully deleted batch job '{batch_name}' and all related files",
+                "deleted_entity": batch_name,
+                "statistics": deletion_stats
+            }
+            
+        except Exception as e:
+            # Rollback transaction
+            self.db.rollback()
+            logger.error(f"Failed to force delete batch job {batch_id}: {str(e)}")
+            raise Exception(f"Batch job deletion failed: {str(e)}")

@@ -3313,6 +3313,47 @@ def list_batch_jobs(
     ]
 
 
+@app.delete("/batch-jobs/{batch_id}", response_model=dict)
+def delete_batch_job(batch_id: int, db: Session = Depends(get_db)):
+    """
+    Delete a batch job and all its related files and data.
+    
+    This endpoint will:
+    - Delete all related ProcessingJobs and their files
+    - Delete all associated file records and S3 files
+    - Delete the batch job record itself
+    - Clean up any API usage records
+    
+    Returns a summary of what was deleted.
+    """
+    try:
+        # Check if batch job exists
+        batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
+        if not batch_job:
+            raise HTTPException(status_code=404, detail="Batch job not found")
+        
+        # Use ForceDeleteManager to handle the deletion
+        delete_manager = ForceDeleteManager(db)
+        result = delete_manager.force_delete_batch_job(batch_id)
+        
+        logger.info(f"Successfully deleted batch job {batch_id}: {result['message']}")
+        
+        return {
+            "success": True,
+            "message": result["message"],
+            "batch_id": batch_id,
+            "deleted_entity": result["deleted_entity"],
+            "statistics": result["statistics"]
+        }
+        
+    except ValueError as e:
+        # Batch job not found
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to delete batch job {batch_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete batch job: {str(e)}")
+
+
 @app.get("/download-by-path")
 def download_file_by_path(path: str):
     """Download a file by its full path."""

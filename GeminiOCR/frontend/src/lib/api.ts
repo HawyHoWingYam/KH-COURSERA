@@ -449,6 +449,27 @@ export async function fetchBatchJobs(
   return fetchApi<BatchJob[]>(endpoint);
 }
 
+export interface BatchJobDeleteResult {
+  success: boolean;
+  message: string;
+  batch_id: number;
+  deleted_entity: string;
+  statistics: {
+    processing_jobs: number;
+    document_files: number;
+    file_records: number;
+    api_usages: number;
+    s3_files: number;
+    batch_job: number;
+  };
+}
+
+export async function deleteBatchJob(batchId: number): Promise<BatchJobDeleteResult> {
+  return fetchApi<BatchJobDeleteResult>(`/batch-jobs/${batchId}`, {
+    method: 'DELETE',
+  });
+}
+
 // Dependency Management API
 export const dependencyApi = {
   // Get company dependencies
