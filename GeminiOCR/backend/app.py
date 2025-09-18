@@ -17,6 +17,7 @@ from typing import List, Optional
 import os
 import shutil
 import tempfile
+import zipfile
 from datetime import datetime, timedelta
 import json
 import logging
@@ -38,6 +39,7 @@ from db.models import (
     DocumentFile,
     ApiUsage,
     BatchJob,
+    UploadType,
 )
 from main import extract_text_from_image, extract_text_from_pdf
 from utils.excel_converter import json_to_excel
@@ -2501,8 +2503,8 @@ async def process_zip_file(
             # uploader_user_id=3,
             company_id=company_id,
             doc_type_id=doc_type_id,
-            zip_filename=zip_file.filename,
-            s3_zipfile_path=zip_path,
+            upload_description=zip_file.filename,
+            s3_upload_path=zip_path,
             original_zipfile=zip_path,
             status="pending",
         )
@@ -2837,6 +2839,391 @@ async def process_zip_task(
             pass
 
 
+# Unified batch processing endpoint (replaces both /process and /process-zip)
+@app.post("/process-batch", response_model=dict)
+async def process_batch(
+    background_tasks: BackgroundTasks,
+    company_id: int = Form(...),
+    doc_type_id: int = Form(...),
+    files: List[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Unified batch processing endpoint that handles all file types:
+    - Single images -> batch of 1 image
+    - Single PDFs -> batch of 1 PDF (split into pages)
+    - Multiple files -> batch of all files
+    - ZIP files -> batch of extracted contents
+    - Mixed uploads -> batch of all processed content
+    """
+    try:
+        # Validate company and document type
+        company = db.query(Company).filter(Company.company_id == company_id).first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Company not found")
+
+        doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+        if not doc_type:
+            raise HTTPException(status_code=404, detail="Document type not found")
+
+        # Verify configuration exists
+        config = (
+            db.query(CompanyDocumentConfig)
+            .filter(
+                CompanyDocumentConfig.company_id == company_id,
+                CompanyDocumentConfig.doc_type_id == doc_type_id,
+                CompanyDocumentConfig.active,
+            )
+            .first()
+        )
+
+        if not config:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No active configuration found for company ID {company_id} and document type ID {doc_type_id}",
+            )
+
+        # Verify prompt and schema are accessible
+        prompt_schema_manager = get_prompt_schema_manager()
+        
+        prompt_test = await prompt_schema_manager.get_prompt(company.company_code, doc_type.type_code)
+        if not prompt_test:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Prompt template not found for {company.company_code}/{doc_type.type_code}",
+            )
+        
+        schema_test = await prompt_schema_manager.get_schema(company.company_code, doc_type.type_code)
+        if not schema_test:
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Schema file not found for {company.company_code}/{doc_type.type_code}"
+            )
+
+        # Analyze uploaded files and determine batch type
+        file_names = [f.filename for f in files]
+        file_types = []
+        total_size = 0
+        
+        for file in files:
+            total_size += len(await file.read())
+            await file.seek(0)  # Reset file pointer
+            
+            # Determine file type
+            if file.content_type:
+                if file.content_type.startswith('image/'):
+                    file_types.append('image')
+                elif file.content_type == 'application/pdf':
+                    file_types.append('pdf')
+                elif file.content_type == 'application/zip':
+                    file_types.append('zip')
+                else:
+                    file_types.append('other')
+            else:
+                # Fallback to extension checking
+                ext = file.filename.lower().split('.')[-1] if '.' in file.filename else ''
+                if ext in ['jpg', 'jpeg', 'png', 'gif', 'bmp']:
+                    file_types.append('image')
+                elif ext == 'pdf':
+                    file_types.append('pdf')
+                elif ext == 'zip':
+                    file_types.append('zip')
+                else:
+                    file_types.append('other')
+
+        # Determine upload type
+        unique_types = set(file_types)
+        if len(files) == 1:
+            if 'zip' in unique_types:
+                upload_type = UploadType.zip_file
+            else:
+                upload_type = UploadType.single_file
+        elif len(unique_types) > 1:
+            upload_type = UploadType.mixed
+        else:
+            upload_type = UploadType.multiple_files
+
+        # Create upload description
+        if len(files) == 1:
+            upload_description = files[0].filename
+        else:
+            upload_description = f"{len(files)} files uploaded"
+
+        # Save uploaded files to S3
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+            
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        saved_file_paths = []
+        s3_upload_base = f"batch_uploads/{company.company_code}/{doc_type.type_code}/batch_{timestamp}"
+
+        for i, file in enumerate(files):
+            # Generate unique filename
+            safe_filename = f"{timestamp}_{i}_{file.filename}"
+            s3_key = f"{s3_upload_base}/{safe_filename}"
+            
+            # Upload file to S3
+            file_content = file.file.read()
+            upload_success = s3_manager.upload_file(file_content, s3_key)
+            
+            if not upload_success:
+                raise HTTPException(status_code=500, detail=f"Failed to upload {file.filename} to S3")
+            
+            # Construct S3 path (S3 manager adds 'upload/' prefix automatically)
+            s3_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{s3_key}"
+            saved_file_paths.append(s3_path)
+            
+            # Reset file pointer for potential reuse
+            file.file.seek(0)
+
+        # Create BatchJob record
+        batch_job = BatchJob(
+            company_id=company_id,
+            doc_type_id=doc_type_id,
+            upload_description=upload_description,
+            s3_upload_path=f"s3://{s3_manager.bucket_name}/{s3_upload_base}",  # Store the S3 base path
+            upload_type=upload_type,
+            original_file_names=file_names,
+            file_count=len(files),
+            status="pending",
+        )
+
+        db.add(batch_job)
+        db.commit()
+        db.refresh(batch_job)
+
+        logger.info(f"Created unified batch job {batch_job.batch_id} with {len(files)} files")
+
+        # Start background processing
+        background_tasks.add_task(
+            process_unified_batch, 
+            batch_job.batch_id, 
+            saved_file_paths,
+            company.company_code,
+            doc_type.type_code
+        )
+
+        return {
+            "batch_id": batch_job.batch_id,
+            "status": "success",
+            "message": f"Batch upload started with {len(files)} files",
+            "upload_type": upload_type.value,
+            "file_count": len(files)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in unified batch processing: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+
+
+async def process_unified_batch(batch_id: int, file_paths: List[str], company_code: str, doc_type_code: str):
+    """Background task to process unified batch of any file types"""
+    
+    with Session(engine) as db:
+        try:
+            # Get batch job
+            batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
+            if not batch_job:
+                logger.error(f"Batch job {batch_id} not found")
+                return
+
+            batch_job.status = "processing"
+            db.commit()
+
+            # Load prompt and schema
+            prompt_schema_manager = get_prompt_schema_manager()
+            prompt = await prompt_schema_manager.get_prompt(company_code, doc_type_code)
+            schema = await prompt_schema_manager.get_schema(company_code, doc_type_code)
+
+            if not prompt or not schema:
+                batch_job.status = "failed"
+                batch_job.error_message = "Prompt or schema not found"
+                db.commit()
+                return
+
+            # Process all files and collect processable units
+            processable_files = []
+            s3_manager = get_s3_manager()
+            temp_files_to_cleanup = []
+            
+            for file_path in file_paths:
+                # Check if this is an S3 path
+                if file_path.startswith('s3://'):
+                    # Download S3 file to temporary location
+                    file_content = s3_manager.download_file_by_stored_path(file_path)
+                    if not file_content:
+                        logger.error(f"Failed to download S3 file: {file_path}")
+                        continue
+                    
+                    # Create temporary file
+                    import tempfile
+                    original_filename = file_path.split('/')[-1]
+                    file_ext = os.path.splitext(original_filename)[1].lower()
+                    
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
+                        temp_file.write(file_content)
+                        local_file_path = temp_file.name
+                        temp_files_to_cleanup.append(local_file_path)
+                else:
+                    # Use local file path as-is
+                    local_file_path = file_path
+                    original_filename = os.path.basename(file_path)
+                    file_ext = os.path.splitext(original_filename)[1].lower()
+                
+                if file_ext == '.zip':
+                    # Extract ZIP and add images
+                    with zipfile.ZipFile(local_file_path, 'r') as zip_ref:
+                        extract_dir = local_file_path + "_extracted"
+                        os.makedirs(extract_dir, exist_ok=True)
+                        zip_ref.extractall(extract_dir)
+                        temp_files_to_cleanup.append(extract_dir)
+                        
+                        # Find images in extracted files
+                        for root, dirs, files in os.walk(extract_dir):
+                            for file in files:
+                                if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                                    processable_files.append(os.path.join(root, file))
+                
+                elif file_ext == '.pdf':
+                    # For PDF files, add both the local path and original filename
+                    processable_files.append((local_file_path, original_filename))
+                
+                elif file_ext in ['.jpg', '.jpeg', '.png']:
+                    # Direct image processing
+                    processable_files.append((local_file_path, original_filename))
+
+            # Update total files count based on what we actually found
+            batch_job.total_files = len(processable_files)
+            batch_job.processed_files = 0
+            db.commit()
+
+            if len(processable_files) == 0:
+                batch_job.status = "failed"
+                batch_job.error_message = "No processable files found"
+                db.commit()
+                return
+
+            # Process each file
+            all_results = []
+            
+            for i, file_info in enumerate(processable_files):
+                try:
+                    # Handle both tuple (local_path, original_filename) and string formats
+                    if isinstance(file_info, tuple):
+                        local_file_path, original_filename = file_info
+                    else:
+                        local_file_path = file_info
+                        original_filename = os.path.basename(file_info)
+                    
+                    # Create individual ProcessingJob for tracking
+                    job = ProcessingJob(
+                        company_id=batch_job.company_id,
+                        doc_type_id=batch_job.doc_type_id,
+                        batch_id=batch_id,
+                        original_filename=original_filename,
+                        status="processing"
+                    )
+                    db.add(job)
+                    db.commit()
+
+                    # Process the file
+                    if local_file_path.lower().endswith('.pdf'):
+                        result = await extract_text_from_pdf(local_file_path, prompt, schema)
+                    else:
+                        result = await extract_text_from_image(local_file_path, prompt, schema)
+                    
+                    # Add filename to result
+                    if isinstance(result, dict):
+                        result["__filename"] = original_filename
+                        all_results.append(result)
+                    
+                    # Update job status
+                    job.status = "success"
+                    db.commit()
+
+                except Exception as e:
+                    logger.error(f"Error processing {file_path}: {str(e)}")
+                    job.status = "failed"
+                    job.error_message = str(e)
+                    db.commit()
+                    
+                    # Add error result
+                    all_results.append({
+                        "__filename": os.path.basename(file_path),
+                        "__error": f"Processing failed: {str(e)}"
+                    })
+
+                # Update batch progress
+                batch_job.processed_files += 1
+                db.commit()
+
+            # Save batch results to S3
+            if all_results:
+                s3_manager = get_s3_manager()
+                s3_results_base = f"batch_results/{company_code}/{doc_type_code}/batch_{batch_id}"
+
+                # Save JSON to S3
+                json_content = json.dumps(all_results, indent=2, ensure_ascii=False)
+                json_s3_key = f"{s3_results_base}/batch_results.json"
+                json_upload_success = s3_manager.upload_file(json_content.encode('utf-8'), json_s3_key)
+                
+                if json_upload_success:
+                    batch_job.json_output_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{json_s3_key}"
+                else:
+                    logger.error(f"Failed to upload JSON results to S3 for batch {batch_id}")
+
+                # Save Excel to S3
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temp_excel:
+                    temp_excel_path = temp_excel.name
+                
+                # Generate Excel file locally first
+                json_to_excel(all_results, temp_excel_path)
+                
+                # Upload Excel to S3
+                with open(temp_excel_path, 'rb') as excel_file:
+                    excel_content = excel_file.read()
+                    excel_s3_key = f"{s3_results_base}/batch_results.xlsx"
+                    excel_upload_success = s3_manager.upload_file(excel_content, excel_s3_key)
+                    
+                    if excel_upload_success:
+                        batch_job.excel_output_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{excel_s3_key}"
+                    else:
+                        logger.error(f"Failed to upload Excel results to S3 for batch {batch_id}")
+                
+                # Clean up temporary file
+                os.unlink(temp_excel_path)
+
+            batch_job.status = "completed"
+            db.commit()
+
+            logger.info(f"Unified batch {batch_id} completed successfully")
+
+        except Exception as e:
+            logger.error(f"Error in unified batch processing: {str(e)}")
+            try:
+                batch_job.status = "failed"
+                batch_job.error_message = str(e)
+                db.commit()
+            except Exception:
+                pass
+        
+        finally:
+            # Clean up temporary files
+            import shutil
+            for temp_path in temp_files_to_cleanup:
+                try:
+                    if os.path.isfile(temp_path):
+                        os.unlink(temp_path)
+                    elif os.path.isdir(temp_path):
+                        shutil.rmtree(temp_path)
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to cleanup temporary file {temp_path}: {cleanup_error}")
+
+
 # Add new endpoints to get batch job status and list batch jobs
 @app.get("/batch-jobs/{batch_id}", response_model=dict)
 def get_batch_job_status(batch_id: int, db: Session = Depends(get_db)):
@@ -2862,8 +3249,8 @@ def get_batch_job_status(batch_id: int, db: Session = Depends(get_db)):
             if hasattr(batch_job, "uploader") and batch_job.uploader
             else None
         ),
-        "zip_filename": batch_job.zip_filename,
-        "s3_zipfile_path": batch_job.s3_zipfile_path,
+        "zip_filename": batch_job.upload_description,
+        "s3_zipfile_path": batch_job.s3_upload_path,
         "total_files": batch_job.total_files,
         "processed_files": batch_job.processed_files,
         "status": batch_job.status,
@@ -2914,8 +3301,8 @@ def list_batch_jobs(
             "uploader_name": (
                 job.uploader.name if hasattr(job, "uploader") and job.uploader else None
             ),
-            "zip_filename": job.zip_filename,
-            "s3_zipfile_path": job.s3_zipfile_path,
+            "zip_filename": job.upload_description,
+            "s3_zipfile_path": job.s3_upload_path,
             "total_files": job.total_files,
             "processed_files": job.processed_files,
             "status": job.status,
@@ -2957,6 +3344,66 @@ def download_file_by_path(path: str):
         filename=filename,
         media_type=content_type,
     )
+
+
+@app.get("/download-s3")
+def download_s3_file(s3_path: str):
+    """Download a file from S3 by its S3 path or URI."""
+    try:
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+        
+        # Download file content from S3
+        file_content = s3_manager.download_file_by_stored_path(s3_path)
+        if not file_content:
+            raise HTTPException(status_code=404, detail=f"File not found in S3: {s3_path}")
+        
+        # Extract filename from S3 path
+        if s3_path.startswith('s3://'):
+            # Handle s3://bucket/path format
+            path_parts = s3_path.replace('s3://', '').split('/')
+            filename = path_parts[-1] if path_parts else "download"
+        else:
+            # Handle direct S3 key format
+            filename = s3_path.split('/')[-1] if '/' in s3_path else s3_path
+        
+        # Determine content type based on file extension
+        file_extension = os.path.splitext(filename)[1].lower()
+        content_type = "application/octet-stream"  # Default
+        
+        if file_extension == ".json":
+            content_type = "application/json"
+        elif file_extension == ".xlsx":
+            content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        elif file_extension == ".pdf":
+            content_type = "application/pdf"
+        elif file_extension in [".jpg", ".jpeg"]:
+            content_type = "image/jpeg"
+        elif file_extension == ".png":
+            content_type = "image/png"
+        
+        # Create temporary file to serve
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+        
+        # Return file response and schedule cleanup
+        response = FileResponse(
+            path=temp_file_path,
+            filename=filename,
+            media_type=content_type,
+        )
+        
+        # Add header to indicate this is from S3
+        response.headers["X-File-Source"] = "S3"
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error downloading S3 file {s3_path}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download file: {str(e)}")
 
 
 @app.get("/files")

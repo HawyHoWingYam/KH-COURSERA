@@ -16,14 +16,14 @@ export default function Home() {
             href="/upload"
             className="bg-blue-600 text-white py-3 px-6 rounded-lg text-center font-medium hover:bg-blue-700 transition-colors"
           >
-            Upload New Document
+            Upload New Documents
           </Link>
 
           <Link
             href="/jobs"
             className="bg-slate-200 text-slate-800 py-3 px-6 rounded-lg text-center font-medium hover:bg-slate-300 transition-colors"
           >
-            View Processing Jobs
+            View Processing Batches
           </Link>
         </div>
       </div>

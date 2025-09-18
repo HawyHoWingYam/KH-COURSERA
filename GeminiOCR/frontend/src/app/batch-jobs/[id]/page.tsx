@@ -56,6 +56,7 @@ export default function BatchJobDetails() {
       pending: 'bg-yellow-100 text-yellow-800',
       processing: 'bg-blue-100 text-blue-800',
       success: 'bg-green-100 text-green-800',
+      completed: 'bg-green-100 text-green-800',
       failed: 'bg-red-100 text-red-800',
     };
 
@@ -70,8 +71,10 @@ export default function BatchJobDetails() {
   const downloadFile = (path: string | undefined) => {
     if (!path) return;
     
-    // Create a direct download URL to the backend API using the file path
-    const downloadUrl = `${process.env.API_BASE_URL || 'http://localhost:8000'}/download-by-path?path=${encodeURIComponent(path)}`;
+    // Check if path is S3 URI or local path and use appropriate endpoint
+    const isS3Path = path.startsWith('s3://') || path.includes('s3.amazonaws.com');
+    const endpoint = isS3Path ? '/download-s3' : '/download-by-path';
+    const downloadUrl = `${process.env.API_BASE_URL || 'http://localhost:8000'}${endpoint}?${isS3Path ? 's3_path' : 'path'}=${encodeURIComponent(path)}`;
     
     // Open the download URL in a new tab
     window.open(downloadUrl, '_blank');
@@ -194,8 +197,8 @@ export default function BatchJobDetails() {
         </div>
       </div>
 
-      {/* Results Card - Only show if job is successful */}
-      {batchJob.status === 'success' && (
+      {/* Results Card - Only show if job is completed */}
+      {batchJob.status === 'completed' && (
         <div className="bg-white shadow rounded-lg p-6">
           <h2 className="text-xl font-semibold mb-4">Results</h2>
           

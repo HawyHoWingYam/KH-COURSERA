@@ -376,18 +376,18 @@ class ForceDeleteManager:
         
         try:
             # 刪除 ZIP 文件
-            if batch_job.s3_zipfile_path and batch_job.s3_zipfile_path.startswith('s3://'):
+            if batch_job.s3_upload_path and batch_job.s3_upload_path.startswith('s3://'):
                 try:
-                    s3_path = batch_job.s3_zipfile_path.replace('s3://', '')
+                    s3_path = batch_job.s3_upload_path.replace('s3://', '')
                     parts = s3_path.split('/', 1)
                     if len(parts) == 2:
                         bucket, key = parts
                         if self.s3_manager:
                             self.s3_manager.delete_file(key)
                             deleted_count += 1
-                            logger.info(f"Deleted S3 ZIP file: {batch_job.s3_zipfile_path}")
+                            logger.info(f"Deleted S3 ZIP file: {batch_job.s3_upload_path}")
                 except Exception as e:
-                    logger.warning(f"Failed to delete S3 ZIP file {batch_job.s3_zipfile_path}: {e}")
+                    logger.warning(f"Failed to delete S3 ZIP file {batch_job.s3_upload_path}: {e}")
             
             # 刪除 JSON 輸出文件
             if batch_job.json_output_path and batch_job.json_output_path.startswith('s3://'):

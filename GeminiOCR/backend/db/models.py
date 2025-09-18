@@ -210,6 +210,13 @@ class ApiUsage(Base):
     job = relationship("ProcessingJob", back_populates="api_usages")
 
 
+class UploadType(enum.Enum):
+    single_file = "single_file"
+    multiple_files = "multiple_files"
+    zip_file = "zip_file"
+    mixed = "mixed"
+
+
 class BatchJob(Base):
     __tablename__ = "batch_jobs"
 
@@ -219,9 +226,17 @@ class BatchJob(Base):
         Integer, ForeignKey("document_types.doc_type_id"), nullable=False
     )
     uploader_user_id = Column(Integer, ForeignKey("users.user_id"), nullable=True)
-    zip_filename = Column(String(255), nullable=True)
-    s3_zipfile_path = Column(String(255), nullable=True)
+    
+    # Updated for unified batch system
+    upload_description = Column(String(255), nullable=True, comment='Description of uploaded files (filename or summary)')
+    s3_upload_path = Column(String(255), nullable=True, comment='S3 path to uploaded files')
+    upload_type = Column(Enum(UploadType), nullable=False, default=UploadType.single_file, comment='Type of upload batch')
+    original_file_names = Column(JSON, nullable=True, comment='Array of original uploaded filenames')
+    file_count = Column(Integer, nullable=False, default=0, comment='Total number of files in this batch')
+    
+    # Keep legacy column for backward compatibility during transition
     original_zipfile = Column(String(255), nullable=True)
+    
     total_files = Column(Integer, default=0)
     processed_files = Column(Integer, default=0)
     status = Column(String(20), nullable=False, default="pending")

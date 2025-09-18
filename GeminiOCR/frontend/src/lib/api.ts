@@ -355,6 +355,7 @@ export async function fetchDocumentTypes(): Promise<DocumentType[]> {
 }
 
 // And this one for processing documents
+// DEPRECATED - use processBatch instead
 export async function processDocument(formData: FormData): Promise<{ job_id: number; status: string; message: string }> {
   console.log('Processing document:', formData);
   
@@ -384,7 +385,7 @@ export async function fetchJobs(
   return fetchApi<Job[]>(endpoint);
 }
 
-// Add function to process ZIP files
+// Add function to process ZIP files (DEPRECATED - use processBatch instead)
 export async function processZipFile(formData: FormData): Promise<{ batch_id: number; status: string; message: string }> {
   console.log('Processing ZIP file:', formData);
   
@@ -394,6 +395,33 @@ export async function processZipFile(formData: FormData): Promise<{ batch_id: nu
   }
   
   return fetchApi<{ batch_id: number; status: string; message: string }>('/process-zip', {
+    method: 'POST',
+    body: formData,
+  });
+}
+
+// Unified batch processing function (replaces processDocument and processZipFile)
+export async function processBatch(formData: FormData): Promise<{ 
+  batch_id: number; 
+  status: string; 
+  message: string; 
+  upload_type: string;
+  file_count: number;
+}> {
+  console.log('Processing unified batch:', formData);
+  
+  // Log the form data contents for debugging
+  for (const [key, value] of formData.entries()) {
+    console.log(`${key}: ${value instanceof File ? `${value.name} (${value.size} bytes)` : value}`);
+  }
+  
+  return fetchApi<{ 
+    batch_id: number; 
+    status: string; 
+    message: string; 
+    upload_type: string;
+    file_count: number;
+  }>('/process-batch', {
     method: 'POST',
     body: formData,
   });

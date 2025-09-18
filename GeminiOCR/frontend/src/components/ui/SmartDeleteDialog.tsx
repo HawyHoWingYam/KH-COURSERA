@@ -171,7 +171,7 @@ export default function SmartDeleteDialog({
                     <div className="bg-gray-50 rounded p-3 space-y-2">
                       {dependencies.dependencies.processing_jobs > 0 && (
                         <div className="flex justify-between">
-                          <span className="text-gray-700">• Processing Jobs:</span>
+                          <span className="text-gray-700">• Processing Records:</span>
                           <span className="font-medium text-red-600">{dependencies.dependencies.processing_jobs}</span>
                         </div>
                       )}
