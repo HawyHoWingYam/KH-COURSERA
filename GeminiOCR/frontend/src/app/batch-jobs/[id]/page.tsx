@@ -70,52 +70,66 @@ export default function BatchJobDetails() {
     );
   };
 
-  // Update the download function to use Next.js proxy routes
+  // Update the download function to keep downloads in the same origin and force attachment behaviour
   const downloadFile = async (path: string | undefined) => {
     if (!path) return;
-    
-    try {
-      // Check if path is S3 URI or local path
-      const isS3Path = path.startsWith('s3://') || path.includes('s3.amazonaws.com');
-      
-      if (isS3Path) {
-        // Try to get presigned URL first for better performance
+
+    const isS3Path = path.startsWith('s3://') || path.includes('s3.amazonaws.com');
+    const endpoint = isS3Path ? '/api/download-s3' : '/api/download-by-path';
+    const param = isS3Path ? 's3_path' : 'path';
+    const downloadUrl = `${endpoint}?${param}=${encodeURIComponent(path)}`;
+    const fallbackFilename = path.split('/').pop() || 'download';
+
+    const extractFilename = (header: string | null): string | null => {
+      if (!header) return null;
+
+      const filenameStarMatch = header.match(/filename\*=UTF-8''([^;]+)/i);
+      if (filenameStarMatch?.[1]) {
         try {
-          const response = await fetch(`/api/download-s3-url?s3_path=${encodeURIComponent(path)}`);
-          
-          if (response.ok) {
-            const data = await response.json();
-            // Open the direct S3 URL in a new tab
-            window.open(data.download_url, '_blank');
-            return;
-          }
-        } catch (presignedError) {
-          console.log('Presigned URL failed, falling back to proxy download');
+          return decodeURIComponent(filenameStarMatch[1]);
+        } catch (error) {
+          console.warn('Failed to decode RFC 5987 filename, falling back:', error);
         }
-        
-        // Fallback to proxy download
-        const downloadUrl = `/api/download-s3?s3_path=${encodeURIComponent(path)}`;
-        window.open(downloadUrl, '_blank');
-      } else {
-        // For local paths, use the proxy route
-        const downloadUrl = `/api/download-by-path?path=${encodeURIComponent(path)}`;
-        window.open(downloadUrl, '_blank');
       }
+
+      const filenameMatch = header.match(/filename="?([^";]+)"?/i);
+      if (filenameMatch?.[1]) {
+        return filenameMatch[1];
+      }
+
+      return null;
+    };
+
+    try {
+      const response = await fetch(downloadUrl);
+
+      if (!response.ok) {
+        throw new Error(`下載失敗 (${response.status} ${response.statusText})`);
+      }
+
+      const blob = await response.blob();
+      const contentDisposition = response.headers.get('content-disposition');
+      const resolvedFilename = extractFilename(contentDisposition) || fallbackFilename;
+      const blobUrl = window.URL.createObjectURL(blob);
+
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = resolvedFilename;
+      link.style.display = 'none';
+
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      window.URL.revokeObjectURL(blobUrl);
     } catch (error) {
       console.error('Error downloading file:', error);
-      
-      // Show user-friendly error message
+
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
       alert(`下載失敗: ${errorMessage}\n\n請稍後再試，或聯繫管理員。`);
-      
-      // Last resort fallback - still use proxy routes
-      const isS3Path = path.startsWith('s3://') || path.includes('s3.amazonaws.com');
-      const endpoint = isS3Path ? '/api/download-s3' : '/api/download-by-path';
-      const param = isS3Path ? 's3_path' : 'path';
-      const downloadUrl = `${endpoint}?${param}=${encodeURIComponent(path)}`;
-      
-      // Try one more time with user confirmation
-      if (confirm('是否要再次嘗試下載？')) {
+
+      // Last resort fallback - open download URL directly in new tab
+      if (confirm('是否要改為直接開啟下載連結？')) {
         window.open(downloadUrl, '_blank');
       }
     }
@@ -369,4 +383,4 @@ export default function BatchJobDetails() {
       )}
     </div>
   );
-} 
+}

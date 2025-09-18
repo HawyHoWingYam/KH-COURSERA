@@ -2418,6 +2418,107 @@ async def get_monthly_usage(db: Session = Depends(get_db)):
         for result in results
     ]
 
+@app.get("/api/admin/usage/by-job")
+async def get_api_usage_by_job(
+    job_id: int = None, 
+    batch_id: int = None, 
+    limit: int = 50, 
+    db: Session = Depends(get_db)
+):
+    """Get API usage statistics by individual job or batch"""
+    try:
+        query = db.query(
+            ApiUsage.job_id,
+            ProcessingJob.original_filename,
+            ProcessingJob.batch_id,
+            ApiUsage.input_token_count,
+            ApiUsage.output_token_count,
+            ApiUsage.processing_time_seconds,
+            ApiUsage.api_call_timestamp,
+            ApiUsage.model,
+            ApiUsage.status
+        ).join(ProcessingJob, ApiUsage.job_id == ProcessingJob.job_id)
+        
+        if job_id:
+            query = query.filter(ApiUsage.job_id == job_id)
+        elif batch_id:
+            query = query.filter(ProcessingJob.batch_id == batch_id)
+        else:
+            # Return latest records if no filter
+            query = query.order_by(ApiUsage.api_call_timestamp.desc()).limit(limit)
+        
+        results = query.all()
+        
+        return [
+            {
+                "job_id": result.job_id,
+                "filename": result.original_filename,
+                "batch_id": result.batch_id,
+                "input_tokens": result.input_token_count,
+                "output_tokens": result.output_token_count,
+                "total_tokens": result.input_token_count + result.output_token_count,
+                "processing_time": result.processing_time_seconds,
+                "timestamp": result.api_call_timestamp,
+                "model": result.model,
+                "status": result.status
+            }
+            for result in results
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch API usage by job: {str(e)}")
+
+@app.get("/api/admin/usage/summary")
+async def get_api_usage_summary(db: Session = Depends(get_db)):
+    """Get overall API usage summary"""
+    try:
+        summary = db.query(
+            func.count(ApiUsage.usage_id).label("total_calls"),
+            func.sum(ApiUsage.input_token_count).label("total_input_tokens"),
+            func.sum(ApiUsage.output_token_count).label("total_output_tokens"),
+            func.avg(ApiUsage.processing_time_seconds).label("avg_processing_time"),
+            func.min(ApiUsage.api_call_timestamp).label("first_call"),
+            func.max(ApiUsage.api_call_timestamp).label("last_call")
+        ).first()
+        
+        # Get status breakdown
+        status_breakdown = db.query(
+            ApiUsage.status,
+            func.count(ApiUsage.usage_id).label("count")
+        ).group_by(ApiUsage.status).all()
+        
+        # Get model usage breakdown
+        model_breakdown = db.query(
+            ApiUsage.model,
+            func.count(ApiUsage.usage_id).label("count"),
+            func.sum(ApiUsage.input_token_count + ApiUsage.output_token_count).label("total_tokens")
+        ).group_by(ApiUsage.model).all()
+        
+        return {
+            "summary": {
+                "total_api_calls": summary.total_calls or 0,
+                "total_input_tokens": summary.total_input_tokens or 0,
+                "total_output_tokens": summary.total_output_tokens or 0,
+                "total_tokens": (summary.total_input_tokens or 0) + (summary.total_output_tokens or 0),
+                "average_processing_time": float(summary.avg_processing_time or 0),
+                "first_call": summary.first_call,
+                "last_call": summary.last_call
+            },
+            "status_breakdown": [
+                {"status": status.status, "count": status.count}
+                for status in status_breakdown
+            ],
+            "model_breakdown": [
+                {
+                    "model": model.model, 
+                    "calls": model.count,
+                    "total_tokens": model.total_tokens or 0
+                }
+                for model in model_breakdown
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch API usage summary: {str(e)}")
+
 
 @app.post("/process-zip", response_model=dict)
 async def process_zip_file(
@@ -2710,13 +2811,11 @@ async def process_zip_task(
                                     f"Raw text content: {str(result['text'])[:500]}"
                                 )
 
-                            # Create a simple JSON with error info instead
+                            # Create a simple JSON with error info instead - only business data
                             json_data = {
                                 "__filename": os.path.basename(image_path),
-                                "__error": f"Failed to parse result: {str(json_err)}",
-                                "__raw_text": str(result)[
-                                    :500
-                                ],  # Include first 500 chars of raw result
+                                "__error": f"Failed to parse result: {str(json_err)}"
+                                # Remove __raw_text to keep results.json clean
                             }
                             all_results.append(json_data)
 
@@ -3135,24 +3234,70 @@ async def process_unified_batch(batch_id: int, file_paths: List[str], company_co
                     else:
                         result = await extract_text_from_image(local_file_path, prompt, schema)
                     
-                    # Add filename to result
+                    # Record API usage data to database
+                    if isinstance(result, dict) and "text" in result:
+                        api_usage = ApiUsage(
+                            job_id=job.job_id,
+                            input_token_count=result.get("input_tokens", 0),
+                            output_token_count=result.get("output_tokens", 0),
+                            api_call_timestamp=datetime.now(),
+                            model=app_config.get("model_name", "gemini-2.5-flash-preview-05-20"),
+                            processing_time_seconds=result.get("processing_time", 0),
+                            status="success"
+                        )
+                        db.add(api_usage)
+                    
+                    # Clean result data - only keep business data for results.json
                     if isinstance(result, dict):
-                        result["__filename"] = original_filename
-                        all_results.append(result)
+                        # Extract only the text content for results
+                        text_content = result.get("text", "")
+                        if text_content:
+                            try:
+                                # Parse the text content as JSON
+                                business_data = json.loads(text_content)
+                                business_data["__filename"] = original_filename
+                                all_results.append(business_data)
+                            except json.JSONDecodeError:
+                                # If text is not JSON, wrap it
+                                all_results.append({
+                                    "text": text_content,
+                                    "__filename": original_filename
+                                })
+                        else:
+                            # Fallback for missing text
+                            all_results.append({
+                                "__filename": original_filename,
+                                "__error": "No text content in result"
+                            })
                     
                     # Update job status
                     job.status = "success"
                     db.commit()
 
                 except Exception as e:
-                    logger.error(f"Error processing {file_path}: {str(e)}")
+                    logger.error(f"Error processing {local_file_path}: {str(e)}")
                     job.status = "failed"
                     job.error_message = str(e)
+                    
+                    # If we have a result with API usage data, still record it
+                    if 'result' in locals() and isinstance(result, dict):
+                        if "input_tokens" in result or "output_tokens" in result:
+                            api_usage = ApiUsage(
+                                job_id=job.job_id,
+                                input_token_count=result.get("input_tokens", 0),
+                                output_token_count=result.get("output_tokens", 0),
+                                api_call_timestamp=datetime.now(),
+                                model=app_config.get("model_name", "gemini-2.5-flash-preview-05-20"),
+                                processing_time_seconds=result.get("processing_time", 0),
+                                status="failed"
+                            )
+                            db.add(api_usage)
+                    
                     db.commit()
                     
-                    # Add error result
+                    # Add error result to batch results
                     all_results.append({
-                        "__filename": os.path.basename(file_path),
+                        "__filename": original_filename,
                         "__error": f"Processing failed: {str(e)}"
                     })
 

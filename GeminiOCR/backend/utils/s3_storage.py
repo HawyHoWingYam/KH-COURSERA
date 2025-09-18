@@ -444,9 +444,22 @@ class S3StorageManager:
         full_key = f"{folder_prefix}{key}"
 
         try:
+            filename = os.path.basename(full_key) or "download"
+            safe_filename = filename.replace('"', '')
+            content_type, _ = mimetypes.guess_type(safe_filename)
+
+            params = {
+                "Bucket": self.bucket_name,
+                "Key": full_key,
+                "ResponseContentDisposition": f'attachment; filename="{safe_filename}"',
+            }
+
+            if content_type:
+                params["ResponseContentType"] = content_type
+
             url = self.s3_client.generate_presigned_url(
                 "get_object",
-                Params={"Bucket": self.bucket_name, "Key": full_key},
+                Params=params,
                 ExpiresIn=expires_in,
             )
             logger.info(f"✅ 生成预签名URL成功：s3://{self.bucket_name}/{full_key}")
@@ -484,10 +497,23 @@ class S3StorageManager:
                 
                 logger.info(f"🔗 Generating presigned URL for S3 URI: bucket={bucket_name}, key={s3_key}")
                 
+                filename = os.path.basename(s3_key) or "download"
+                safe_filename = filename.replace('"', '')
+                content_type, _ = mimetypes.guess_type(safe_filename)
+
+                params = {
+                    "Bucket": bucket_name,
+                    "Key": s3_key,
+                    "ResponseContentDisposition": f'attachment; filename="{safe_filename}"',
+                }
+
+                if content_type:
+                    params["ResponseContentType"] = content_type
+
                 # Generate presigned URL
                 url = self.s3_client.generate_presigned_url(
                     "get_object",
-                    Params={"Bucket": bucket_name, "Key": s3_key},
+                    Params=params,
                     ExpiresIn=expires_in
                 )
                 
@@ -498,9 +524,22 @@ class S3StorageManager:
             elif stored_path and not stored_path.startswith('/'):
                 logger.info(f"🔗 Generating presigned URL for relative path in bucket {self.bucket_name}: {stored_path}")
                 
+                filename = os.path.basename(stored_path) or "download"
+                safe_filename = filename.replace('"', '')
+                content_type, _ = mimetypes.guess_type(safe_filename)
+
+                params = {
+                    "Bucket": self.bucket_name,
+                    "Key": stored_path,
+                    "ResponseContentDisposition": f'attachment; filename="{safe_filename}"',
+                }
+
+                if content_type:
+                    params["ResponseContentType"] = content_type
+
                 url = self.s3_client.generate_presigned_url(
                     "get_object",
-                    Params={"Bucket": self.bucket_name, "Key": stored_path},
+                    Params=params,
                     ExpiresIn=expires_in
                 )
                 
