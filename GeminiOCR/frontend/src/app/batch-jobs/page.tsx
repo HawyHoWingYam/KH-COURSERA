@@ -2,38 +2,62 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { fetchBatchJobs, BatchJob } from '@/lib/api';
+import { fetchBatchJobs, BatchJob, PaginationInfo } from '@/lib/api';
+import Pagination from '@/components/ui/Pagination';
 
 export default function BatchJobsIndex() {
   const [batchJobs, setBatchJobs] = useState<BatchJob[]>([]);
+  const [pagination, setPagination] = useState<PaginationInfo | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
   const [isLoading, setIsLoading] = useState(true);
+  const [isPageLoading, setIsPageLoading] = useState(false);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    const loadData = async () => {
+  const loadData = async (page: number = 1, isPageChange: boolean = false) => {
+    if (isPageChange) {
+      setIsPageLoading(true);
+    } else {
       setIsLoading(true);
-      try {
-        const batchJobsData = await fetchBatchJobs();
-        setBatchJobs(batchJobsData);
-      } catch (error) {
-        console.error('Error fetching batch jobs:', error);
-        setError('Failed to load batch jobs');
-      } finally {
-        setIsLoading(false);
-      }
-    };
+    }
+    
+    try {
+      const offset = (page - 1) * 20; // 20 items per page
+      const response = await fetchBatchJobs({ limit: 20, offset });
+      setBatchJobs(response.data);
+      setPagination(response.pagination);
+      setCurrentPage(page);
+      setError('');
+    } catch (error) {
+      console.error('Error fetching batch jobs:', error);
+      setError('Failed to load batch jobs');
+    } finally {
+      setIsLoading(false);
+      setIsPageLoading(false);
+    }
+  };
 
-    loadData();
+  useEffect(() => {
+    loadData(currentPage);
 
-    // Set up refresh interval
+    // Set up refresh interval - only refresh current page
     const refreshInterval = setInterval(() => {
-      fetchBatchJobs()
-        .then(updatedBatchJobs => setBatchJobs(updatedBatchJobs))
+      const offset = (currentPage - 1) * 20;
+      fetchBatchJobs({ limit: 20, offset })
+        .then(response => {
+          setBatchJobs(response.data);
+          setPagination(response.pagination);
+        })
         .catch(err => console.error('Error refreshing batch jobs:', err));
     }, 30000);
 
     return () => clearInterval(refreshInterval);
-  }, []);
+  }, [currentPage]);
+
+  const handlePageChange = (page: number) => {
+    if (page !== currentPage && page >= 1 && (!pagination || page <= Math.min(pagination.total_pages, 5))) {
+      loadData(page, true);
+    }
+  };
 
   const formatUploadDescription = (batchJob: BatchJob) => {
     if (batchJob.zip_filename) {
@@ -64,6 +88,15 @@ export default function BatchJobsIndex() {
         {isLoading && batchJobs.length === 0 ? (
           <div className="text-center py-10">Loading batch jobs...</div>
         ) : (
+          <>
+          {isPageLoading && (
+            <div className="bg-blue-50 border-l-4 border-blue-400 text-blue-700 p-4">
+              <div className="flex items-center">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mr-2"></div>
+                Loading page {currentPage}...
+              </div>
+            </div>
+          )}
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
@@ -162,6 +195,17 @@ export default function BatchJobsIndex() {
               )}
             </tbody>
           </table>
+          
+          {/* Pagination */}
+          {pagination && (
+            <Pagination 
+              pagination={pagination} 
+              onPageChange={handlePageChange}
+              maxPages={5}
+              disabled={isPageLoading}
+            />
+          )}
+          </>
         )}
       </div>
     </div>

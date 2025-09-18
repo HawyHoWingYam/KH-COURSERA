@@ -3262,7 +3262,7 @@ def get_batch_job_status(batch_id: int, db: Session = Depends(get_db)):
     }
 
 
-@app.get("/batch-jobs", response_model=List[dict])
+@app.get("/batch-jobs", response_model=dict)
 def list_batch_jobs(
     company_id: Optional[int] = None,
     doc_type_id: Optional[int] = None,
@@ -3282,35 +3282,55 @@ def list_batch_jobs(
     if status is not None:
         query = query.filter(BatchJob.status == status)
 
+    # Get total count before applying pagination
+    total_count = query.count()
+
     # Order by most recent first
     query = query.order_by(BatchJob.created_at.desc())
 
     # Apply pagination
     batch_jobs = query.offset(offset).limit(limit).all()
 
-    return [
-        {
-            "batch_id": job.batch_id,
-            "company_id": job.company_id,
-            "company_name": job.company.company_name if job.company else None,
-            "doc_type_id": job.doc_type_id,
-            "type_name": job.document_type.type_name if job.document_type else None,
-            "uploader_user_id": (
-                job.uploader_user_id if hasattr(job, "uploader_user_id") else None
-            ),
-            "uploader_name": (
-                job.uploader.name if hasattr(job, "uploader") and job.uploader else None
-            ),
-            "zip_filename": job.upload_description,
-            "s3_zipfile_path": job.s3_upload_path,
-            "total_files": job.total_files,
-            "processed_files": job.processed_files,
-            "status": job.status,
-            "created_at": job.created_at.isoformat(),
-            "updated_at": job.updated_at.isoformat(),
+    # Calculate pagination info
+    total_pages = (total_count + limit - 1) // limit  # Ceiling division
+    current_page = (offset // limit) + 1
+    has_next = offset + limit < total_count
+    has_previous = offset > 0
+
+    return {
+        "data": [
+            {
+                "batch_id": job.batch_id,
+                "company_id": job.company_id,
+                "company_name": job.company.company_name if job.company else None,
+                "doc_type_id": job.doc_type_id,
+                "type_name": job.document_type.type_name if job.document_type else None,
+                "uploader_user_id": (
+                    job.uploader_user_id if hasattr(job, "uploader_user_id") else None
+                ),
+                "uploader_name": (
+                    job.uploader.name if hasattr(job, "uploader") and job.uploader else None
+                ),
+                "zip_filename": job.upload_description,
+                "s3_zipfile_path": job.s3_upload_path,
+                "total_files": job.total_files,
+                "processed_files": job.processed_files,
+                "status": job.status,
+                "created_at": job.created_at.isoformat(),
+                "updated_at": job.updated_at.isoformat(),
+            }
+            for job in batch_jobs
+        ],
+        "pagination": {
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "current_page": current_page,
+            "limit": limit,
+            "offset": offset,
+            "has_next": has_next,
+            "has_previous": has_previous,
         }
-        for job in batch_jobs
-    ]
+    }
 
 
 @app.delete("/batch-jobs/{batch_id}", response_model=dict)
@@ -3386,6 +3406,27 @@ def download_file_by_path(path: str):
         media_type=content_type,
     )
 
+
+@app.get("/download-s3-url")
+def get_s3_download_url(s3_path: str, expires_in: int = 3600):
+    """Generate a presigned URL for direct S3 download."""
+    try:
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+        
+        # Generate presigned URL
+        download_url = s3_manager.generate_presigned_url_for_path(s3_path, expires_in)
+        if not download_url:
+            raise HTTPException(status_code=404, detail=f"Cannot generate download URL for: {s3_path}")
+        
+        return {"download_url": download_url, "expires_in": expires_in}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate S3 download URL: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate download URL: {str(e)}")
 
 @app.get("/download-s3")
 def download_s3_file(s3_path: str):

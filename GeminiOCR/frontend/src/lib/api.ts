@@ -432,9 +432,24 @@ export async function fetchBatchJobStatus(batchId: number): Promise<BatchJob> {
   return fetchApi<BatchJob>(`/batch-jobs/${batchId}`);
 }
 
+export interface PaginationInfo {
+  total_count: number;
+  total_pages: number;
+  current_page: number;
+  limit: number;
+  offset: number;
+  has_next: boolean;
+  has_previous: boolean;
+}
+
+export interface BatchJobsResponse {
+  data: BatchJob[];
+  pagination: PaginationInfo;
+}
+
 export async function fetchBatchJobs(
   params: { company_id?: number; doc_type_id?: number; status?: string; limit?: number; offset?: number } = {}
-): Promise<BatchJob[]> {
+): Promise<BatchJobsResponse> {
   const queryParams = new URLSearchParams();
   
   if (params.company_id) queryParams.append('company_id', params.company_id.toString());
@@ -446,7 +461,7 @@ export async function fetchBatchJobs(
   const queryString = queryParams.toString();
   const endpoint = `/batch-jobs${queryString ? `?${queryString}` : ''}`;
   
-  return fetchApi<BatchJob[]>(endpoint);
+  return fetchApi<BatchJobsResponse>(endpoint);
 }
 
 export interface BatchJobDeleteResult {

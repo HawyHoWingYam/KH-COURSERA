@@ -198,13 +198,21 @@ AWS_DEFAULT_REGION=ap-southeast-1
 
 # API URLs
 API_BASE_URL=18.142.68.48
+
+# Production should use:
+# NEXT_PUBLIC_API_URL=http://18.142.68.48:8000
+```
+
+**Frontend Environment (env/.env.local - Development):**
+```bash
+# Frontend API Configuration (Development)
 NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
-**Frontend Environment (env/.env.local):**
+**Frontend Environment (Production - AWS):**
 ```bash
-# Frontend API Configuration
-NEXT_PUBLIC_API_URL=http://localhost:8000
+# Frontend API Configuration (Production)
+NEXT_PUBLIC_API_URL=http://18.142.68.48:8000
 ```
 
 ## Database Schema

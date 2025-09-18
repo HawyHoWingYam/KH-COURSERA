@@ -32,8 +32,8 @@ export default function Jobs() {
     const loadData = async () => {
       setIsLoading(true);
       try {
-        const batchJobsData = await fetchBatchJobs();
-        setBatchJobs(batchJobsData);
+        const response = await fetchBatchJobs();
+        setBatchJobs(response.data); // Use response.data instead of direct response
       } catch (error) {
         console.error('Error fetching batch jobs:', error);
         setError('Failed to load batch jobs');
@@ -47,7 +47,7 @@ export default function Jobs() {
     // Set up an interval to refresh batch job data every 30 seconds
     const refreshInterval = setInterval(() => {
       fetchBatchJobs()
-        .then(updatedBatchJobs => setBatchJobs(updatedBatchJobs))
+        .then(response => setBatchJobs(response.data)) // Use response.data instead of direct response
         .catch(err => console.error('Error refreshing batch jobs:', err));
     }, 30000);
 

@@ -455,6 +455,69 @@ class S3StorageManager:
             logger.error(f"❌ 生成预签名URL失败：{e}")
             return None
 
+    def generate_presigned_url_for_path(self, stored_path: str, expires_in: int = 3600) -> Optional[str]:
+        """
+        Generate presigned URL for stored database path (S3 URI or relative path)
+        
+        Args:
+            stored_path: Full S3 URI (s3://bucket/key) or relative path within current bucket
+            expires_in: URL expiration time in seconds
+            
+        Returns:
+            Optional[str]: Presigned URL for direct download
+        """
+        try:
+            if not stored_path:
+                logger.warning("⚠️ Empty stored path provided")
+                return None
+            
+            # Handle S3 URI format: s3://bucket/key/path/file.ext
+            if stored_path.startswith('s3://'):
+                # Parse S3 URI
+                s3_parts = stored_path[5:].split('/', 1)  # Remove 's3://' and split on first '/'
+                if len(s3_parts) != 2:
+                    logger.error(f"❌ Invalid S3 URI format: {stored_path}")
+                    return None
+                    
+                bucket_name = s3_parts[0]
+                s3_key = s3_parts[1]
+                
+                logger.info(f"🔗 Generating presigned URL for S3 URI: bucket={bucket_name}, key={s3_key}")
+                
+                # Generate presigned URL
+                url = self.s3_client.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": bucket_name, "Key": s3_key},
+                    ExpiresIn=expires_in
+                )
+                
+                logger.info(f"✅ Successfully generated presigned URL for S3 URI: {stored_path}")
+                return url
+                
+            # Handle relative paths (assume they're relative to current bucket)
+            elif stored_path and not stored_path.startswith('/'):
+                logger.info(f"🔗 Generating presigned URL for relative path in bucket {self.bucket_name}: {stored_path}")
+                
+                url = self.s3_client.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": self.bucket_name, "Key": stored_path},
+                    ExpiresIn=expires_in
+                )
+                
+                logger.info(f"✅ Successfully generated presigned URL for relative path: {stored_path}")
+                return url
+                
+            else:
+                logger.error(f"❌ Unsupported path format: {stored_path}")
+                return None
+                
+        except ClientError as e:
+            logger.error(f"❌ Failed to generate presigned URL: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Unknown error generating presigned URL: {e}")
+            return None
+
     def list_files(
         self, prefix: str = "", max_keys: int = 1000, folder: str = "upload"
     ) -> list:

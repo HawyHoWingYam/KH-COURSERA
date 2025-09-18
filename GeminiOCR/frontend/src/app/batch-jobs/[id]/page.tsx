@@ -70,17 +70,55 @@ export default function BatchJobDetails() {
     );
   };
 
-  // Update the download function
-  const downloadFile = (path: string | undefined) => {
+  // Update the download function to use Next.js proxy routes
+  const downloadFile = async (path: string | undefined) => {
     if (!path) return;
     
-    // Check if path is S3 URI or local path and use appropriate endpoint
-    const isS3Path = path.startsWith('s3://') || path.includes('s3.amazonaws.com');
-    const endpoint = isS3Path ? '/download-s3' : '/download-by-path';
-    const downloadUrl = `${process.env.API_BASE_URL || 'http://localhost:8000'}${endpoint}?${isS3Path ? 's3_path' : 'path'}=${encodeURIComponent(path)}`;
-    
-    // Open the download URL in a new tab
-    window.open(downloadUrl, '_blank');
+    try {
+      // Check if path is S3 URI or local path
+      const isS3Path = path.startsWith('s3://') || path.includes('s3.amazonaws.com');
+      
+      if (isS3Path) {
+        // Try to get presigned URL first for better performance
+        try {
+          const response = await fetch(`/api/download-s3-url?s3_path=${encodeURIComponent(path)}`);
+          
+          if (response.ok) {
+            const data = await response.json();
+            // Open the direct S3 URL in a new tab
+            window.open(data.download_url, '_blank');
+            return;
+          }
+        } catch (presignedError) {
+          console.log('Presigned URL failed, falling back to proxy download');
+        }
+        
+        // Fallback to proxy download
+        const downloadUrl = `/api/download-s3?s3_path=${encodeURIComponent(path)}`;
+        window.open(downloadUrl, '_blank');
+      } else {
+        // For local paths, use the proxy route
+        const downloadUrl = `/api/download-by-path?path=${encodeURIComponent(path)}`;
+        window.open(downloadUrl, '_blank');
+      }
+    } catch (error) {
+      console.error('Error downloading file:', error);
+      
+      // Show user-friendly error message
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      alert(`下載失敗: ${errorMessage}\n\n請稍後再試，或聯繫管理員。`);
+      
+      // Last resort fallback - still use proxy routes
+      const isS3Path = path.startsWith('s3://') || path.includes('s3.amazonaws.com');
+      const endpoint = isS3Path ? '/api/download-s3' : '/api/download-by-path';
+      const param = isS3Path ? 's3_path' : 'path';
+      const downloadUrl = `${endpoint}?${param}=${encodeURIComponent(path)}`;
+      
+      // Try one more time with user confirmation
+      if (confirm('是否要再次嘗試下載？')) {
+        window.open(downloadUrl, '_blank');
+      }
+    }
   };
 
   const handleDeleteBatchJob = async () => {
