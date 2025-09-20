@@ -68,7 +68,7 @@ class DatabaseManager:
             environment: 环境名称 (local, sandbox, uat, production)
                        如果未提供，将从环境变量 DATABASE_ENV 读取
         """
-        self.environment = environment or os.getenv('DATABASE_ENV', 'local')
+        self.environment = environment or os.getenv('DATABASE_ENV') or os.getenv('ENVIRONMENT', 'local')
         self.config: Optional[DatabaseConfig] = None
         self.engine = None
         self.readonly_engine = None
@@ -95,10 +95,21 @@ class DatabaseManager:
             
     async def _load_config(self):
         """加载数据库配置"""
-        config_path = Path(__file__).parent / "config" / "database" / f"{self.environment}.yml"
+        # Try multiple config path locations
+        config_paths = [
+            Path(__file__).parent / ".." / ".." / "env" / f"{self.environment}.yml",  # Project root env/
+            Path(__file__).parent / "config" / "database" / f"{self.environment}.yml",  # Legacy location
+            Path(__file__).parent / ".." / "env" / f"{self.environment}.yml",  # Backend parent env/
+        ]
         
-        if not config_path.exists():
-            raise FileNotFoundError(f"Database config file not found: {config_path}")
+        config_path = None
+        for path in config_paths:
+            if path.exists():
+                config_path = path
+                break
+                
+        if not config_path:
+            raise FileNotFoundError(f"Database config file not found in any location for environment: {self.environment}")
             
         with open(config_path, 'r', encoding='utf-8') as f:
             config_data = yaml.safe_load(f)

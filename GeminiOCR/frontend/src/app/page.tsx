@@ -25,6 +25,13 @@ export default function Home() {
           >
             View Processing Batches
           </Link>
+
+          <Link
+            href="/admin"
+            className="bg-green-600 text-white py-3 px-6 rounded-lg text-center font-medium hover:bg-green-700 transition-colors"
+          >
+            Admin Page
+          </Link>
         </div>
       </div>
     </div>
