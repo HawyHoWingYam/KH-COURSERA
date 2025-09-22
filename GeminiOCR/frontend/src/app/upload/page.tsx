@@ -14,6 +14,7 @@ export default function Upload() {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<number | null>(null);
   const [files, setFiles] = useState<File[]>([]);
+  const [mappingFile, setMappingFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -144,6 +145,32 @@ export default function Upload() {
     setFiles(validFiles);
   };
 
+  const handleMappingFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0];
+    setError('');
+
+    if (!selectedFile) {
+      setMappingFile(null);
+      return;
+    }
+
+    // Check file extension
+    if (!selectedFile.name.toLowerCase().endsWith('.xlsx')) {
+      setError('Mapping file must be an Excel (.xlsx) file');
+      e.target.value = '';
+      return;
+    }
+
+    // Check file size (max 10MB)
+    if (selectedFile.size > MAX_FILE_SIZE) {
+      setError(`Mapping file size (${formatFileSize(selectedFile.size)}) exceeds the ${formatFileSize(MAX_FILE_SIZE)} limit`);
+      e.target.value = '';
+      return;
+    }
+
+    setMappingFile(selectedFile);
+  };
+
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024) return bytes + ' bytes';
     else if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -189,6 +216,11 @@ export default function Upload() {
       files.forEach((file, index) => {
         formData.append('files', file);
       });
+
+      // Add mapping file if selected
+      if (mappingFile) {
+        formData.append('mapping_file', mappingFile);
+      }
       
       // Process as unified batch (handles all file types)
       const result = await processBatch(formData);
@@ -290,6 +322,38 @@ export default function Upload() {
               </div>
               <p className="text-xs text-gray-500 mt-2">
                 Total size: {formatFileSize(files.reduce((sum, f) => sum + f.size, 0))}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Cost Allocation Mapping File */}
+        <div>
+          <label className="block text-gray-700 mb-2">
+            Cost Allocation Mapping File 
+            <span className="text-gray-500 text-sm">(Optional)</span>
+          </label>
+          <input
+            type="file"
+            accept=".xlsx"
+            onChange={handleMappingFileChange}
+            className="w-full"
+          />
+          <p className="text-sm text-gray-500 mt-1">
+            Upload an Excel (.xlsx) file containing phone number to shop/department mappings for automatic cost allocation. 
+            The file should contain multiple sheets (Phone, Broadband, CLP, Water, HKELE) with appropriate mapping data.
+          </p>
+          {mappingFile && (
+            <div className="mt-3 p-3 bg-green-50 rounded border border-green-200">
+              <p className="text-sm font-medium text-green-700 mb-1">
+                Mapping file selected:
+              </p>
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-green-600">{mappingFile.name}</span>
+                <span className="text-green-500">{formatFileSize(mappingFile.size)}</span>
+              </div>
+              <p className="text-xs text-green-600 mt-1">
+                ✓ Cost allocation will be performed automatically after OCR processing
               </p>
             </div>
           )}

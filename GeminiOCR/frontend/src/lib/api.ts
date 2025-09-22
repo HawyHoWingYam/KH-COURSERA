@@ -72,6 +72,11 @@ export interface BatchJob {
   error_message?: string;
   json_output_path?: string;
   excel_output_path?: string;
+  // Cost allocation output files
+  netsuite_csv_path?: string;
+  matching_report_path?: string;
+  summary_report_path?: string;
+  unmatched_count?: number;
   created_at: string;
   updated_at: string;
   uploader_user_id?: number;

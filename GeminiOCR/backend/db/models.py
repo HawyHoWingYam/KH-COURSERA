@@ -243,6 +243,14 @@ class BatchJob(Base):
     error_message = Column(Text, nullable=True)
     json_output_path = Column(String(255), nullable=True)
     excel_output_path = Column(String(255), nullable=True)
+    csv_output_path = Column(String(255), nullable=True)
+    
+    # Cost allocation output files
+    netsuite_csv_path = Column(String(255), nullable=True, comment='Path to NetSuite-ready CSV file')
+    matching_report_path = Column(String(255), nullable=True, comment='Path to matching details report (Excel)')
+    summary_report_path = Column(String(255), nullable=True, comment='Path to cost summary report (Excel)')
+    unmatched_count = Column(Integer, nullable=True, default=0, comment='Number of unmatched records in cost allocation')
+    
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

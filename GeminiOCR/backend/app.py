@@ -42,12 +42,18 @@ from db.models import (
     UploadType,
 )
 from main import extract_text_from_image, extract_text_from_pdf
-from utils.excel_converter import json_to_excel
+from utils.excel_converter import json_to_excel, json_to_csv
 from utils.s3_storage import get_s3_manager, is_s3_enabled
 from utils.file_storage import get_file_storage
 from utils.prompt_schema_manager import get_prompt_schema_manager, load_prompt_and_schema
 from utils.company_file_manager import FileType
 from utils.force_delete_manager import ForceDeleteManager
+
+# Cost allocation imports
+from cost_allocation.mapping_processor import process_mapping_file
+from cost_allocation.matcher import enrich_ocr_data
+from cost_allocation.netsuite_formatter import generate_netsuite_csv
+from cost_allocation.report_generator import generate_matching_report, generate_summary_report
 
 # 獲取應用配置
 try:
@@ -1749,6 +1755,64 @@ async def process_document_task(
 
         db.add(excel_doc_file)
 
+        # Generate CSV file
+        csv_key = f"{company_code}/{doc_type_code}/{job_id}/results.csv"
+        csv_saved = False
+
+        if s3_manager:
+            # Create temporary CSV file
+            with tempfile.NamedTemporaryFile(
+                suffix=".csv", delete=False
+            ) as temp_csv:
+                temp_csv_path = temp_csv.name
+
+            try:
+                # Generate CSV file to temporary location
+                json_to_csv(result_obj, temp_csv_path, doc_type_code)
+                csv_file_size = os.path.getsize(temp_csv_path)
+
+                # Upload to S3 exports folder
+                with open(temp_csv_path, "rb") as csv_file_obj:
+                    csv_saved = s3_manager.save_excel_export(
+                        csv_key, csv_file_obj
+                    )  # Using save_excel_export as it works for any file type
+            finally:
+                # Clean up temporary file
+                if os.path.exists(temp_csv_path):
+                    os.unlink(temp_csv_path)
+
+        if not csv_saved:
+            # Fallback to local storage
+            output_dir = os.path.join(
+                "uploads", company_code, doc_type_code, str(job_id)
+            )
+            os.makedirs(output_dir, exist_ok=True)
+            csv_output_path = os.path.join(output_dir, "results.csv")
+
+            json_to_csv(result_obj, csv_output_path, doc_type_code)
+            csv_file_size = os.path.getsize(csv_output_path)
+            csv_s3_path = csv_output_path
+        else:
+            csv_s3_path = f"s3://{s3_manager.bucket_name}/exports/{csv_key}"
+
+        csv_file = DBFile(
+            file_path=csv_s3_path,
+            file_name="results.csv",
+            file_type="text/csv",
+            file_size=csv_file_size,
+        )
+
+        db.add(csv_file)
+        db.commit()
+        db.refresh(csv_file)
+
+        # Create document file relationship
+        csv_doc_file = DocumentFile(
+            job_id=job_id, file_id=csv_file.file_id, file_category="csv_output"
+        )
+
+        db.add(csv_doc_file)
+
         # Update job completion info
         job.status = "success"
         # Comment out these lines
@@ -2863,9 +2927,11 @@ async def process_zip_task(
                 # Generate S3 keys for batch results
                 batch_json_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_results.json"
                 batch_excel_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_results.xlsx"
+                batch_csv_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_results.csv"
 
                 json_saved = False
                 excel_saved = False
+                csv_saved = False
 
                 if s3_manager:
                     # Save JSON results to S3 results folder
@@ -2903,8 +2969,33 @@ async def process_zip_task(
                         if os.path.exists(temp_excel_path):
                             os.unlink(temp_excel_path)
 
+                    # Create temporary CSV file and upload to S3
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".csv", delete=False
+                    ) as temp_csv:
+                        temp_csv_path = temp_csv.name
+
+                    try:
+                        # Convert to CSV
+                        await asyncio.to_thread(
+                            json_to_csv, all_results, temp_csv_path
+                        )
+
+                        # Upload to S3 exports folder
+                        with open(temp_csv_path, "rb") as csv_file_obj:
+                            csv_saved = s3_manager.save_excel_export(
+                                batch_csv_key, csv_file_obj
+                            )  # Using save_excel_export as it works for any file type
+
+                        if csv_saved:
+                            csv_s3_path = f"s3://{s3_manager.bucket_name}/exports/{batch_csv_key}"
+                    finally:
+                        # Clean up temporary file
+                        if os.path.exists(temp_csv_path):
+                            os.unlink(temp_csv_path)
+
                 # Fallback to local storage if S3 fails
-                if not json_saved or not excel_saved:
+                if not json_saved or not excel_saved or not csv_saved:
                     if not json_saved:
                         json_output_path = os.path.join(
                             output_dir, "batch_results.json"
@@ -2922,9 +3013,19 @@ async def process_zip_task(
                         )
                         excel_s3_path = excel_output_path
 
+                    if not csv_saved:
+                        csv_output_path = os.path.join(
+                            output_dir, "batch_results.csv"
+                        )
+                        await asyncio.to_thread(
+                            json_to_csv, all_results, csv_output_path
+                        )
+                        csv_s3_path = csv_output_path
+
                 # Update batch job with output paths and complete status
                 batch_job.json_output_path = json_s3_path
                 batch_job.excel_output_path = excel_s3_path
+                batch_job.csv_output_path = csv_s3_path
                 batch_job.status = "success"
                 db.commit()
 
@@ -2945,6 +3046,7 @@ async def process_batch(
     company_id: int = Form(...),
     doc_type_id: int = Form(...),
     files: List[UploadFile] = File(...),
+    mapping_file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
 ):
     """
@@ -2998,6 +3100,40 @@ async def process_batch(
                 status_code=500, 
                 detail=f"Schema file not found for {company.company_code}/{doc_type.type_code}"
             )
+
+        # Validate mapping file if provided
+        mapping_file_path = None
+        if mapping_file:
+            # Check file extension
+            if not mapping_file.filename.lower().endswith('.xlsx'):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Mapping file must be an Excel (.xlsx) file"
+                )
+            
+            # Check file size (max 10MB)
+            content = await mapping_file.read()
+            if len(content) > 10 * 1024 * 1024:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Mapping file size must be less than 10MB"
+                )
+            await mapping_file.seek(0)  # Reset file pointer
+            
+            # Save mapping file to S3 for processing
+            s3_manager = get_s3_manager()
+            if s3_manager:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                mapping_s3_key = f"mapping_files/{company.company_code}/mapping_{timestamp}_{mapping_file.filename}"
+                upload_success = s3_manager.upload_file(content, mapping_s3_key)
+                
+                if upload_success:
+                    mapping_file_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{mapping_s3_key}"
+                    logger.info(f"Mapping file uploaded to: {mapping_file_path}")
+                else:
+                    logger.warning("Failed to upload mapping file to S3, proceeding without cost allocation")
+            else:
+                logger.warning("S3 not available, proceeding without cost allocation")
 
         # Analyze uploaded files and determine batch type
         file_names = [f.filename for f in files]
@@ -3100,7 +3236,8 @@ async def process_batch(
             batch_job.batch_id, 
             saved_file_paths,
             company.company_code,
-            doc_type.type_code
+            doc_type.type_code,
+            mapping_file_path
         )
 
         return {
@@ -3118,7 +3255,7 @@ async def process_batch(
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
 
-async def process_unified_batch(batch_id: int, file_paths: List[str], company_code: str, doc_type_code: str):
+async def process_unified_batch(batch_id: int, file_paths: List[str], company_code: str, doc_type_code: str, mapping_file_path: Optional[str] = None):
     """Background task to process unified batch of any file types"""
     
     with Session(engine) as db:
@@ -3339,8 +3476,117 @@ async def process_unified_batch(batch_id: int, file_paths: List[str], company_co
                     else:
                         logger.error(f"Failed to upload Excel results to S3 for batch {batch_id}")
                 
-                # Clean up temporary file
+                # Clean up temporary Excel file
                 os.unlink(temp_excel_path)
+
+                # Save CSV to S3
+                with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as temp_csv:
+                    temp_csv_path = temp_csv.name
+                
+                # Generate CSV file locally first
+                json_to_csv(all_results, temp_csv_path)
+                
+                # Upload CSV to S3
+                with open(temp_csv_path, 'rb') as csv_file:
+                    csv_content = csv_file.read()
+                    csv_s3_key = f"{s3_results_base}/batch_results.csv"
+                    csv_upload_success = s3_manager.upload_file(csv_content, csv_s3_key)
+                    
+                    if csv_upload_success:
+                        batch_job.csv_output_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{csv_s3_key}"
+                    else:
+                        logger.error(f"Failed to upload CSV results to S3 for batch {batch_id}")
+                
+                # Clean up temporary CSV file
+                os.unlink(temp_csv_path)
+
+            # Process cost allocation if mapping file is provided
+            if mapping_file_path and all_results:
+                logger.info(f"Starting cost allocation process for batch {batch_id}")
+                try:
+                    # Download mapping file from S3
+                    mapping_content = None
+                    if mapping_file_path.startswith('s3://'):
+                        s3_key = mapping_file_path.replace(f"s3://{s3_manager.bucket_name}/", "")
+                        if s3_key.startswith(s3_manager.upload_prefix):
+                            s3_key = s3_key[len(s3_manager.upload_prefix):]
+                        mapping_content = s3_manager.download_file(s3_key)
+                    
+                    if mapping_content:
+                        # Process mapping file
+                        mapping_result = process_mapping_file(mapping_content)
+                        
+                        if mapping_result.get('success', False):
+                            unified_map = mapping_result['unified_map']
+                            
+                            # Flatten all OCR results for matching
+                            flat_results = []
+                            for result in all_results:
+                                if 'service_details' in result:
+                                    # Handle structured results (like 3HK, CMHK)
+                                    for service in result['service_details']:
+                                        for charge_item in service.get('charge_items', []):
+                                            flat_record = {
+                                                'mobile_number': service.get('service_number', service.get('mobile_number', '')),
+                                                'account_number': result.get('account_number', result.get('customer_number', '')),
+                                                'description': charge_item.get('description', ''),
+                                                'amount': charge_item.get('amount', 0),
+                                                'period': charge_item.get('item_date_or_period', ''),
+                                                'company_name': result.get('company_name', ''),
+                                                'bill_date': result.get('bill_date', result.get('issue_date', ''))
+                                            }
+                                            flat_results.append(flat_record)
+                                else:
+                                    # Handle simple results
+                                    flat_results.append(result)
+                            
+                            # Enrich OCR data with mapping information
+                            enrichment_result = enrich_ocr_data(flat_results, unified_map)
+                            
+                            if enrichment_result.get('success', False):
+                                enriched_records = enrichment_result['enriched_records']
+                                
+                                # Generate NetSuite CSV
+                                netsuite_csv = generate_netsuite_csv(enriched_records)
+                                if netsuite_csv:
+                                    # Upload NetSuite CSV to S3
+                                    netsuite_s3_key = f"{s3_results_base}/netsuite_import.csv"
+                                    if s3_manager.upload_file(netsuite_csv.encode('utf-8-sig'), netsuite_s3_key):
+                                        batch_job.netsuite_csv_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{netsuite_s3_key}"
+                                        logger.info(f"NetSuite CSV uploaded to: {batch_job.netsuite_csv_path}")
+                                
+                                # Generate matching details report
+                                matching_report = generate_matching_report(enriched_records, mapping_result)
+                                if matching_report:
+                                    # Upload matching report to S3
+                                    matching_s3_key = f"{s3_results_base}/matching_details.xlsx"
+                                    if s3_manager.upload_file(matching_report, matching_s3_key):
+                                        batch_job.matching_report_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{matching_s3_key}"
+                                        logger.info(f"Matching report uploaded to: {batch_job.matching_report_path}")
+                                
+                                # Generate cost summary report
+                                summary_report = generate_summary_report(enriched_records)
+                                if summary_report:
+                                    # Upload summary report to S3
+                                    summary_s3_key = f"{s3_results_base}/cost_summary.xlsx"
+                                    if s3_manager.upload_file(summary_report, summary_s3_key):
+                                        batch_job.summary_report_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{summary_s3_key}"
+                                        logger.info(f"Summary report uploaded to: {batch_job.summary_report_path}")
+                                
+                                # Update unmatched count
+                                batch_job.unmatched_count = enrichment_result.get('unmatched_records', 0)
+                                
+                                logger.info(f"Cost allocation completed for batch {batch_id}: {enrichment_result.get('matched_records', 0)}/{enrichment_result.get('total_records', 0)} records matched")
+                            else:
+                                logger.error(f"Failed to enrich OCR data: {enrichment_result.get('error', 'Unknown error')}")
+                        else:
+                            logger.error(f"Failed to process mapping file: {mapping_result.get('error', 'Unknown error')}")
+                    else:
+                        logger.error(f"Failed to download mapping file from: {mapping_file_path}")
+                
+                except Exception as e:
+                    logger.error(f"Error in cost allocation process: {str(e)}")
+                    # Don't fail the entire batch if cost allocation fails
 
             batch_job.status = "completed"
             db.commit()

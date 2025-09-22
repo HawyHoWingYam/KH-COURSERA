@@ -317,6 +317,69 @@ export default function BatchJobDetails() {
                 </button>
               </div>
             )}
+
+            {/* Cost Allocation Reports Section */}
+            {(batchJob.netsuite_csv_path || batchJob.matching_report_path || batchJob.summary_report_path) && (
+              <div className="border-t pt-4 mt-4">
+                <h3 className="text-lg font-semibold mb-3 text-green-600">Cost Allocation Reports</h3>
+                
+                {batchJob.netsuite_csv_path && (
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <p className="font-medium">NetSuite Import File</p>
+                      <p className="text-sm text-gray-500">CSV file ready for NetSuite import</p>
+                    </div>
+                    <button 
+                      onClick={() => downloadFile(batchJob.netsuite_csv_path)}
+                      className="bg-green-600 text-white py-1 px-3 rounded hover:bg-green-700"
+                    >
+                      Download CSV
+                    </button>
+                  </div>
+                )}
+
+                {batchJob.matching_report_path && (
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <p className="font-medium">Matching Details Report</p>
+                      <p className="text-sm text-gray-500">Excel file with matched and unmatched records</p>
+                    </div>
+                    <button 
+                      onClick={() => downloadFile(batchJob.matching_report_path)}
+                      className="bg-green-600 text-white py-1 px-3 rounded hover:bg-green-700"
+                    >
+                      Download Report
+                    </button>
+                  </div>
+                )}
+
+                {batchJob.summary_report_path && (
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <p className="font-medium">Cost Summary Report</p>
+                      <p className="text-sm text-gray-500">Excel file with cost breakdown by department and shop</p>
+                    </div>
+                    <button 
+                      onClick={() => downloadFile(batchJob.summary_report_path)}
+                      className="bg-green-600 text-white py-1 px-3 rounded hover:bg-green-700"
+                    >
+                      Download Summary
+                    </button>
+                  </div>
+                )}
+
+                {batchJob.unmatched_count !== undefined && batchJob.unmatched_count > 0 && (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded p-3 mt-3">
+                    <p className="text-yellow-700 font-medium">
+                      ⚠️ {batchJob.unmatched_count} records could not be matched to any shop/department
+                    </p>
+                    <p className="text-sm text-yellow-600 mt-1">
+                      Check the matching details report to review unmatched records and update your mapping file if needed.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
