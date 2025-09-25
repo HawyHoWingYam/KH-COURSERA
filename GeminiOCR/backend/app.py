@@ -4340,6 +4340,87 @@ def create_order_item(order_id: int, request: CreateOrderItemRequest, db: Sessio
         logger.error(f"Failed to create order item: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to create order item: {str(e)}")
 
+@app.delete("/orders/{order_id}/items/{item_id}", response_model=dict)
+def delete_order_item(
+    order_id: int,
+    item_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete an order item and all its associated files"""
+    try:
+        # Verify order exists and is in DRAFT status
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only delete items from orders in DRAFT status")
+
+        # Verify item exists and belongs to the order
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Get all files linked to this item for cleanup
+        file_links = db.query(OrderItemFile).filter(OrderItemFile.item_id == item_id).all()
+        file_storage = get_file_storage()
+
+        # Delete files from storage and cleanup file records
+        for file_link in file_links:
+            file_info = file_link.file
+
+            # Delete from storage using order file system
+            try:
+                file_storage.delete_order_file(file_info.file_path)
+            except Exception as storage_error:
+                logger.warning(f"Failed to delete order file {file_info.file_id} from storage: {str(storage_error)}")
+
+            # Remove the file link
+            db.delete(file_link)
+
+            # Delete the file record if no other items reference it
+            other_links = db.query(OrderItemFile).filter(OrderItemFile.file_id == file_info.file_id).count()
+            if other_links == 0:
+                db.delete(file_info)
+
+        # Delete the order item (this will cascade delete file links due to DB constraints)
+        db.delete(item)
+
+        # Update order totals
+        order.total_items = db.query(OcrOrderItem).filter(OcrOrderItem.order_id == order_id).count()
+        order.completed_items = db.query(OcrOrderItem).filter(
+            OcrOrderItem.order_id == order_id,
+            OcrOrderItem.status == OrderItemStatus.COMPLETED
+        ).count()
+        order.failed_items = db.query(OcrOrderItem).filter(
+            OcrOrderItem.order_id == order_id,
+            OcrOrderItem.status == OrderItemStatus.FAILED
+        ).count()
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "message": "Order item deleted successfully",
+            "item_id": item_id,
+            "files_deleted": len(file_links),
+            "order_totals": {
+                "total_items": order.total_items,
+                "completed_items": order.completed_items,
+                "failed_items": order.failed_items
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to delete order item: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete order item: {str(e)}")
+
 @app.post("/orders/{order_id}/submit", response_model=dict)
 def submit_order(order_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Submit order for processing"""
@@ -4431,19 +4512,15 @@ def upload_files_to_order_item(
                     detail=f"File {file.filename} type not supported. Please upload images or PDFs."
                 )
 
-            # Generate S3 path for order item files
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            s3_key = f"upload/orders/{order_id}/items/{item_id}/{timestamp}_{file.filename}"
-
             # Get file size before upload (to avoid I/O operation on closed file)
             file.file.seek(0, 2)  # Move to end of file
             file_size = file.file.tell()  # Get file size
             file.file.seek(0)  # Reset to beginning
 
-            # Save file to storage
+            # Save file to storage using dedicated order file system
             try:
-                file_path, original_filename = file_storage.save_uploaded_file(
-                    file, company.company_code, doc_type.type_code, item_id
+                file_path, original_filename = file_storage.save_order_file(
+                    file, order_id, item_id
                 )
 
                 # Create file record
@@ -4540,6 +4617,81 @@ def list_order_item_files(order_id: int, item_id: int, db: Session = Depends(get
         logger.error(f"Failed to list order item files: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to list files: {str(e)}")
 
+@app.delete("/orders/{order_id}/items/{item_id}/files/{file_id}", response_model=dict)
+def delete_order_item_file(
+    order_id: int,
+    item_id: int,
+    file_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete a specific file from an order item"""
+    try:
+        # Verify order exists and is in DRAFT status
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only delete files from orders in DRAFT status")
+
+        # Verify item exists and belongs to the order
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Verify file exists and is linked to the item
+        file_link = db.query(OrderItemFile).filter(
+            OrderItemFile.item_id == item_id,
+            OrderItemFile.file_id == file_id
+        ).first()
+        if not file_link:
+            raise HTTPException(status_code=404, detail="File not linked to this item")
+
+        # Get file info for deletion from storage
+        file_info = db.query(DBFile).filter(DBFile.file_id == file_id).first()
+        if not file_info:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Delete file from storage using order file system
+        try:
+            file_storage = get_file_storage()
+            file_storage.delete_order_file(file_info.file_path)
+        except Exception as storage_error:
+            logger.warning(f"Failed to delete order file from storage: {str(storage_error)}")
+            # Continue with database deletion even if storage deletion fails
+
+        # Remove file link from order item
+        db.delete(file_link)
+
+        # Delete the file record if no other items reference it
+        other_links = db.query(OrderItemFile).filter(OrderItemFile.file_id == file_id).count()
+        if other_links == 0:
+            db.delete(file_info)
+
+        # Update item file count
+        remaining_files = db.query(OrderItemFile).filter(OrderItemFile.item_id == item_id).count()
+        item.file_count = remaining_files
+        item.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "message": "File deleted successfully",
+            "item_id": item_id,
+            "file_id": file_id,
+            "remaining_files": remaining_files
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to delete order item file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete file: {str(e)}")
+
 @app.post("/orders/{order_id}/mapping-file", response_model=dict)
 def upload_mapping_file(
     order_id: int,
@@ -4560,22 +4712,13 @@ def upload_mapping_file(
         if not mapping_file.filename.lower().endswith('.xlsx'):
             raise HTTPException(status_code=400, detail="Mapping file must be an Excel (.xlsx) file")
 
-        # For mapping files, we'll use a generic company/doc_type approach
-        # since mapping files apply to the entire order (not specific to one company/doc_type)
-        order_company_code = "ORDER"  # Generic code for order-level files
-        order_doc_type = "MAPPING"    # Generic code for mapping files
-
         # Get file storage manager
         file_storage = get_file_storage()
 
-        # Generate S3 path for mapping file
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        s3_key = f"upload/orders/{order_id}/mapping/{timestamp}_{mapping_file.filename}"
-
         try:
-            # Save file to storage
-            file_path, original_filename = file_storage.save_uploaded_file(
-                mapping_file, order_company_code, order_doc_type, order_id
+            # Save mapping file to storage using dedicated order mapping system
+            file_path, original_filename = file_storage.save_order_mapping_file(
+                mapping_file, order_id
             )
 
             # Update order with mapping file path
@@ -4656,6 +4799,48 @@ def get_mapping_file_headers(order_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Failed to get mapping file headers: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get mapping file headers: {str(e)}")
+
+@app.delete("/orders/{order_id}/mapping-file", response_model=dict)
+def delete_mapping_file(order_id: int, db: Session = Depends(get_db)):
+    """Delete mapping file from order"""
+    try:
+        # Verify order exists and is in DRAFT status
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only delete mapping file from orders in DRAFT status")
+
+        if not order.mapping_file_path:
+            raise HTTPException(status_code=404, detail="No mapping file to delete")
+
+        # Delete file from storage using order file system
+        try:
+            file_storage = get_file_storage()
+            file_storage.delete_order_file(order.mapping_file_path)
+        except Exception as storage_error:
+            logger.warning(f"Failed to delete order mapping file from storage: {str(storage_error)}")
+            # Continue with database update even if storage deletion fails
+
+        # Clear mapping file info from order
+        order.mapping_file_path = None
+        order.mapping_keys = None
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "message": "Mapping file deleted successfully",
+            "order_id": order_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to delete mapping file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete mapping file: {str(e)}")
 
 
 if __name__ == "__main__":

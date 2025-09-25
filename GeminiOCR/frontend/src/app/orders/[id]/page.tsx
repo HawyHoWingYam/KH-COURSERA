@@ -71,11 +71,18 @@ export default function OrderDetailsPage() {
   // File Upload State
   const [uploadingFiles, setUploadingFiles] = useState<{[key: number]: boolean}>({});
 
+  // File Delete State
+  const [deletingFiles, setDeletingFiles] = useState<{[key: string]: boolean}>({});
+
+  // Item Delete State
+  const [deletingItems, setDeletingItems] = useState<{[key: number]: boolean}>({});
+
   // Mapping File State
   const [mappingFile, setMappingFile] = useState<File | null>(null);
   const [mappingHeaders, setMappingHeaders] = useState<{[sheet: string]: string[]} | null>(null);
   const [selectedMappingKeys, setSelectedMappingKeys] = useState<string[]>([]);
   const [isUploadingMapping, setIsUploadingMapping] = useState(false);
+  const [isDeletingMapping, setIsDeletingMapping] = useState(false);
 
   useEffect(() => {
     loadOrder();
@@ -207,6 +214,59 @@ export default function OrderDetailsPage() {
     }
   };
 
+  const deleteFile = async (itemId: number, fileId: number, fileName: string) => {
+    if (!window.confirm(`Are you sure you want to delete "${fileName}"?`)) {
+      return;
+    }
+
+    const deleteKey = `${itemId}-${fileId}`;
+    setDeletingFiles(prev => ({ ...prev, [deleteKey]: true }));
+
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}/files/${fileId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to delete file');
+      }
+
+      // Reload order to show updated file counts and lists
+      loadOrder();
+    } catch (error) {
+      console.error('Error deleting file:', error);
+      setError('Failed to delete file');
+    } finally {
+      setDeletingFiles(prev => ({ ...prev, [deleteKey]: false }));
+    }
+  };
+
+  const deleteItem = async (itemId: number, itemName: string) => {
+    if (!window.confirm(`Are you sure you want to delete "${itemName}" and all its files?`)) {
+      return;
+    }
+
+    setDeletingItems(prev => ({ ...prev, [itemId]: true }));
+
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to delete item');
+      }
+
+      // Reload order to show updated item counts and lists
+      loadOrder();
+    } catch (error) {
+      console.error('Error deleting item:', error);
+      setError('Failed to delete item');
+    } finally {
+      setDeletingItems(prev => ({ ...prev, [itemId]: false }));
+    }
+  };
+
   const uploadMappingFile = async () => {
     if (!mappingFile) return;
 
@@ -234,6 +294,35 @@ export default function OrderDetailsPage() {
       setError('Failed to upload mapping file');
     } finally {
       setIsUploadingMapping(false);
+    }
+  };
+
+  const deleteMappingFile = async () => {
+    if (!window.confirm('Are you sure you want to delete the mapping file?')) {
+      return;
+    }
+
+    setIsDeletingMapping(true);
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/mapping-file`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to delete mapping file');
+      }
+
+      // Clear mapping related state
+      setMappingHeaders(null);
+      setSelectedMappingKeys([]);
+
+      // Reload order to show updated mapping file status
+      loadOrder();
+    } catch (error) {
+      console.error('Error deleting mapping file:', error);
+      setError('Failed to delete mapping file');
+    } finally {
+      setIsDeletingMapping(false);
     }
   };
 
@@ -417,27 +506,49 @@ export default function OrderDetailsPage() {
                       {item.status}
                     </span>
                   </div>
-                  <div className="text-sm text-gray-500">
-                    {item.files && item.files.length > 0 ? (
-                      <div>
-                        <div className="font-medium">Files ({item.files.length}):</div>
-                        <div className="text-xs text-gray-600 space-y-1 mt-1">
-                          {item.files.slice(0, 3).map((file: any) => (
-                            <div key={file.file_id} className="truncate">
-                              📄 {file.filename} ({(file.file_size / 1024).toFixed(1)}KB)
-                            </div>
-                          ))}
-                          {item.files.length > 3 && (
-                            <div className="text-gray-400">
-                              ... and {item.files.length - 3} more files
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ) : (
-                      <div>Files: 0</div>
+                  <div className="flex items-center gap-2">
+                    {canEdit && (
+                      <button
+                        onClick={() => deleteItem(item.item_id, item.item_name)}
+                        disabled={deletingItems[item.item_id]}
+                        className="text-red-600 hover:text-red-800 disabled:text-gray-400 text-sm font-medium"
+                        title={`Delete ${item.item_name}`}
+                      >
+                        {deletingItems[item.item_id] ? 'Deleting...' : 'Delete Item'}
+                      </button>
                     )}
                   </div>
+                </div>
+                <div className="text-sm text-gray-500">
+                  {item.files && item.files.length > 0 ? (
+                    <div>
+                      <div className="font-medium">Files ({item.files.length}):</div>
+                      <div className="text-xs text-gray-600 space-y-1 mt-1">
+                        {item.files.map((file: any) => {
+                          const deleteKey = `${item.item_id}-${file.file_id}`;
+                          return (
+                            <div key={file.file_id} className="flex items-center justify-between">
+                              <div className="truncate flex-1">
+                                📄 {file.filename} ({(file.file_size / 1024).toFixed(1)}KB)
+                              </div>
+                              {canEdit && (
+                                <button
+                                  onClick={() => deleteFile(item.item_id, file.file_id, file.filename)}
+                                  disabled={deletingFiles[deleteKey]}
+                                  className="ml-2 text-red-600 hover:text-red-800 disabled:text-gray-400 text-sm"
+                                  title={`Delete ${file.filename}`}
+                                >
+                                  {deletingFiles[deleteKey] ? '...' : '×'}
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div>Files: 0</div>
+                  )}
                 </div>
                 <div className="text-sm text-gray-600 mb-3">
                   {item.company_name} - {item.doc_type_name}
@@ -479,7 +590,12 @@ export default function OrderDetailsPage() {
 
       {/* Mapping Configuration Section */}
       <div className="bg-white rounded-lg shadow p-6">
-        <h2 className="text-lg font-semibold mb-4">Mapping Configuration</h2>
+        <div className="mb-4">
+          <h2 className="text-lg font-semibold">Mapping Configuration (Optional)</h2>
+          <p className="text-sm text-gray-600 mt-1">
+            You can submit the order for OCR processing first, then configure mapping after reviewing the results.
+          </p>
+        </div>
 
         {canEdit && (
           <div className="mb-6">
@@ -506,8 +622,20 @@ export default function OrderDetailsPage() {
 
         {order.mapping_file_path && (
           <div className="mb-4">
-            <div className="text-sm text-green-600 mb-2">
-              ✓ Mapping file uploaded
+            <div className="flex items-center justify-between">
+              <div className="text-sm text-green-600">
+                ✓ Mapping file uploaded
+              </div>
+              {canEdit && (
+                <button
+                  onClick={deleteMappingFile}
+                  disabled={isDeletingMapping}
+                  className="text-red-600 hover:text-red-800 disabled:text-gray-400 text-sm"
+                  title="Delete mapping file"
+                >
+                  {isDeletingMapping ? 'Deleting...' : 'Delete'}
+                </button>
+              )}
             </div>
           </div>
         )}

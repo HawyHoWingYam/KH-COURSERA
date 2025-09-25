@@ -1,0 +1,67 @@
+﻿Please analyze the provided SmarTone Statement PDF document and extract the information as detailed below. This is a multi-page billing statement for telecommunication services.
+Overall Document Type: SmarTone Statement / Telecommunication Bill (賬戶月結單)
+Global Guidelines:
+* Amounts: Pay close attention to amounts followed by "CR". These represent credits or rebates and MUST be extracted as negative numbers. All other amounts are positive. All currency values should have 2 decimal places.
+* Dates: All dates must be converted to YYYY-MM-DD format. The source format is typically DD/MM/YY.
+* Language: Prioritize extracting the Chinese text for descriptions as English is not consistently available.
+I. Page 1 - Header & Account Summary
+This section contains the main account details and a summary of charges.
+1. Company Name (公司名稱):
+   * Location: Top-left corner of the first page.
+   * Value: Extract the full company name (e.g., "HYAKUNOUSHA INTERNATIONAL LIMITED").
+2. Account Number (賬戶號碼):
+   * Label: Look for "賬戶號碼".
+   * Value: Extract the 8-digit number that follows (e.g., "09782368").
+3. Statement Date (發單日期):
+   * Label: Look for "發單日期".
+   * Value: Extract the date and convert it to YYYY-MM-DD format.
+4. Cut-off Date (截數日期):
+   * Label: Look for "截數日期".
+   * Value: Extract the date and convert it to YYYY-MM-DD format.
+II. Page 1 - Previous Balance & Totals (上月結餘 / 總額)
+1. Previous Balance (上月結餘):
+   * This is an object containing previous balance details.
+   * Previous Total (前單總額):
+      * Label: "前單總額".
+      * Value: Extract the positive number.
+   * Payment Received (自動轉賬):
+      * Label: "自動轉賬".
+      * Value: Extract the number followed by "CR". This must be converted to a negative number.
+2. Current Charges Total (本期總額):
+   * Label: Find the final "總額" at the bottom of the first page's charge summary.
+   * Value: Extract the total amount for the current billing period.
+3. Payment Details (自動轉賬詳情):
+   * This is an object for autopay information.
+   * Autopay Amount (自動轉賬金額):
+      * Label: "自動轉賬金額".
+      * Value: Extract the amount prefixed with "HK$".
+   * Autopay Date (自動轉賬日期):
+      * Label: "自動轉賬日期".
+      * Value: Extract the date and convert it to YYYY-MM-DD format.
+III. Detailed Charges (Other Pages)
+The document contains detailed charge breakdowns for each phone number. You must iterate through all pages to capture the details for every number.
+For EACH phone number listed:
+1. Phone Number Grouping:
+   * A new section for a phone number is identified by the "流動電話/服務 號碼" label.
+   * Phone Number (電話號碼):
+      * Location: This 8-digit number is the primary identifier for the charge group.
+      * Value: Extract the phone number (e.g., "51624747").
+2. Charge Items (項目內容):
+   * For each phone number, extract all line items listed under it into an array.
+   * For EACH line item, extract the following:
+      * Description (項目內容):
+         * Value: Extract the full Chinese description of the charge (e.g., "特選公司月費計劃預繳", "月費回贈", "數據漫遊日費計劃").
+      * Service Period or Date (日期):
+         * Value: Extract the date or date range. Convert it to YYYY-MM-DD or YYYY-MM-DD - YYYY-MM-DD format.
+      * Amount (收費):
+         * Value: Extract the number from the "收費(HK$)" column.
+         * CRITICAL: If the number is followed by "CR", it MUST be a negative value in the output. Otherwise, it is positive.
+3. Subtotal (項目總額):
+   * Label: Look for "項目總額" at the end of each phone number's charge list.
+   * Value: Extract the subtotal amount for that specific phone number.
+IV. Data Validation & Rules
+* Group Correctly: Ensure all charge items are grouped under the correct phone number. A new phone number section starts on a new page or is clearly demarcated.
+* Summation Check: The sum of all the individual phone number subtotals must equal the current_charges_total found on the first page.
+* Negative Numbers: The correct handling of "CR" values as negative numbers is essential for accuracy.
+V. Required Output Structure
+Organize the extracted data into a JSON object. Each phone number should be a distinct object within the phone_bill_details array. Each of those objects will contain an array of its specific charge_items.
