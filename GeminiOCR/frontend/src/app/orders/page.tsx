@@ -1,0 +1,368 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+
+interface Order {
+  order_id: number;
+  order_name: string | null;
+  status: string;
+  total_items: number;
+  completed_items: number;
+  failed_items: number;
+  mapping_file_path: string | null;
+  mapping_keys: string[] | null;
+  final_report_paths: any | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface PaginationInfo {
+  total_count: number;
+  total_pages: number;
+  current_page: number;
+  page_size: number;
+  has_next: boolean;
+  has_prev: boolean;
+}
+
+export default function OrdersPage() {
+  const router = useRouter();
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [pagination, setPagination] = useState<PaginationInfo | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isPageLoading, setIsPageLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+
+  const loadOrders = async (page: number = 1, status: string = '', isPageChange: boolean = false) => {
+    if (isPageChange) {
+      setIsPageLoading(true);
+    } else {
+      setIsLoading(true);
+    }
+
+    try {
+      const offset = (page - 1) * 20;
+      const params = new URLSearchParams({
+        limit: '20',
+        offset: offset.toString()
+      });
+
+      if (status) {
+        params.append('status', status);
+      }
+
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders?${params}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch orders');
+      }
+
+      const data = await response.json();
+      setOrders(data.data);
+      setPagination(data.pagination);
+      setCurrentPage(page);
+      setError('');
+    } catch (error) {
+      console.error('Error fetching orders:', error);
+      setError('Failed to load orders');
+    } finally {
+      setIsLoading(false);
+      setIsPageLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadOrders(currentPage, statusFilter);
+
+    // Set up refresh interval
+    const refreshInterval = setInterval(() => {
+      const offset = (currentPage - 1) * 20;
+      const params = new URLSearchParams({
+        limit: '20',
+        offset: offset.toString()
+      });
+
+      if (statusFilter) {
+        params.append('status', statusFilter);
+      }
+
+      fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders?${params}`)
+        .then(response => response.json())
+        .then(data => {
+          setOrders(data.data);
+          setPagination(data.pagination);
+        })
+        .catch(err => console.error('Error refreshing orders:', err));
+    }, 30000);
+
+    return () => clearInterval(refreshInterval);
+  }, [currentPage, statusFilter]);
+
+  const handlePageChange = (page: number) => {
+    if (page !== currentPage && page >= 1 && (!pagination || page <= pagination.total_pages)) {
+      loadOrders(page, statusFilter, true);
+    }
+  };
+
+  const handleStatusFilterChange = (status: string) => {
+    setStatusFilter(status);
+    setCurrentPage(1);
+    loadOrders(1, status);
+  };
+
+  const createNewOrder = async () => {
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          order_name: `Order ${new Date().toLocaleDateString()}`
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to create order');
+      }
+
+      const data = await response.json();
+      router.push(`/orders/${data.order_id}`);
+    } catch (error) {
+      console.error('Error creating order:', error);
+      setError('Failed to create order');
+    }
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'DRAFT':
+        return 'bg-gray-100 text-gray-800';
+      case 'PROCESSING':
+        return 'bg-blue-100 text-blue-800';
+      case 'MAPPING':
+        return 'bg-yellow-100 text-yellow-800';
+      case 'COMPLETED':
+        return 'bg-green-100 text-green-800';
+      case 'FAILED':
+        return 'bg-red-100 text-red-800';
+      default:
+        return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  const getProgressPercentage = (order: Order) => {
+    if (order.total_items === 0) return 0;
+    return Math.round((order.completed_items / order.total_items) * 100);
+  };
+
+  return (
+    <div className="container mx-auto px-4 py-8">
+      <div className="flex items-center justify-between mb-8">
+        <h1 className="text-2xl font-bold">OCR Orders</h1>
+        <button
+          onClick={createNewOrder}
+          className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-6 rounded"
+        >
+          Create New Order
+        </button>
+      </div>
+
+      {error && (
+        <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6">
+          {error}
+        </div>
+      )}
+
+      {/* Status Filter */}
+      <div className="mb-6">
+        <div className="flex items-center gap-4">
+          <span className="text-sm font-medium text-gray-700">Filter by status:</span>
+          <select
+            value={statusFilter}
+            onChange={(e) => handleStatusFilterChange(e.target.value)}
+            className="border border-gray-300 rounded px-3 py-1 text-sm"
+          >
+            <option value="">All Status</option>
+            <option value="DRAFT">Draft</option>
+            <option value="PROCESSING">Processing</option>
+            <option value="MAPPING">Mapping</option>
+            <option value="COMPLETED">Completed</option>
+            <option value="FAILED">Failed</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-lg shadow overflow-hidden">
+        {isLoading && orders.length === 0 ? (
+          <div className="text-center py-10">Loading orders...</div>
+        ) : (
+          <>
+            {isPageLoading && (
+              <div className="bg-blue-50 border-l-4 border-blue-400 text-blue-700 p-4">
+                <div className="flex items-center">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mr-2"></div>
+                  Loading page {currentPage}...
+                </div>
+              </div>
+            )}
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Order ID
+                  </th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Order Name
+                  </th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Status
+                  </th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Progress
+                  </th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Items
+                  </th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Created
+                  </th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {orders.map((order) => (
+                  <tr key={order.order_id} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap text-gray-900 font-medium">
+                      {order.order_id}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                      {order.order_name || `Order ${order.order_id}`}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusColor(order.status)}`}>
+                        {order.status}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex items-center">
+                        <div className="text-sm text-gray-900">
+                          {order.completed_items}/{order.total_items}
+                        </div>
+                        {order.status === 'PROCESSING' && order.total_items > 0 && (
+                          <div className="ml-2 w-16 bg-gray-200 rounded-full h-2">
+                            <div
+                              className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                              style={{ width: `${getProgressPercentage(order)}%` }}
+                            ></div>
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                      <div className="text-sm">
+                        <div>Total: {order.total_items}</div>
+                        {order.failed_items > 0 && (
+                          <div className="text-red-600">Failed: {order.failed_items}</div>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                      {new Date(order.created_at).toLocaleString()}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-blue-600 hover:text-blue-800">
+                      <Link href={`/orders/${order.order_id}`}>
+                        View Details
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+                {!isLoading && orders.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-6 py-4 text-center text-sm text-gray-500">
+                      No orders found. Create your first order to get started!
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+
+            {/* Pagination */}
+            {pagination && pagination.total_pages > 1 && (
+              <div className="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6">
+                <div className="flex-1 flex justify-between sm:hidden">
+                  <button
+                    onClick={() => handlePageChange(currentPage - 1)}
+                    disabled={!pagination.has_prev || isPageLoading}
+                    className="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    onClick={() => handlePageChange(currentPage + 1)}
+                    disabled={!pagination.has_next || isPageLoading}
+                    className="ml-3 relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Next
+                  </button>
+                </div>
+                <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm text-gray-700">
+                      Showing <span className="font-medium">{((currentPage - 1) * 20) + 1}</span> to{' '}
+                      <span className="font-medium">
+                        {Math.min(currentPage * 20, pagination.total_count)}
+                      </span>{' '}
+                      of <span className="font-medium">{pagination.total_count}</span> results
+                    </p>
+                  </div>
+                  <div>
+                    <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
+                      <button
+                        onClick={() => handlePageChange(currentPage - 1)}
+                        disabled={!pagination.has_prev || isPageLoading}
+                        className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Previous
+                      </button>
+                      {Array.from({ length: Math.min(pagination.total_pages, 5) }, (_, i) => {
+                        const page = i + Math.max(1, currentPage - 2);
+                        if (page > pagination.total_pages) return null;
+                        return (
+                          <button
+                            key={page}
+                            onClick={() => handlePageChange(page)}
+                            disabled={isPageLoading}
+                            className={`relative inline-flex items-center px-4 py-2 border text-sm font-medium ${
+                              page === currentPage
+                                ? 'z-10 bg-blue-50 border-blue-500 text-blue-600'
+                                : 'bg-white border-gray-300 text-gray-500 hover:bg-gray-50'
+                            } disabled:opacity-50 disabled:cursor-not-allowed`}
+                          >
+                            {page}
+                          </button>
+                        );
+                      })}
+                      <button
+                        onClick={() => handlePageChange(currentPage + 1)}
+                        disabled={!pagination.has_next || isPageLoading}
+                        className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Next
+                      </button>
+                    </nav>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

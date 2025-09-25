@@ -1,4 +1,5 @@
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     Enum,
@@ -138,11 +139,14 @@ class File(Base):
     __tablename__ = "files"
 
     file_id = Column(Integer, primary_key=True)
-    file_path = Column(String(255), nullable=False, unique=True)
     file_name = Column(String(255), nullable=False)
-    file_size = Column(Integer, nullable=True)
-    file_type = Column(String(50), nullable=True)
+    file_path = Column(String(255), nullable=False, unique=True)
+    file_type = Column(String(255), nullable=False)
+    file_size = Column(BigInteger, nullable=True)
+    mime_type = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    s3_bucket = Column(String(255), nullable=True)
+    s3_key = Column(String(255), nullable=True)
 
     document_files = relationship("DocumentFile", back_populates="file")
 
@@ -259,3 +263,79 @@ class BatchJob(Base):
     document_type = relationship("DocumentType", back_populates="batch_jobs")
     jobs = relationship("ProcessingJob", back_populates="batch_job")
     uploader = relationship("User", backref="batch_jobs")
+
+
+# OCR Order System Models
+
+class OrderStatus(enum.Enum):
+    DRAFT = "DRAFT"
+    PROCESSING = "PROCESSING"
+    MAPPING = "MAPPING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class OrderItemStatus(enum.Enum):
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class OcrOrder(Base):
+    __tablename__ = "ocr_orders"
+
+    order_id = Column(Integer, primary_key=True)
+    order_name = Column(String(255), nullable=True, comment='User-friendly name for the order')
+    status = Column(Enum(OrderStatus), nullable=False, default=OrderStatus.DRAFT, comment='Current status of the order')
+    mapping_file_path = Column(String(500), nullable=True, comment='S3 path to uploaded mapping file (Excel/CSV)')
+    mapping_keys = Column(JSON, nullable=True, comment='Array of 1-3 mapping keys selected by user [key1, key2, key3]')
+    final_report_paths = Column(JSON, nullable=True, comment='Paths to final consolidated reports (NetSuite CSV, Excel reports)')
+    total_items = Column(Integer, nullable=False, default=0, comment='Total number of order items')
+    completed_items = Column(Integer, nullable=False, default=0, comment='Number of completed order items')
+    failed_items = Column(Integer, nullable=False, default=0, comment='Number of failed order items')
+    error_message = Column(Text, nullable=True, comment='Error message if order processing fails')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    items = relationship("OcrOrderItem", back_populates="order", cascade="all, delete-orphan")
+
+
+class OcrOrderItem(Base):
+    __tablename__ = "ocr_order_items"
+
+    item_id = Column(Integer, primary_key=True)
+    order_id = Column(Integer, ForeignKey("ocr_orders.order_id", ondelete="CASCADE"), nullable=False)
+    company_id = Column(Integer, ForeignKey("companies.company_id"), nullable=False)
+    doc_type_id = Column(Integer, ForeignKey("document_types.doc_type_id"), nullable=False)
+    item_name = Column(String(255), nullable=True, comment='User-friendly name for this item')
+    status = Column(Enum(OrderItemStatus), nullable=False, default=OrderItemStatus.PENDING)
+    file_count = Column(Integer, nullable=False, default=0, comment='Number of files in this item')
+    ocr_result_json_path = Column(String(500), nullable=True, comment='S3 path to OCR result JSON file')
+    ocr_result_csv_path = Column(String(500), nullable=True, comment='S3 path to OCR result CSV file')
+    processing_started_at = Column(DateTime, nullable=True)
+    processing_completed_at = Column(DateTime, nullable=True)
+    processing_time_seconds = Column(Float, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    order = relationship("OcrOrder", back_populates="items")
+    company = relationship("Company")
+    document_type = relationship("DocumentType")
+    files = relationship("OrderItemFile", back_populates="order_item", cascade="all, delete-orphan")
+
+
+class OrderItemFile(Base):
+    __tablename__ = "order_item_files"
+
+    item_id = Column(Integer, ForeignKey("ocr_order_items.item_id", ondelete="CASCADE"), primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.file_id", ondelete="CASCADE"), primary_key=True)
+    upload_order = Column(Integer, nullable=True, comment='Order in which file was uploaded to this item')
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    order_item = relationship("OcrOrderItem", back_populates="files")
+    file = relationship("File")

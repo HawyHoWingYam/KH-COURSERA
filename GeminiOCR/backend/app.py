@@ -40,6 +40,11 @@ from db.models import (
     ApiUsage,
     BatchJob,
     UploadType,
+    OcrOrder,
+    OcrOrderItem,
+    OrderItemFile,
+    OrderStatus,
+    OrderItemStatus,
 )
 from main import extract_text_from_image, extract_text_from_pdf
 from utils.excel_converter import json_to_excel, json_to_csv
@@ -48,6 +53,7 @@ from utils.file_storage import get_file_storage
 from utils.prompt_schema_manager import get_prompt_schema_manager, load_prompt_and_schema
 from utils.company_file_manager import FileType
 from utils.force_delete_manager import ForceDeleteManager
+from utils.order_processor import start_order_processing
 
 # Cost allocation imports
 from cost_allocation.mapping_processor import process_mapping_file
@@ -2924,10 +2930,10 @@ async def process_zip_task(
                 # Save all results using S3 storage
                 s3_manager = get_s3_manager()
 
-                # Generate S3 keys for batch results
-                batch_json_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_results.json"
-                batch_excel_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_results.xlsx"
-                batch_csv_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_results.csv"
+                # Generate S3 keys for batch results with batch ID in filename
+                batch_json_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_{batch_job.batch_job_id}_results.json"
+                batch_excel_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_{batch_job.batch_job_id}_results.xlsx"
+                batch_csv_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_{batch_job.batch_job_id}_results.csv"
 
                 json_saved = False
                 excel_saved = False
@@ -2998,7 +3004,7 @@ async def process_zip_task(
                 if not json_saved or not excel_saved or not csv_saved:
                     if not json_saved:
                         json_output_path = os.path.join(
-                            output_dir, "batch_results.json"
+                            output_dir, f"batch_{batch_job.batch_job_id}_results.json"
                         )
                         with open(json_output_path, "w", encoding="utf-8") as f:
                             json.dump(all_results, f, indent=2, ensure_ascii=False)
@@ -3006,7 +3012,7 @@ async def process_zip_task(
 
                     if not excel_saved:
                         excel_output_path = os.path.join(
-                            output_dir, "batch_results.xlsx"
+                            output_dir, f"batch_{batch_job.batch_job_id}_results.xlsx"
                         )
                         await asyncio.to_thread(
                             json_to_excel, all_results, excel_output_path
@@ -3015,7 +3021,7 @@ async def process_zip_task(
 
                     if not csv_saved:
                         csv_output_path = os.path.join(
-                            output_dir, "batch_results.csv"
+                            output_dir, f"batch_{batch_job.batch_job_id}_results.csv"
                         )
                         await asyncio.to_thread(
                             json_to_csv, all_results, csv_output_path
@@ -3449,7 +3455,7 @@ async def process_unified_batch(batch_id: int, file_paths: List[str], company_co
 
                 # Save JSON to S3
                 json_content = json.dumps(all_results, indent=2, ensure_ascii=False)
-                json_s3_key = f"{s3_results_base}/batch_results.json"
+                json_s3_key = f"{s3_results_base}/batch_{batch_id}_results.json"
                 json_upload_success = s3_manager.upload_file(json_content.encode('utf-8'), json_s3_key)
                 
                 if json_upload_success:
@@ -3468,7 +3474,7 @@ async def process_unified_batch(batch_id: int, file_paths: List[str], company_co
                 # Upload Excel to S3
                 with open(temp_excel_path, 'rb') as excel_file:
                     excel_content = excel_file.read()
-                    excel_s3_key = f"{s3_results_base}/batch_results.xlsx"
+                    excel_s3_key = f"{s3_results_base}/batch_{batch_id}_results.xlsx"
                     excel_upload_success = s3_manager.upload_file(excel_content, excel_s3_key)
                     
                     if excel_upload_success:
@@ -3489,7 +3495,7 @@ async def process_unified_batch(batch_id: int, file_paths: List[str], company_co
                 # Upload CSV to S3
                 with open(temp_csv_path, 'rb') as csv_file:
                     csv_content = csv_file.read()
-                    csv_s3_key = f"{s3_results_base}/batch_results.csv"
+                    csv_s3_key = f"{s3_results_base}/batch_{batch_id}_results.csv"
                     csv_upload_success = s3_manager.upload_file(csv_content, csv_s3_key)
                     
                     if csv_upload_success:
@@ -4015,6 +4021,641 @@ def get_config_dependencies(config_id: int, db: Session = Depends(get_db)):
             status_code=500,
             detail=f"Failed to check dependencies: {str(e)}"
         )
+
+
+# ============================================================================
+# OCR ORDER SYSTEM ENDPOINTS
+# ============================================================================
+
+# Pydantic models for OCR Order requests/responses
+class CreateOrderRequest(BaseModel):
+    order_name: Optional[str] = None
+
+class UpdateOrderRequest(BaseModel):
+    order_name: Optional[str] = None
+    mapping_keys: Optional[List[str]] = None
+
+class CreateOrderItemRequest(BaseModel):
+    company_id: int
+    doc_type_id: int
+    item_name: Optional[str] = None
+
+class OrderResponse(BaseModel):
+    order_id: int
+    order_name: Optional[str]
+    status: str
+    total_items: int
+    completed_items: int
+    failed_items: int
+    mapping_file_path: Optional[str]
+    mapping_keys: Optional[List[str]]
+    final_report_paths: Optional[dict]
+    created_at: str
+    updated_at: str
+
+class OrderItemFileResponse(BaseModel):
+    file_id: int
+    filename: str
+    file_size: int
+    file_type: str
+    upload_order: Optional[int]
+    uploaded_at: str
+
+class OrderItemResponse(BaseModel):
+    item_id: int
+    order_id: int
+    company_id: int
+    doc_type_id: int
+    item_name: Optional[str]
+    status: str
+    file_count: int
+    files: List[OrderItemFileResponse]
+    company_name: Optional[str]
+    doc_type_name: Optional[str]
+    ocr_result_json_path: Optional[str]
+    ocr_result_csv_path: Optional[str]
+    created_at: str
+    updated_at: str
+
+@app.post("/orders", response_model=dict)
+def create_order(request: CreateOrderRequest, db: Session = Depends(get_db)):
+    """Create a new OCR order"""
+    try:
+        order = OcrOrder(
+            order_name=request.order_name,
+            status=OrderStatus.DRAFT
+        )
+        db.add(order)
+        db.commit()
+        db.refresh(order)
+
+        return {
+            "order_id": order.order_id,
+            "order_name": order.order_name,
+            "status": order.status.value,
+            "message": "Order created successfully"
+        }
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to create order: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
+
+@app.get("/orders", response_model=dict)
+def list_orders(
+    status: Optional[str] = None,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db)
+):
+    """List OCR orders with pagination"""
+    try:
+        query = db.query(OcrOrder)
+
+        if status:
+            query = query.filter(OcrOrder.status == status)
+
+        # Get total count
+        total_count = query.count()
+
+        # Apply pagination and ordering
+        orders = query.order_by(OcrOrder.created_at.desc()).offset(offset).limit(limit).all()
+
+        order_data = []
+        for order in orders:
+            order_data.append({
+                "order_id": order.order_id,
+                "order_name": order.order_name,
+                "status": order.status.value,
+                "total_items": order.total_items,
+                "completed_items": order.completed_items,
+                "failed_items": order.failed_items,
+                "mapping_file_path": order.mapping_file_path,
+                "mapping_keys": order.mapping_keys,
+                "final_report_paths": order.final_report_paths,
+                "created_at": order.created_at.isoformat(),
+                "updated_at": order.updated_at.isoformat()
+            })
+
+        # Calculate pagination info
+        total_pages = (total_count + limit - 1) // limit
+
+        return {
+            "data": order_data,
+            "pagination": {
+                "total_count": total_count,
+                "total_pages": total_pages,
+                "current_page": (offset // limit) + 1,
+                "page_size": limit,
+                "has_next": offset + limit < total_count,
+                "has_prev": offset > 0
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to list orders: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to list orders: {str(e)}")
+
+@app.get("/orders/{order_id}", response_model=dict)
+def get_order(order_id: int, db: Session = Depends(get_db)):
+    """Get order details including items"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # Get order items with company and document type info
+        items_query = db.query(OcrOrderItem).filter(OcrOrderItem.order_id == order_id)
+        items = items_query.all()
+
+        items_data = []
+        for item in items:
+            # Get files for this item
+            file_links = db.query(OrderItemFile).filter(OrderItemFile.item_id == item.item_id).all()
+            files_list = []
+            for link in file_links:
+                file_info = link.file
+                files_list.append({
+                    "file_id": file_info.file_id,
+                    "filename": file_info.file_name,
+                    "file_size": file_info.file_size,
+                    "file_type": file_info.file_type,
+                    "upload_order": link.upload_order,
+                    "uploaded_at": link.created_at.isoformat()
+                })
+
+            items_data.append({
+                "item_id": item.item_id,
+                "order_id": item.order_id,
+                "company_id": item.company_id,
+                "doc_type_id": item.doc_type_id,
+                "item_name": item.item_name,
+                "status": item.status.value,
+                "file_count": item.file_count,
+                "files": files_list,
+                "company_name": item.company.company_name if item.company else None,
+                "doc_type_name": item.document_type.type_name if item.document_type else None,
+                "ocr_result_json_path": item.ocr_result_json_path,
+                "ocr_result_csv_path": item.ocr_result_csv_path,
+                "processing_started_at": item.processing_started_at.isoformat() if item.processing_started_at else None,
+                "processing_completed_at": item.processing_completed_at.isoformat() if item.processing_completed_at else None,
+                "processing_time_seconds": item.processing_time_seconds,
+                "error_message": item.error_message,
+                "created_at": item.created_at.isoformat(),
+                "updated_at": item.updated_at.isoformat()
+            })
+
+        return {
+            "order_id": order.order_id,
+            "order_name": order.order_name,
+            "status": order.status.value,
+            "total_items": order.total_items,
+            "completed_items": order.completed_items,
+            "failed_items": order.failed_items,
+            "mapping_file_path": order.mapping_file_path,
+            "mapping_keys": order.mapping_keys,
+            "final_report_paths": order.final_report_paths,
+            "error_message": order.error_message,
+            "items": items_data,
+            "created_at": order.created_at.isoformat(),
+            "updated_at": order.updated_at.isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get order: {str(e)}")
+
+@app.put("/orders/{order_id}", response_model=dict)
+def update_order(order_id: int, request: UpdateOrderRequest, db: Session = Depends(get_db)):
+    """Update order details"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # Only allow updates for DRAFT orders
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only update orders in DRAFT status")
+
+        # Update fields
+        if request.order_name is not None:
+            order.order_name = request.order_name
+        if request.mapping_keys is not None:
+            order.mapping_keys = request.mapping_keys
+
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(order)
+
+        return {
+            "order_id": order.order_id,
+            "order_name": order.order_name,
+            "status": order.status.value,
+            "mapping_keys": order.mapping_keys,
+            "message": "Order updated successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to update order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update order: {str(e)}")
+
+@app.delete("/orders/{order_id}", response_model=dict)
+def delete_order(order_id: int, db: Session = Depends(get_db)):
+    """Delete order and all its items"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # Only allow deletion of DRAFT or FAILED orders
+        if order.status not in [OrderStatus.DRAFT, OrderStatus.FAILED]:
+            raise HTTPException(status_code=400, detail="Can only delete orders in DRAFT or FAILED status")
+
+        # Delete order (cascade will handle items and files)
+        db.delete(order)
+        db.commit()
+
+        return {"message": "Order deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to delete order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete order: {str(e)}")
+
+@app.post("/orders/{order_id}/items", response_model=dict)
+def create_order_item(order_id: int, request: CreateOrderItemRequest, db: Session = Depends(get_db)):
+    """Add an item to an order"""
+    try:
+        # Check if order exists and is in DRAFT status
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only add items to orders in DRAFT status")
+
+        # Verify company and document type exist
+        company = db.query(Company).filter(Company.company_id == request.company_id).first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Company not found")
+
+        doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == request.doc_type_id).first()
+        if not doc_type:
+            raise HTTPException(status_code=404, detail="Document type not found")
+
+        # Create order item
+        item = OcrOrderItem(
+            order_id=order_id,
+            company_id=request.company_id,
+            doc_type_id=request.doc_type_id,
+            item_name=request.item_name or f"{company.company_name} - {doc_type.type_name}",
+            status=OrderItemStatus.PENDING
+        )
+
+        db.add(item)
+
+        # Update order total_items count
+        order.total_items += 1
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(item)
+
+        return {
+            "item_id": item.item_id,
+            "order_id": item.order_id,
+            "company_id": item.company_id,
+            "doc_type_id": item.doc_type_id,
+            "item_name": item.item_name,
+            "status": item.status.value,
+            "message": "Order item created successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to create order item: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create order item: {str(e)}")
+
+@app.post("/orders/{order_id}/submit", response_model=dict)
+def submit_order(order_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Submit order for processing"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only submit orders in DRAFT status")
+
+        if order.total_items == 0:
+            raise HTTPException(status_code=400, detail="Cannot submit order with no items")
+
+        # Check if all items have files
+        items_without_files = db.query(OcrOrderItem).filter(
+            OcrOrderItem.order_id == order_id,
+            OcrOrderItem.file_count == 0
+        ).count()
+
+        if items_without_files > 0:
+            raise HTTPException(status_code=400, detail=f"{items_without_files} items have no files uploaded")
+
+        # Update order status
+        order.status = OrderStatus.PROCESSING
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        # Start background processing
+        background_tasks.add_task(start_order_processing, order_id)
+
+        return {
+            "order_id": order.order_id,
+            "status": order.status.value,
+            "message": "Order submitted for processing successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to submit order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to submit order: {str(e)}")
+
+@app.post("/orders/{order_id}/items/{item_id}/files", response_model=dict)
+def upload_files_to_order_item(
+    order_id: int,
+    item_id: int,
+    files: List[UploadFile] = File(...),
+    db: Session = Depends(get_db)
+):
+    """Upload files to a specific order item"""
+    try:
+        # Verify order and item exist
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only upload files to orders in DRAFT status")
+
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Get company and document type information for file storage
+        company = db.query(Company).filter(Company.company_id == item.company_id).first()
+        doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == item.doc_type_id).first()
+
+        if not company or not doc_type:
+            raise HTTPException(status_code=500, detail="Company or document type not found")
+
+        # Get file storage manager
+        file_storage = get_file_storage()
+        uploaded_files = []
+
+        for file in files:
+            # Validate file type
+            valid_types = ['image/jpeg', 'image/png', 'application/pdf']
+            valid_extensions = ['.jpg', '.jpeg', '.png', '.pdf']
+            file_extension = '.' + file.filename.split('.')[-1].lower() if '.' in file.filename else ''
+
+            if file.content_type not in valid_types and file_extension not in valid_extensions:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File {file.filename} type not supported. Please upload images or PDFs."
+                )
+
+            # Generate S3 path for order item files
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            s3_key = f"upload/orders/{order_id}/items/{item_id}/{timestamp}_{file.filename}"
+
+            # Get file size before upload (to avoid I/O operation on closed file)
+            file.file.seek(0, 2)  # Move to end of file
+            file_size = file.file.tell()  # Get file size
+            file.file.seek(0)  # Reset to beginning
+
+            # Save file to storage
+            try:
+                file_path, original_filename = file_storage.save_uploaded_file(
+                    file, company.company_code, doc_type.type_code, item_id
+                )
+
+                # Create file record
+                db_file = DBFile(
+                    file_path=file_path,
+                    file_name=file.filename,
+                    file_size=file_size,
+                    file_type=file.content_type
+                )
+                db.add(db_file)
+                db.flush()  # Get file_id
+
+                # Link file to order item
+                order_item_file = OrderItemFile(
+                    item_id=item_id,
+                    file_id=db_file.file_id,
+                    upload_order=item.file_count + len(uploaded_files) + 1
+                )
+                db.add(order_item_file)
+
+                uploaded_files.append({
+                    "file_id": db_file.file_id,
+                    "filename": file.filename,
+                    "file_size": file_size,
+                    "file_path": file_path
+                })
+
+            except Exception as e:
+                logger.error(f"Failed to save file {file.filename}: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to save file {file.filename}")
+
+        # Update item file count
+        item.file_count += len(uploaded_files)
+        item.updated_at = datetime.utcnow()
+
+        # Update order timestamp
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "message": f"Successfully uploaded {len(uploaded_files)} files",
+            "uploaded_files": uploaded_files,
+            "item_file_count": item.file_count
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to upload files to order item: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload files: {str(e)}")
+
+@app.get("/orders/{order_id}/items/{item_id}/files", response_model=dict)
+def list_order_item_files(order_id: int, item_id: int, db: Session = Depends(get_db)):
+    """List files for a specific order item"""
+    try:
+        # Verify order and item exist
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Get files linked to this item
+        file_links = db.query(OrderItemFile).filter(OrderItemFile.item_id == item_id).all()
+
+        files_data = []
+        for link in file_links:
+            file_info = link.file
+            files_data.append({
+                "file_id": file_info.file_id,
+                "filename": file_info.file_name,
+                "file_size": file_info.file_size,
+                "file_type": file_info.file_type,
+                "upload_order": link.upload_order,
+                "uploaded_at": link.created_at.isoformat()
+            })
+
+        return {
+            "item_id": item_id,
+            "file_count": len(files_data),
+            "files": files_data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to list order item files: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to list files: {str(e)}")
+
+@app.post("/orders/{order_id}/mapping-file", response_model=dict)
+def upload_mapping_file(
+    order_id: int,
+    mapping_file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """Upload mapping file to order"""
+    try:
+        # Verify order exists and is in DRAFT status
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only upload mapping file to orders in DRAFT status")
+
+        # Validate file type (Excel only for now)
+        if not mapping_file.filename.lower().endswith('.xlsx'):
+            raise HTTPException(status_code=400, detail="Mapping file must be an Excel (.xlsx) file")
+
+        # For mapping files, we'll use a generic company/doc_type approach
+        # since mapping files apply to the entire order (not specific to one company/doc_type)
+        order_company_code = "ORDER"  # Generic code for order-level files
+        order_doc_type = "MAPPING"    # Generic code for mapping files
+
+        # Get file storage manager
+        file_storage = get_file_storage()
+
+        # Generate S3 path for mapping file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        s3_key = f"upload/orders/{order_id}/mapping/{timestamp}_{mapping_file.filename}"
+
+        try:
+            # Save file to storage
+            file_path, original_filename = file_storage.save_uploaded_file(
+                mapping_file, order_company_code, order_doc_type, order_id
+            )
+
+            # Update order with mapping file path
+            order.mapping_file_path = file_path
+            order.updated_at = datetime.utcnow()
+
+            db.commit()
+
+            return {
+                "message": "Mapping file uploaded successfully",
+                "mapping_file_path": file_path,
+                "filename": mapping_file.filename
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to save mapping file: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to save mapping file")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to upload mapping file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload mapping file: {str(e)}")
+
+@app.get("/orders/{order_id}/mapping-headers", response_model=dict)
+def get_mapping_file_headers(order_id: int, db: Session = Depends(get_db)):
+    """Get headers from uploaded mapping file"""
+    try:
+        # Verify order exists and has mapping file
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if not order.mapping_file_path:
+            raise HTTPException(status_code=404, detail="No mapping file uploaded for this order")
+
+        # Get file storage manager and read Excel headers
+        file_storage = get_file_storage()
+
+        try:
+            import pandas as pd
+            import tempfile
+            import os
+
+            # Download file to temporary location
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
+                file_content = file_storage.download_file(order.mapping_file_path)
+                temp_file.write(file_content)
+                temp_file_path = temp_file.name
+
+            try:
+                # Read Excel file and get sheet names and headers
+                excel_file = pd.ExcelFile(temp_file_path)
+                sheet_headers = {}
+
+                for sheet_name in excel_file.sheet_names:
+                    df = pd.read_excel(temp_file_path, sheet_name=sheet_name, nrows=0)
+                    sheet_headers[sheet_name] = list(df.columns)
+
+                return {
+                    "order_id": order_id,
+                    "mapping_file_path": order.mapping_file_path,
+                    "sheet_headers": sheet_headers,
+                    "available_keys": list(set().union(*sheet_headers.values())) if sheet_headers else []
+                }
+
+            finally:
+                # Clean up temp file
+                os.unlink(temp_file_path)
+
+        except Exception as e:
+            logger.error(f"Failed to parse mapping file: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to parse mapping file: {str(e)}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get mapping file headers: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get mapping file headers: {str(e)}")
 
 
 if __name__ == "__main__":

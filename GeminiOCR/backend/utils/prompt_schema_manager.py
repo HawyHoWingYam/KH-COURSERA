@@ -767,16 +767,55 @@ def get_prompt_schema_manager() -> PromptSchemaManager:
     return _prompt_schema_manager
 
 
+def clean_schema_for_gemini(schema):
+    """
+    Clean JSON schema for Gemini API compatibility by removing unsupported fields.
+    
+    Args:
+        schema: The JSON schema dictionary
+        
+    Returns:
+        Cleaned schema dictionary safe for Gemini API
+    """
+    if not isinstance(schema, dict):
+        return schema
+    
+    # Fields that cause Gemini API errors
+    problematic_fields = ["$schema", "$id", "$ref", "definitions", "patternProperties"]
+    
+    cleaned_schema = {}
+    for key, value in schema.items():
+        if key in problematic_fields:
+            logger.info(f"Removing problematic schema field for Gemini compatibility: {key}")
+            continue
+            
+        if isinstance(value, dict):
+            # Recursively clean nested dictionaries
+            cleaned_value = clean_schema_for_gemini(value)
+            # Only add if the cleaned value is not empty
+            if cleaned_value:
+                cleaned_schema[key] = cleaned_value
+        elif isinstance(value, list):
+            cleaned_schema[key] = [
+                clean_schema_for_gemini(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            cleaned_schema[key] = value
+    
+    return cleaned_schema
+
+
 async def load_prompt_and_schema(company_code: str, doc_type_code: str) -> Tuple[Optional[str], Optional[dict]]:
     """
-    便捷函数：同时加载prompt和schema
+    便捷函数：同时加载prompt和schema，并自动清理schema以兼容Gemini API
     
     Args:
         company_code: 公司代码
         doc_type_code: 文档类型代码
         
     Returns:
-        Tuple[Optional[str], Optional[dict]]: (prompt内容, schema数据)
+        Tuple[Optional[str], Optional[dict]]: (prompt内容, 清理后的schema数据)
     """
     manager = get_prompt_schema_manager()
     
@@ -785,5 +824,10 @@ async def load_prompt_and_schema(company_code: str, doc_type_code: str) -> Tuple
     schema_task = manager.get_schema(company_code, doc_type_code)
     
     prompt_content, schema_data = await asyncio.gather(prompt_task, schema_task)
+    
+    # Clean schema for Gemini API compatibility
+    if schema_data:
+        schema_data = clean_schema_for_gemini(schema_data)
+        logger.debug(f"Schema cleaned for Gemini API compatibility: {company_code}/{doc_type_code}")
     
     return prompt_content, schema_data

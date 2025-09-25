@@ -13,6 +13,45 @@ from .company_file_manager import CompanyFileManager, FileType
 logger = logging.getLogger(__name__)
 
 
+def clean_schema_for_gemini(schema):
+    """
+    Clean JSON schema for Gemini API compatibility by removing unsupported fields.
+    
+    Args:
+        schema: The JSON schema dictionary
+        
+    Returns:
+        Cleaned schema dictionary safe for Gemini API
+    """
+    if not isinstance(schema, dict):
+        return schema
+    
+    # Fields that cause Gemini API errors
+    problematic_fields = ["$schema", "$id", "$ref", "definitions", "patternProperties"]
+    
+    cleaned_schema = {}
+    for key, value in schema.items():
+        if key in problematic_fields:
+            logger.info(f"Removing problematic schema field for Gemini compatibility: {key}")
+            continue
+            
+        if isinstance(value, dict):
+            # Recursively clean nested dictionaries
+            cleaned_value = clean_schema_for_gemini(value)
+            # Only add if the cleaned value is not empty
+            if cleaned_value:
+                cleaned_schema[key] = cleaned_value
+        elif isinstance(value, list):
+            cleaned_schema[key] = [
+                clean_schema_for_gemini(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            cleaned_schema[key] = value
+    
+    return cleaned_schema
+
+
 class S3StorageManager:
     """AWS S3文件存储管理器 - 使用单存储桶多文件夹结构"""
 
@@ -741,6 +780,9 @@ class S3StorageManager:
             content = response["Body"].read().decode("utf-8")
             schema_data = json.loads(content)
             
+            # Clean schema for Gemini API compatibility
+            schema_data = clean_schema_for_gemini(schema_data)
+            
             logger.info(f"✅ Schema获取成功：s3://{self.bucket_name}/{s3_key}")
             return schema_data
             
@@ -842,6 +884,9 @@ class S3StorageManager:
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=full_key)
             content = response["Body"].read().decode("utf-8")
             schema_data = json.loads(content)
+            
+            # Clean schema for Gemini API compatibility
+            schema_data = clean_schema_for_gemini(schema_data)
 
             logger.info(f"✅ Schema获取成功：s3://{self.bucket_name}/{full_key}")
             return schema_data
@@ -1456,7 +1501,12 @@ class S3StorageManager:
         if content:
             try:
                 import json
-                return json.loads(content.decode('utf-8'))
+                schema_data = json.loads(content.decode('utf-8'))
+                
+                # Clean schema for Gemini API compatibility
+                schema_data = clean_schema_for_gemini(schema_data)
+                
+                return schema_data
             except json.JSONDecodeError as e:
                 logger.error(f"❌ Failed to parse schema JSON: {e}")
                 return None

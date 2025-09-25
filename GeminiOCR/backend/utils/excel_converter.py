@@ -351,6 +351,103 @@ def deep_flatten_json_universal(data: Any, parent_key: str = "", sep: str = ".")
     return flattened_records
 
 
+def ultra_deep_flatten_json(data: Any, parent_key: str = "", sep: str = ".", max_depth: int = 20) -> List[Dict[str, Any]]:
+    """
+    Ultra-comprehensive JSON flattening with explicit path-based naming and depth control.
+    
+    This function ensures EVERY nested object and array is completely flattened with 
+    full path traceability in column names.
+    
+    Args:
+        data: Input JSON data
+        parent_key: Parent key for maintaining hierarchy
+        sep: Path separator for column naming
+        max_depth: Maximum recursion depth to prevent infinite loops
+        
+    Returns:
+        List of completely flattened records with explicit path-based column names
+    """
+    if max_depth <= 0:
+        logger.warning(f"Maximum recursion depth reached, truncating further expansion")
+        return [{"_truncated_path": parent_key, "_value": str(data)[:100]}]
+    
+    flattened_records = []
+    
+    # Handle arrays
+    if isinstance(data, list):
+        if not data:  # Empty array
+            return [{f"{parent_key}_empty_array": True}] if parent_key else [{"empty_array": True}]
+        
+        for idx, item in enumerate(data):
+            array_key = f"{parent_key}[{idx}]" if parent_key else f"item[{idx}]"
+            sub_records = ultra_deep_flatten_json(item, array_key, sep, max_depth - 1)
+            flattened_records.extend(sub_records)
+        return flattened_records
+    
+    # Handle non-dict primitives
+    if not isinstance(data, dict):
+        key = parent_key if parent_key else "value"
+        return [{key: data}]
+    
+    # Handle empty dict
+    if not data:
+        return [{f"{parent_key}_empty_object": True}] if parent_key else [{"empty_object": True}]
+    
+    # Separate primitive values from complex structures
+    primitives = {}
+    complex_structures = {}
+    
+    for key, value in data.items():
+        full_key = f"{parent_key}{sep}{key}" if parent_key else key
+        
+        if isinstance(value, (str, int, float, bool, type(None))):
+            primitives[full_key] = value
+        elif isinstance(value, list):
+            if not value:  # Empty list
+                primitives[f"{full_key}_empty_list"] = True
+            elif all(isinstance(item, (str, int, float, bool, type(None))) for item in value):
+                # List of primitives - convert to string or keep as list
+                primitives[f"{full_key}_list"] = value
+            else:
+                # List containing complex objects
+                complex_structures[full_key] = value
+        elif isinstance(value, dict):
+            if not value:  # Empty dict
+                primitives[f"{full_key}_empty_dict"] = True
+            else:
+                complex_structures[full_key] = value
+        else:
+            # Handle other types (e.g., custom objects)
+            primitives[f"{full_key}_other"] = str(value)
+    
+    # If no complex structures, return primitives
+    if not complex_structures:
+        return [primitives]
+    
+    # Handle complex structures using Cartesian product approach
+    # This ensures ALL combinations are captured
+    structure_combinations = []
+    
+    for struct_key, struct_value in complex_structures.items():
+        struct_records = ultra_deep_flatten_json(struct_value, struct_key, sep, max_depth - 1)
+        structure_combinations.append(struct_records)
+    
+    # Generate Cartesian product of all structure combinations
+    if structure_combinations:
+        # Use itertools.product for Cartesian product
+        import itertools
+        for combination in itertools.product(*structure_combinations):
+            # Merge all records in this combination
+            merged_record = primitives.copy()
+            for record in combination:
+                merged_record.update(record)
+            flattened_records.append(merged_record)
+    else:
+        flattened_records.append(primitives)
+    
+    return flattened_records
+
+
 def json_to_csv(
     json_data: Union[Dict, List], output_path: str, doc_type_code: str = "data"
 ) -> str:
@@ -383,6 +480,59 @@ def json_to_csv(
         # 將 DataFrame 寫入 CSV 檔案
         df.to_csv(output_path, index=False, encoding='utf-8-sig')
         logger.info(f"成功建立 CSV 檔案: {output_path}")
+        
+    except Exception as e:
+        logger.error(f"建立 CSV 檔案時發生錯誤: {str(e)}")
+        raise
+    
+    return output_path
+
+
+def json_to_csv_ultra_flat(
+    json_data: Union[Dict, List], output_path: str, doc_type_code: str = "data"
+) -> str:
+    """
+    將 JSON 資料轉換為極度扁平化的 CSV 檔案，使用 ultra_deep_flatten_json 函式。
+    提供完整的路徑追蹤和最大化的資料展開。
+    
+    Args:
+        json_data: 輸入的 JSON 資料
+        output_path: CSV 檔案的儲存路徑
+        doc_type_code: 用於日誌的文件類型代碼
+        
+    Returns:
+        輸出檔案的路徑
+    """
+    logger.info("開始將 JSON 轉換為極度扁平化 CSV (Ultra-flat mode)...")
+    
+    # 使用極度扁平化函式
+    flattened_data = ultra_deep_flatten_json(json_data)
+    
+    if not flattened_data:
+        logger.warning("在 JSON 中找不到可處理的資料，將建立一個空的 CSV 檔案。")
+        df = pd.DataFrame({"Message": ["No data found in the JSON input."]})
+    else:
+        # 將扁平化的記錄列表轉換為 pandas DataFrame
+        df = pd.DataFrame(flattened_data)
+        logger.info(f"極度扁平化完成，共產生 {len(df)} 筆記錄，{len(df.columns)} 個欄位。")
+        logger.info(f"前15個欄位名稱: {list(df.columns)[:15]}")
+        
+        # 檢查是否有未展開的巢狀資料
+        nested_columns = []
+        for col in df.columns:
+            sample_val = df[col].iloc[0] if len(df) > 0 else None
+            if isinstance(sample_val, (dict, list)):
+                nested_columns.append(col)
+        
+        if nested_columns:
+            logger.warning(f"警告：仍有 {len(nested_columns)} 個欄位包含巢狀資料: {nested_columns[:5]}")
+        else:
+            logger.info("✅ 所有資料已完全扁平化")
+    
+    try:
+        # 將 DataFrame 寫入 CSV 檔案
+        df.to_csv(output_path, index=False, encoding='utf-8-sig')
+        logger.info(f"成功建立極度扁平化 CSV 檔案: {output_path}")
         
     except Exception as e:
         logger.error(f"建立 CSV 檔案時發生錯誤: {str(e)}")

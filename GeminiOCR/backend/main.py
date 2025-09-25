@@ -243,16 +243,51 @@ def load_config():
         return None
 
 
+def clean_schema_for_gemini(schema):
+    """
+    Clean JSON schema for Gemini API compatibility by removing unsupported fields.
+    
+    Args:
+        schema: The JSON schema dictionary
+        
+    Returns:
+        Cleaned schema dictionary safe for Gemini API
+    """
+    if not isinstance(schema, dict):
+        return schema
+    
+    # Fields that cause Gemini API errors
+    problematic_fields = ["$schema", "$id", "$ref", "definitions", "patternProperties"]
+    
+    cleaned_schema = {}
+    for key, value in schema.items():
+        if key in problematic_fields:
+            print(f"Removing problematic schema field: {key}")
+            continue
+            
+        if isinstance(value, dict):
+            cleaned_schema[key] = clean_schema_for_gemini(value)
+        elif isinstance(value, list):
+            cleaned_schema[key] = [
+                clean_schema_for_gemini(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            cleaned_schema[key] = value
+    
+    return cleaned_schema
+
+
 def get_response_schema(doc_type, provider_name):
     """
-    Read and parse a JSON schema file.
+    Read and parse a JSON schema file, cleaning it for Gemini API compatibility.
 
     Args:
         doc_type: The type of document (e.g., invoice, receipt)
         provider_name: The provider/company name
 
     Returns:
-        A dictionary containing the parsed JSON schema
+        A dictionary containing the parsed and cleaned JSON schema
     """
     try:
         # Look for provider-specific schema
@@ -267,7 +302,7 @@ def get_response_schema(doc_type, provider_name):
         if os.path.exists(schema_file):
             with open(schema_file, "r", encoding="utf-8") as file:
                 schema = json.load(file)
-            return schema
+            return clean_schema_for_gemini(schema)
 
         # Fallback to generic document type schema
         generic_schema = os.path.join(
@@ -276,7 +311,7 @@ def get_response_schema(doc_type, provider_name):
         if os.path.exists(generic_schema):
             with open(generic_schema, "r", encoding="utf-8") as file:
                 schema = json.load(file)
-            return schema
+            return clean_schema_for_gemini(schema)
 
         print(f"Schema file not found for {doc_type}/{provider_name}")
         return None
