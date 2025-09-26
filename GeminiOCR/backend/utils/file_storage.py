@@ -418,23 +418,11 @@ class FileStorageService:
     def _read_from_s3(self, s3_url: str) -> Optional[bytes]:
         """从S3读取文件"""
         try:
-            # 解析S3 URL
-            # s3://bucket-name/key/path
-            s3_url = s3_url[5:]  # 移除 's3://'
-            parts = s3_url.split("/", 1)
-            if len(parts) != 2:
-                raise ValueError("无效的S3 URL格式")
-
-            bucket_name, key = parts
-
-            if self.s3_manager and self.s3_manager.bucket_name == bucket_name:
-                return self.s3_manager.download_file(key)
+            if self.s3_manager:
+                return self.s3_manager.download_file_by_stored_path(s3_url)
             else:
-                logger.error(
-                    f"❌ S3存储桶不匹配：{bucket_name} vs {self.s3_manager.bucket_name}"
-                )
+                logger.error("❌ S3管理器未初始化")
                 return None
-
         except Exception as e:
             logger.error(f"❌ 从S3读取文件失败：{e}")
             return None
@@ -451,6 +439,16 @@ class FileStorageService:
         except Exception as e:
             logger.error(f"❌ 从本地读取文件失败：{e}")
             return None
+
+    def download_file(self, file_path: str) -> Optional[bytes]:
+        """
+        下载文件内容（read_file的别名，用于兼容性）
+        Args:
+            file_path: 文件路径（可以是本地路径或S3 URL）
+        Returns:
+            Optional[bytes]: 文件内容
+        """
+        return self.read_file(file_path)
 
     def delete_file(self, file_path: str) -> bool:
         """

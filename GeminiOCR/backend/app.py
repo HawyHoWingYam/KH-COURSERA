@@ -53,7 +53,7 @@ from utils.file_storage import get_file_storage
 from utils.prompt_schema_manager import get_prompt_schema_manager, load_prompt_and_schema
 from utils.company_file_manager import FileType
 from utils.force_delete_manager import ForceDeleteManager
-from utils.order_processor import start_order_processing
+from utils.order_processor import start_order_processing, start_order_ocr_only_processing, start_order_mapping_only_processing
 
 # Cost allocation imports
 from cost_allocation.mapping_processor import process_mapping_file
@@ -4232,15 +4232,33 @@ def update_order(order_id: int, request: UpdateOrderRequest, db: Session = Depen
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
 
-        # Only allow updates for DRAFT orders
-        if order.status != OrderStatus.DRAFT:
-            raise HTTPException(status_code=400, detail="Can only update orders in DRAFT status")
-
-        # Update fields
+        # Allow mapping keys updates for DRAFT, COMPLETED, and MAPPING orders
+        # But only allow other fields for DRAFT orders
         if request.order_name is not None:
+            if order.status != OrderStatus.DRAFT:
+                raise HTTPException(status_code=400, detail="Can only update order name for orders in DRAFT status")
             order.order_name = request.order_name
+
         if request.mapping_keys is not None:
+            if order.status not in [OrderStatus.DRAFT, OrderStatus.OCR_COMPLETED, OrderStatus.COMPLETED, OrderStatus.MAPPING]:
+                raise HTTPException(status_code=400, detail="Can only update mapping keys for orders in DRAFT, OCR_COMPLETED, COMPLETED, or MAPPING status")
+
+            # 保存旧的mapping_keys用于比较
+            old_mapping_keys = order.mapping_keys or []
+            new_mapping_keys = request.mapping_keys or []
+
+            # 更新mapping_keys
             order.mapping_keys = request.mapping_keys
+
+            # 创建映射历史记录（如果映射键发生了变化）
+            if old_mapping_keys != new_mapping_keys:
+                create_mapping_history_on_update(
+                    db=db,
+                    order_id=order_id,
+                    new_mapping_keys=new_mapping_keys,
+                    operation_type="UPDATE",
+                    operation_reason="Manual update via API"
+                )
 
         order.updated_at = datetime.utcnow()
 
@@ -4464,6 +4482,100 @@ def submit_order(order_id: int, background_tasks: BackgroundTasks, db: Session =
         db.rollback()
         logger.error(f"Failed to submit order {order_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to submit order: {str(e)}")
+
+@app.post("/orders/{order_id}/process-ocr-only", response_model=dict)
+def process_order_ocr_only(order_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Submit order for OCR-only processing (no mapping)"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only process orders in DRAFT status")
+
+        if order.total_items == 0:
+            raise HTTPException(status_code=400, detail="Cannot process order with no items")
+
+        # Check if all items have files
+        items_without_files = db.query(OcrOrderItem).filter(
+            OcrOrderItem.order_id == order_id,
+            OcrOrderItem.file_count == 0
+        ).count()
+
+        if items_without_files > 0:
+            raise HTTPException(status_code=400, detail=f"{items_without_files} items have no files uploaded")
+
+        # Update order status to PROCESSING
+        order.status = OrderStatus.PROCESSING
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        # Start background OCR-only processing
+        background_tasks.add_task(start_order_ocr_only_processing, order_id)
+
+        return {
+            "order_id": order.order_id,
+            "status": order.status.value,
+            "message": "Order submitted for OCR-only processing successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to process order OCR-only {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process order: {str(e)}")
+
+
+@app.post("/orders/{order_id}/process-mapping", response_model=dict)
+def process_order_mapping_only(order_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Submit order for mapping-only processing (OCR already completed)"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.OCR_COMPLETED:
+            raise HTTPException(status_code=400, detail="Can only process mapping for orders in OCR_COMPLETED status")
+
+        # Check if mapping configuration is complete
+        if not order.mapping_file_path:
+            raise HTTPException(status_code=400, detail="Mapping file is required for mapping processing")
+
+        if not order.mapping_keys or len(order.mapping_keys) == 0:
+            raise HTTPException(status_code=400, detail="Mapping keys are required for mapping processing")
+
+        # Validate that all items have OCR results
+        items_without_ocr = db.query(OcrOrderItem).filter(
+            OcrOrderItem.order_id == order_id,
+            OcrOrderItem.status != OrderItemStatus.COMPLETED
+        ).count()
+
+        if items_without_ocr > 0:
+            raise HTTPException(status_code=400, detail=f"{items_without_ocr} items don't have completed OCR results")
+
+        # Update order status to MAPPING
+        order.status = OrderStatus.MAPPING
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        # Start background mapping processing
+        background_tasks.add_task(start_order_mapping_only_processing, order_id)
+
+        return {
+            "order_id": order.order_id,
+            "status": order.status.value,
+            "message": "Order submitted for mapping processing successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to process order mapping {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process mapping: {str(e)}")
+
 
 @app.post("/orders/{order_id}/items/{item_id}/files", response_model=dict)
 def upload_files_to_order_item(
@@ -4705,12 +4817,12 @@ def upload_mapping_file(
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
 
-        if order.status != OrderStatus.DRAFT:
-            raise HTTPException(status_code=400, detail="Can only upload mapping file to orders in DRAFT status")
+        if order.status not in [OrderStatus.DRAFT, OrderStatus.OCR_COMPLETED]:
+            raise HTTPException(status_code=400, detail="Can only upload mapping file to orders in DRAFT or OCR_COMPLETED status")
 
-        # Validate file type (Excel only for now)
-        if not mapping_file.filename.lower().endswith('.xlsx'):
-            raise HTTPException(status_code=400, detail="Mapping file must be an Excel (.xlsx) file")
+        # Validate file type (Excel and CSV supported)
+        if not (mapping_file.filename.lower().endswith('.xlsx') or mapping_file.filename.lower().endswith('.csv')):
+            raise HTTPException(status_code=400, detail="Mapping file must be an Excel (.xlsx) or CSV (.csv) file")
 
         # Get file storage manager
         file_storage = get_file_storage()
@@ -4764,20 +4876,28 @@ def get_mapping_file_headers(order_id: int, db: Session = Depends(get_db)):
             import tempfile
             import os
 
-            # Download file to temporary location
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
-                file_content = file_storage.download_file(order.mapping_file_path)
+            # Determine file type and create temporary file with correct extension
+            file_content = file_storage.download_file(order.mapping_file_path)
+            file_extension = '.csv' if order.mapping_file_path.lower().endswith('.csv') else '.xlsx'
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
                 temp_file.write(file_content)
                 temp_file_path = temp_file.name
 
             try:
-                # Read Excel file and get sheet names and headers
-                excel_file = pd.ExcelFile(temp_file_path)
                 sheet_headers = {}
 
-                for sheet_name in excel_file.sheet_names:
-                    df = pd.read_excel(temp_file_path, sheet_name=sheet_name, nrows=0)
-                    sheet_headers[sheet_name] = list(df.columns)
+                if file_extension == '.csv':
+                    # Read CSV file and get headers
+                    df = pd.read_csv(temp_file_path, nrows=0)
+                    sheet_headers['Sheet1'] = list(df.columns)
+                else:
+                    # Read Excel file and get sheet names and headers
+                    excel_file = pd.ExcelFile(temp_file_path)
+
+                    for sheet_name in excel_file.sheet_names:
+                        df = pd.read_excel(temp_file_path, sheet_name=sheet_name, nrows=0)
+                        sheet_headers[sheet_name] = list(df.columns)
 
                 return {
                     "order_id": order_id,
@@ -4961,6 +5081,1048 @@ def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(g
     except Exception as e:
         logger.error(f"Failed to download order item CSV {item_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to download CSV file: {str(e)}")
+
+@app.get("/orders/{order_id}/items/{item_id}/csv-headers", response_model=dict)
+def get_order_item_csv_headers(order_id: int, item_id: int, db: Session = Depends(get_db)):
+    """Get CSV headers from a completed order item for mapping key selection"""
+    try:
+        # Verify order exists
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # Verify item exists and belongs to the order
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Check if item is completed and has CSV results
+        if item.status != OrderItemStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Order item must be completed to get CSV headers")
+
+        if not item.ocr_result_csv_path:
+            raise HTTPException(status_code=404, detail="No CSV results found for this item")
+
+        # Download CSV file and parse headers
+        file_storage = get_file_storage()
+
+        try:
+            import pandas as pd
+            import tempfile
+            import os
+
+            # Download CSV content
+            csv_content = file_storage.download_file(item.ocr_result_csv_path)
+            if not csv_content:
+                raise HTTPException(status_code=500, detail="Failed to download CSV file from storage")
+
+            # Create temporary CSV file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.csv', mode='wb') as temp_file:
+                temp_file.write(csv_content)
+                temp_file_path = temp_file.name
+
+            try:
+                # Read CSV headers (first row only)
+                df = pd.read_csv(temp_file_path, nrows=0)
+                headers = list(df.columns)
+
+                return {
+                    "item_id": item_id,
+                    "order_id": order_id,
+                    "item_name": item.item_name,
+                    "csv_headers": headers,
+                    "current_mapping_keys": item.mapping_keys or [],
+                    "header_count": len(headers)
+                }
+
+            finally:
+                # Clean up temp file
+                os.unlink(temp_file_path)
+
+        except Exception as e:
+            logger.error(f"Failed to parse CSV headers for item {item_id}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to parse CSV headers: {str(e)}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get CSV headers for item {item_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get CSV headers: {str(e)}")
+
+@app.put("/orders/{order_id}/items/{item_id}/mapping-keys", response_model=dict)
+def update_order_item_mapping_keys(
+    order_id: int,
+    item_id: int,
+    request: dict,
+    db: Session = Depends(get_db)
+):
+    """Update mapping keys for a specific order item"""
+    try:
+        # Verify order exists and is in DRAFT status
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status not in [OrderStatus.DRAFT, OrderStatus.OCR_COMPLETED, OrderStatus.COMPLETED, OrderStatus.MAPPING]:
+            raise HTTPException(status_code=400, detail="Can only update mapping keys for orders in DRAFT, OCR_COMPLETED, COMPLETED, or MAPPING status")
+
+        # Verify item exists and belongs to the order
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Extract mapping keys from request
+        mapping_keys = request.get('mapping_keys', [])
+        if not isinstance(mapping_keys, list):
+            raise HTTPException(status_code=400, detail="mapping_keys must be an array")
+
+        # Limit to maximum 3 keys
+        if len(mapping_keys) > 3:
+            raise HTTPException(status_code=400, detail="Maximum 3 mapping keys allowed per item")
+
+        # Filter out empty strings
+        mapping_keys = [key.strip() for key in mapping_keys if key and key.strip()]
+
+        # Update item mapping keys
+        item.mapping_keys = mapping_keys if mapping_keys else None
+        item.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "item_id": item_id,
+            "order_id": order_id,
+            "mapping_keys": mapping_keys,
+            "message": "Order item mapping keys updated successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to update mapping keys for item {item_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update mapping keys: {str(e)}")
+
+
+@app.get("/companies/{company_id}/document-types/{doc_type_id}/suggested-mapping-keys", response_model=dict)
+def get_suggested_mapping_keys(
+    company_id: int,
+    doc_type_id: int,
+    csv_headers: Optional[str] = None,
+    limit: int = 3,
+    db: Session = Depends(get_db)
+):
+    """Get suggested mapping keys for a company and document type"""
+    try:
+        from utils.mapping_key_recommender import MappingKeyRecommender
+
+        recommender = MappingKeyRecommender(db)
+
+        # Parse CSV headers if provided
+        headers_list = None
+        if csv_headers:
+            headers_list = [h.strip() for h in csv_headers.split(',') if h.strip()]
+
+        # Get recommendations
+        suggestions = recommender.suggest_mapping_keys(
+            company_id=company_id,
+            doc_type_id=doc_type_id,
+            csv_headers=headers_list,
+            limit=limit
+        )
+
+        return {
+            "company_id": company_id,
+            "doc_type_id": doc_type_id,
+            "suggestions": suggestions,
+            "total_suggestions": len(suggestions)
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get suggested mapping keys: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get suggestions: {str(e)}")
+
+
+@app.put("/companies/{company_id}/document-types/{doc_type_id}/default-mapping-keys", response_model=dict)
+def update_default_mapping_keys(
+    company_id: int,
+    doc_type_id: int,
+    request: dict,
+    db: Session = Depends(get_db)
+):
+    """Update default mapping keys for a company and document type"""
+    try:
+        mapping_keys = request.get('mapping_keys', [])
+
+        if not isinstance(mapping_keys, list):
+            raise HTTPException(status_code=400, detail="mapping_keys must be a list")
+
+        if len(mapping_keys) > 5:
+            raise HTTPException(status_code=400, detail="Maximum 5 mapping keys allowed")
+
+        from utils.mapping_key_recommender import MappingKeyRecommender
+
+        recommender = MappingKeyRecommender(db)
+        success = recommender.update_default_mapping_keys(
+            company_id=company_id,
+            doc_type_id=doc_type_id,
+            mapping_keys=mapping_keys
+        )
+
+        if not success:
+            raise HTTPException(status_code=404, detail="Company document config not found")
+
+        return {
+            "company_id": company_id,
+            "doc_type_id": doc_type_id,
+            "default_mapping_keys": mapping_keys,
+            "message": "Default mapping keys updated successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update default mapping keys: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update default keys: {str(e)}")
+
+
+@app.get("/mapping-analytics", response_model=dict)
+def get_mapping_analytics(
+    company_id: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    """Get mapping usage analytics"""
+    try:
+        from utils.mapping_key_recommender import MappingKeyRecommender
+
+        recommender = MappingKeyRecommender(db)
+        analytics = recommender.get_mapping_analytics(company_id)
+
+        return {
+            "company_id": company_id,
+            "analytics": analytics,
+            "generated_at": datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get mapping analytics: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get analytics: {str(e)}")
+
+
+@app.get("/orders/{order_id}/download/mapped-csv")
+def download_order_mapped_csv(order_id: int, db: Session = Depends(get_db)):
+    """Download final mapped CSV results for order"""
+    try:
+        # Verify order exists and is completed
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Order must be completed to download mapped results")
+
+        # Check if mapped CSV exists
+        if not order.final_report_paths or 'mapped_csv' not in order.final_report_paths:
+            raise HTTPException(status_code=404, detail="No mapped CSV results found for this order")
+
+        mapped_csv_path = order.final_report_paths['mapped_csv']
+        if not mapped_csv_path:
+            raise HTTPException(status_code=404, detail="Mapped CSV path is empty")
+
+        # Download file from storage
+        file_storage = get_file_storage()
+        file_content = file_storage.download_file(mapped_csv_path)
+
+        if not file_content:
+            raise HTTPException(status_code=500, detail="Failed to download mapped CSV file from storage")
+
+        # Create response
+        filename = f"order_{order_id}_mapped_results.csv"
+        response = Response(
+            content=file_content,
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+        response.headers["X-File-Source"] = "S3"
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download order mapped CSV {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download mapped CSV file: {str(e)}")
+
+@app.get("/orders/{order_id}/download/mapped-excel")
+def download_order_mapped_excel(order_id: int, db: Session = Depends(get_db)):
+    """Download final mapped Excel results for order"""
+    try:
+        # Verify order exists and is completed
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Order must be completed to download mapped results")
+
+        # Check if mapped Excel exists
+        if not order.final_report_paths or 'mapped_excel' not in order.final_report_paths:
+            raise HTTPException(status_code=404, detail="No mapped Excel results found for this order")
+
+        mapped_excel_path = order.final_report_paths['mapped_excel']
+        if not mapped_excel_path:
+            raise HTTPException(status_code=404, detail="Mapped Excel path is empty")
+
+        # Download file from storage
+        file_storage = get_file_storage()
+        file_content = file_storage.download_file(mapped_excel_path)
+
+        if not file_content:
+            raise HTTPException(status_code=500, detail="Failed to download mapped Excel file from storage")
+
+        # Create response
+        filename = f"order_{order_id}_mapped_results.xlsx"
+        response = Response(
+            content=file_content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+        response.headers["X-File-Source"] = "S3"
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download order mapped Excel {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download mapped Excel file: {str(e)}")
+
+
+# ========================================
+# 映射历史和版本管理 API 端点 (Phase 3.1)
+# ========================================
+
+@app.get("/orders/{order_id}/mapping-history")
+def get_mapping_history(
+    order_id: int,
+    item_id: Optional[int] = Query(None, description="Item ID for item-level history, omit for order-level"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of records to return"),
+    db: Session = Depends(get_db)
+):
+    """获取映射历史记录"""
+    try:
+        from utils.mapping_history_manager import MappingHistoryManager
+
+        # 验证order是否存在
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # 如果指定了item_id，验证item是否存在且属于该order
+        if item_id is not None:
+            item = db.query(OcrOrderItem).filter(
+                OcrOrderItem.item_id == item_id,
+                OcrOrderItem.order_id == order_id
+            ).first()
+            if not item:
+                raise HTTPException(status_code=404, detail="Order item not found")
+
+        history_manager = MappingHistoryManager(db)
+        history_records = history_manager.get_mapping_history(order_id, item_id, limit)
+
+        return {
+            "order_id": order_id,
+            "item_id": item_id,
+            "total_records": len(history_records),
+            "history": history_records
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get mapping history for order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get mapping history: {str(e)}")
+
+
+@app.get("/orders/{order_id}/mapping-history/{version}")
+def get_mapping_version(
+    order_id: int,
+    version: int,
+    item_id: Optional[int] = Query(None, description="Item ID for item-level history, omit for order-level"),
+    db: Session = Depends(get_db)
+):
+    """获取特定版本的映射配置"""
+    try:
+        from utils.mapping_history_manager import MappingHistoryManager
+
+        # 验证order是否存在
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        history_manager = MappingHistoryManager(db)
+        version_data = history_manager.get_mapping_version(order_id, version, item_id)
+
+        if not version_data:
+            raise HTTPException(status_code=404, detail=f"Version {version} not found")
+
+        return version_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get mapping version {version} for order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get mapping version: {str(e)}")
+
+
+@app.get("/orders/{order_id}/mapping-diff/{version1}/{version2}")
+def compare_mapping_versions(
+    order_id: int,
+    version1: int,
+    version2: int,
+    item_id: Optional[int] = Query(None, description="Item ID for item-level comparison, omit for order-level"),
+    db: Session = Depends(get_db)
+):
+    """比较两个版本的映射配置差异"""
+    try:
+        from utils.mapping_history_manager import MappingHistoryManager
+
+        # 验证order是否存在
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        history_manager = MappingHistoryManager(db)
+        diff_result = history_manager.compare_versions(order_id, version1, version2, item_id)
+
+        return diff_result
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to compare versions {version1} and {version2} for order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to compare versions: {str(e)}")
+
+
+class MappingRollbackRequest(BaseModel):
+    target_version: int
+    rollback_reason: Optional[str] = None
+    created_by: Optional[str] = None
+
+
+@app.post("/orders/{order_id}/mapping-rollback")
+def rollback_mapping_to_version(
+    order_id: int,
+    request: MappingRollbackRequest,
+    item_id: Optional[int] = Query(None, description="Item ID for item-level rollback, omit for order-level"),
+    db: Session = Depends(get_db)
+):
+    """回滚映射配置到指定版本"""
+    try:
+        from utils.mapping_history_manager import MappingHistoryManager
+
+        # 验证order是否存在
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # 验证order状态 - 只允许在特定状态下回滚
+        if order.status not in [OrderStatus.DRAFT, OrderStatus.OCR_COMPLETED, OrderStatus.COMPLETED, OrderStatus.MAPPING]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot rollback mapping in current order status: {order.status}"
+            )
+
+        history_manager = MappingHistoryManager(db)
+        success = history_manager.rollback_to_version(
+            order_id=order_id,
+            target_version=request.target_version,
+            item_id=item_id,
+            created_by=request.created_by,
+            rollback_reason=request.rollback_reason
+        )
+
+        if success:
+            # 刷新order数据
+            db.refresh(order)
+            return {
+                "success": True,
+                "message": f"Successfully rolled back to version {request.target_version}",
+                "current_mapping_keys": order.mapping_keys
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Rollback operation failed")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to rollback order {order_id} to version {request.target_version}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to rollback mapping: {str(e)}")
+
+
+@app.get("/orders/{order_id}/mapping-statistics")
+def get_mapping_statistics(
+    order_id: int,
+    item_id: Optional[int] = Query(None, description="Item ID for item-level statistics, omit for order-level"),
+    db: Session = Depends(get_db)
+):
+    """获取映射历史统计信息"""
+    try:
+        from utils.mapping_history_manager import MappingHistoryManager
+
+        # 验证order是否存在
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        history_manager = MappingHistoryManager(db)
+        statistics = history_manager.get_mapping_statistics(order_id, item_id)
+
+        return {
+            "order_id": order_id,
+            "item_id": item_id,
+            "statistics": statistics
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get mapping statistics for order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get mapping statistics: {str(e)}")
+
+
+# 映射键更新时自动创建历史记录的辅助函数
+def create_mapping_history_on_update(
+    db: Session,
+    order_id: int,
+    new_mapping_keys: List[str],
+    operation_type: str = "UPDATE",
+    item_id: Optional[int] = None,
+    operation_reason: Optional[str] = None,
+    created_by: Optional[str] = None
+):
+    """在映射键更新时自动创建历史记录"""
+    try:
+        from utils.mapping_history_manager import MappingHistoryManager, MappingOperation
+
+        history_manager = MappingHistoryManager(db)
+
+        # 将字符串转换为MappingOperation枚举
+        if operation_type == "UPDATE":
+            op_type = MappingOperation.UPDATE
+        elif operation_type == "CREATE":
+            op_type = MappingOperation.CREATE
+        elif operation_type == "APPLY_RECOMMENDATION":
+            op_type = MappingOperation.APPLY_RECOMMENDATION
+        else:
+            op_type = MappingOperation.UPDATE
+
+        history_manager.create_mapping_version(
+            order_id=order_id,
+            mapping_keys=new_mapping_keys,
+            operation_type=op_type,
+            item_id=item_id,
+            operation_reason=operation_reason,
+            created_by=created_by
+        )
+
+        logger.info(f"Created mapping history record for order {order_id}, operation: {operation_type}")
+
+    except Exception as e:
+        logger.error(f"Failed to create mapping history record: {str(e)}")
+        # 不抛出异常，避免影响主要的映射更新操作
+
+
+# =======================
+# 批量映射管理 API 端点
+# =======================
+
+class BulkMappingPreviewRequest(BaseModel):
+    target_orders: Optional[List[int]] = None
+    new_mapping_keys: Optional[List[str]] = None
+    filter_criteria: Optional[dict] = None
+    operation_type: str = "update"
+
+
+class BulkMappingUpdateRequest(BaseModel):
+    target_orders: Optional[List[int]] = None
+    new_mapping_keys: Optional[List[str]] = None
+    filter_criteria: Optional[dict] = None
+    operation_type: str = "update"
+    operation_reason: Optional[str] = None
+    created_by: Optional[str] = None
+    confirm_changes: bool = False
+
+
+class BulkRollbackRequest(BaseModel):
+    target_orders: List[int]
+    target_version: Optional[int] = None
+    rollback_to_date: Optional[str] = None
+    created_by: Optional[str] = None
+    rollback_reason: Optional[str] = None
+    confirm_rollback: bool = False
+
+
+@app.post("/mapping/bulk/preview")
+async def preview_bulk_mapping_update(request: BulkMappingPreviewRequest, db: Session = Depends(get_db)):
+    """预览批量映射更新"""
+    try:
+        from utils.bulk_mapping_manager import BulkMappingManager
+
+        bulk_manager = BulkMappingManager(db)
+
+        preview_result = bulk_manager.preview_bulk_mapping_update(
+            target_orders=request.target_orders,
+            new_mapping_keys=request.new_mapping_keys,
+            filter_criteria=request.filter_criteria,
+            operation_type=request.operation_type
+        )
+
+        return {
+            "success": True,
+            "preview": {
+                "affected_orders": preview_result.affected_orders,
+                "summary": preview_result.summary,
+                "warnings": preview_result.warnings,
+                "errors": preview_result.errors
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to preview bulk mapping update: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to preview bulk mapping update: {str(e)}")
+
+
+@app.post("/mapping/bulk/execute")
+async def execute_bulk_mapping_update(request: BulkMappingUpdateRequest, db: Session = Depends(get_db)):
+    """执行批量映射更新"""
+    try:
+        from utils.bulk_mapping_manager import BulkMappingManager
+
+        bulk_manager = BulkMappingManager(db)
+
+        result = bulk_manager.execute_bulk_mapping_update(
+            target_orders=request.target_orders,
+            new_mapping_keys=request.new_mapping_keys,
+            filter_criteria=request.filter_criteria,
+            operation_type=request.operation_type,
+            operation_reason=request.operation_reason,
+            created_by=request.created_by,
+            confirm_changes=request.confirm_changes
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Failed to execute bulk mapping update: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to execute bulk mapping update: {str(e)}")
+
+
+@app.post("/mapping/bulk/rollback")
+async def bulk_rollback_orders(request: BulkRollbackRequest, db: Session = Depends(get_db)):
+    """批量回滚订单映射"""
+    try:
+        from utils.bulk_mapping_manager import BulkMappingManager
+
+        bulk_manager = BulkMappingManager(db)
+
+        result = bulk_manager.bulk_rollback_orders(
+            target_orders=request.target_orders,
+            target_version=request.target_version,
+            rollback_to_date=request.rollback_to_date,
+            created_by=request.created_by,
+            rollback_reason=request.rollback_reason,
+            confirm_rollback=request.confirm_rollback
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Failed to execute bulk rollback: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to execute bulk rollback: {str(e)}")
+
+
+@app.get("/mapping/bulk/candidates")
+async def get_bulk_operation_candidates(
+    operation_type: str = Query("all", description="操作类型"),
+    include_completed_only: bool = Query(True, description="只包含已完成的订单"),
+    min_items: int = Query(1, description="最小项目数量"),
+    db: Session = Depends(get_db)
+):
+    """获取适合批量操作的订单候选列表"""
+    try:
+        from utils.bulk_mapping_manager import BulkMappingManager
+
+        bulk_manager = BulkMappingManager(db)
+
+        candidates = bulk_manager.get_bulk_operation_candidates(
+            operation_type=operation_type,
+            include_completed_only=include_completed_only,
+            min_items=min_items
+        )
+
+        return {
+            "success": True,
+            "total_candidates": len(candidates),
+            "candidates": candidates
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get bulk operation candidates: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get bulk operation candidates: {str(e)}")
+
+
+# =======================
+# 智能路径管理 API 端点
+# =======================
+
+class PathGenerationRequest(BaseModel):
+    category: str
+    company_id: int
+    doc_type_id: Optional[int] = None
+    identifier: Optional[str] = None
+    filename: Optional[str] = None
+    template: Optional[str] = "BASIC"
+    conflict_strategy: Optional[str] = "AUTO_RENAME"
+    custom_vars: Optional[dict] = None
+
+
+class PathValidationRequest(BaseModel):
+    path: str
+
+
+class PathMigrationRequest(BaseModel):
+    source_pattern: str
+    target_template: str
+    dry_run: bool = True
+
+
+@app.post("/paths/generate")
+async def generate_smart_path(request: PathGenerationRequest, db: Session = Depends(get_db)):
+    """生成智能路径"""
+    try:
+        from utils.smart_path_manager import SmartPathManager, PathContext, PathTemplate, PathConflictStrategy
+
+        path_manager = SmartPathManager(db)
+
+        # 获取公司和文档类型信息
+        from sqlalchemy import text as sql_text
+        company_query = sql_text("SELECT company_code FROM companies WHERE company_id = :company_id")
+        company_result = db.execute(company_query, {"company_id": request.company_id})
+        company_row = company_result.fetchone()
+        if not company_row:
+            raise HTTPException(status_code=404, detail="Company not found")
+        company_code = company_row[0]
+
+        doc_type_code = None
+        if request.doc_type_id:
+            doc_type_query = sql_text("SELECT type_code FROM document_types WHERE doc_type_id = :doc_type_id")
+            doc_type_result = db.execute(doc_type_query, {"doc_type_id": request.doc_type_id})
+            doc_type_row = doc_type_result.fetchone()
+            if doc_type_row:
+                doc_type_code = doc_type_row[0]
+
+        # 创建路径上下文
+        context = PathContext(
+            category=request.category,
+            company_id=request.company_id,
+            company_code=company_code,
+            doc_type_id=request.doc_type_id,
+            doc_type_code=doc_type_code,
+            identifier=request.identifier,
+            filename=request.filename,
+            custom_vars=request.custom_vars
+        )
+
+        # 解析模板和冲突策略
+        template = getattr(PathTemplate, request.template, PathTemplate.BASIC)
+        conflict_strategy = getattr(PathConflictStrategy, request.conflict_strategy, PathConflictStrategy.AUTO_RENAME)
+
+        # 生成路径
+        generated_path = path_manager.generate_smart_path(context, template, conflict_strategy)
+
+        return {
+            "success": True,
+            "generated_path": generated_path,
+            "context": {
+                "category": context.category,
+                "company_code": context.company_code,
+                "doc_type_code": context.doc_type_code,
+                "template": request.template,
+                "conflict_strategy": request.conflict_strategy
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate smart path: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate smart path: {str(e)}")
+
+
+@app.post("/paths/validate")
+async def validate_path_structure(request: PathValidationRequest, db: Session = Depends(get_db)):
+    """验证路径结构"""
+    try:
+        from utils.smart_path_manager import SmartPathManager
+
+        path_manager = SmartPathManager(db)
+        validation_result = path_manager.validate_path_structure(request.path)
+
+        return {
+            "success": True,
+            "validation": {
+                "is_valid": validation_result.is_valid,
+                "path": validation_result.path,
+                "conflicts": validation_result.conflicts,
+                "suggestions": validation_result.suggestions,
+                "metadata": validation_result.metadata
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to validate path: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to validate path: {str(e)}")
+
+
+@app.post("/paths/migrate")
+async def migrate_legacy_paths(request: PathMigrationRequest, db: Session = Depends(get_db)):
+    """迁移历史路径"""
+    try:
+        from utils.smart_path_manager import SmartPathManager, PathTemplate
+
+        path_manager = SmartPathManager(db)
+
+        # 解析目标模板
+        target_template = getattr(PathTemplate, request.target_template, PathTemplate.BASIC)
+
+        # 执行迁移
+        migration_result = path_manager.migrate_legacy_paths(
+            source_pattern=request.source_pattern,
+            target_template=target_template,
+            dry_run=request.dry_run
+        )
+
+        return {
+            "success": True,
+            "migration": migration_result
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to migrate paths: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to migrate paths: {str(e)}")
+
+
+@app.get("/paths/analytics")
+async def get_path_analytics(
+    category: Optional[str] = Query(None, description="路径类别过滤"),
+    db: Session = Depends(get_db)
+):
+    """获取路径分析统计"""
+    try:
+        from utils.smart_path_manager import SmartPathManager
+
+        path_manager = SmartPathManager(db)
+        analytics = path_manager.get_path_analytics(category)
+
+        return {
+            "success": True,
+            "analytics": analytics
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get path analytics: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get path analytics: {str(e)}")
+
+
+@app.get("/paths/templates")
+async def get_available_templates():
+    """获取可用的路径模板"""
+    try:
+        from utils.smart_path_manager import PathTemplate, PathConflictStrategy
+
+        templates = []
+        for template in PathTemplate:
+            templates.append({
+                "name": template.name,
+                "value": template.value,
+                "description": f"Template: {template.value}"
+            })
+
+        strategies = []
+        for strategy in PathConflictStrategy:
+            strategies.append({
+                "name": strategy.name,
+                "value": strategy.value,
+                "description": f"Strategy: {strategy.value}"
+            })
+
+        return {
+            "success": True,
+            "templates": templates,
+            "conflict_strategies": strategies
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get templates: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get templates: {str(e)}")
+
+
+# =======================
+# 高级映射分析工具 API 端点
+# =======================
+
+class AnalysisRequest(BaseModel):
+    analysis_period_days: int = 30
+    include_historical: bool = True
+    focus_areas: Optional[List[str]] = None
+
+
+@app.post("/analysis/comprehensive")
+async def generate_comprehensive_analysis(request: AnalysisRequest, db: Session = Depends(get_db)):
+    """生成综合映射分析报告"""
+    try:
+        from utils.advanced_mapping_analyzer import AdvancedMappingAnalyzer
+
+        analyzer = AdvancedMappingAnalyzer(db)
+
+        report = analyzer.generate_comprehensive_analysis(
+            analysis_period_days=request.analysis_period_days,
+            include_historical=request.include_historical,
+            focus_areas=request.focus_areas
+        )
+
+        return {
+            "success": True,
+            "report": {
+                "report_id": report.report_id,
+                "generated_at": report.generated_at.isoformat(),
+                "analysis_period": {
+                    "start": report.analysis_period[0].isoformat(),
+                    "end": report.analysis_period[1].isoformat()
+                },
+                "summary": report.summary,
+                "insights": [
+                    {
+                        "type": insight.insight_type,
+                        "title": insight.title,
+                        "description": insight.description,
+                        "impact_score": insight.impact_score,
+                        "recommendations": insight.recommendations,
+                        "affected_items": insight.affected_items,
+                        "data_points": insight.data_points
+                    }
+                    for insight in report.insights
+                ],
+                "patterns": [
+                    {
+                        "mapping_key": pattern.mapping_key,
+                        "frequency": pattern.frequency,
+                        "companies": list(pattern.companies),
+                        "doc_types": list(pattern.doc_types),
+                        "success_rate": pattern.success_rate,
+                        "avg_processing_time": pattern.avg_processing_time,
+                        "last_used": pattern.last_used.isoformat() if pattern.last_used else None
+                    }
+                    for pattern in report.patterns
+                ],
+                "recommendations": report.recommendations,
+                "metrics": report.metrics
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate comprehensive analysis: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate comprehensive analysis: {str(e)}")
+
+
+@app.get("/analysis/trends")
+async def analyze_mapping_trends(
+    days_back: int = Query(90, description="分析天数"),
+    db: Session = Depends(get_db)
+):
+    """分析映射使用趋势"""
+    try:
+        from utils.advanced_mapping_analyzer import AdvancedMappingAnalyzer
+
+        analyzer = AdvancedMappingAnalyzer(db)
+        trends = analyzer.analyze_mapping_trends(days_back=days_back)
+
+        return {
+            "success": True,
+            "trends": trends
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to analyze mapping trends: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to analyze mapping trends: {str(e)}")
+
+
+@app.get("/analysis/optimization")
+async def get_optimization_suggestions(db: Session = Depends(get_db)):
+    """获取优化建议"""
+    try:
+        from utils.advanced_mapping_analyzer import AdvancedMappingAnalyzer
+
+        analyzer = AdvancedMappingAnalyzer(db)
+        suggestions = analyzer.generate_optimization_suggestions()
+
+        return {
+            "success": True,
+            "suggestions": suggestions
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get optimization suggestions: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get optimization suggestions: {str(e)}")
+
+
+@app.get("/analysis/dashboard")
+async def get_analysis_dashboard(db: Session = Depends(get_db)):
+    """获取分析仪表板数据"""
+    try:
+        from utils.advanced_mapping_analyzer import AdvancedMappingAnalyzer
+
+        analyzer = AdvancedMappingAnalyzer(db)
+
+        # 获取最近7天的快速分析
+        quick_analysis = analyzer.generate_comprehensive_analysis(analysis_period_days=7)
+        trends = analyzer.analyze_mapping_trends(days_back=30)
+        suggestions = analyzer.generate_optimization_suggestions()
+
+        dashboard_data = {
+            "quick_metrics": quick_analysis.summary,
+            "recent_insights": quick_analysis.insights[:3],  # 只显示前3个洞察
+            "trends_summary": {
+                "total_days": len(trends.get('daily_stats', [])),
+                "trend_analysis": trends.get('trend_analysis', {}),
+                "recent_performance": trends.get('daily_stats', [])[-7:] if trends.get('daily_stats') else []
+            },
+            "priority_suggestions": [s for s in suggestions if s.get('priority') == 'high'][:3],
+            "top_patterns": [
+                {
+                    "mapping_key": pattern.mapping_key,
+                    "frequency": pattern.frequency,
+                    "success_rate": pattern.success_rate
+                }
+                for pattern in quick_analysis.patterns[:5]
+            ]
+        }
+
+        return {
+            "success": True,
+            "dashboard": dashboard_data
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get analysis dashboard: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get analysis dashboard: {str(e)}")
 
 
 if __name__ == "__main__":

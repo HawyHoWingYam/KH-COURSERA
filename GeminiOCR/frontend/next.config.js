@@ -11,15 +11,11 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
 
-  // Configure allowed development origins to prevent cross-origin warnings
-  experimental: {
-    allowedDevOrigins: ['18.142.68.48', '52.220.245.213']
-  },
 
   // Allow cross-origin requests to our API
   async rewrites() {
-    // Use environment variable or fallback to localhost for development
-    const apiHost = process.env.NEXT_PUBLIC_API_URL || 'http://backend:8000';
+    // Use environment variable or fallback to EC2 IP for development
+    const apiHost = process.env.NEXT_PUBLIC_API_URL || 'http://18.142.68.48:8000';
 
     return [
       {

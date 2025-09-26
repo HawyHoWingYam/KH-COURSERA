@@ -88,6 +88,18 @@ export default function OrderDetailsPage() {
   const [isUploadingMapping, setIsUploadingMapping] = useState(false);
   const [isDeletingMapping, setIsDeletingMapping] = useState(false);
 
+  // Per-item Mapping State
+  const [itemCsvHeaders, setItemCsvHeaders] = useState<{[key: number]: string[]}>({});
+  const [itemMappingKeys, setItemMappingKeys] = useState<{[key: number]: string[]}>({});
+  const [loadingItemHeaders, setLoadingItemHeaders] = useState<{[key: number]: boolean}>({});
+  const [savingItemMapping, setSavingItemMapping] = useState<{[key: number]: boolean}>({});
+
+  // Smart Recommendations State
+  const [smartRecommendations, setSmartRecommendations] = useState<{[key: number]: any[]}>({});
+  const [loadingRecommendations, setLoadingRecommendations] = useState<{[key: number]: boolean}>({});
+  const [orderLevelSuggestions, setOrderLevelSuggestions] = useState<any[]>([]);
+  const [loadingOrderSuggestions, setLoadingOrderSuggestions] = useState(false);
+
   useEffect(() => {
     loadOrder();
     loadCompanies();
@@ -102,6 +114,13 @@ export default function OrderDetailsPage() {
       }
       const data = await response.json();
       setOrder(data);
+
+      // Initialize selectedMappingKeys with existing mapping keys
+      if (data.mapping_keys && Array.isArray(data.mapping_keys)) {
+        setSelectedMappingKeys(data.mapping_keys);
+      } else {
+        setSelectedMappingKeys([]);
+      }
 
       // Load mapping headers if mapping file exists
       if (data.mapping_file_path) {
@@ -422,12 +441,225 @@ export default function OrderDetailsPage() {
     }
   };
 
+  const startOcrOnlyProcessing = async () => {
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/process-ocr-only`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to start OCR-only processing');
+      }
+
+      loadOrder();
+    } catch (error) {
+      console.error('Error starting OCR-only processing:', error);
+      setError(error instanceof Error ? error.message : 'Failed to start OCR-only processing');
+    }
+  };
+
+  const startMappingProcessing = async () => {
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/process-mapping`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to start mapping processing');
+      }
+
+      loadOrder();
+    } catch (error) {
+      console.error('Error starting mapping processing:', error);
+      setError(error instanceof Error ? error.message : 'Failed to start mapping processing');
+    }
+  };
+
+  const loadItemCsvHeaders = async (itemId: number) => {
+    setLoadingItemHeaders(prev => ({ ...prev, [itemId]: true }));
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}/csv-headers`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch item CSV headers');
+      }
+      const data = await response.json();
+      setItemCsvHeaders(prev => ({ ...prev, [itemId]: data.csv_headers }));
+      setItemMappingKeys(prev => ({ ...prev, [itemId]: data.current_mapping_keys || [] }));
+
+      // Load smart recommendations for this item
+      await loadSmartRecommendations(itemId, data.csv_headers);
+    } catch (error) {
+      console.error('Error loading item CSV headers:', error);
+      setError('Failed to load CSV headers for item');
+    } finally {
+      setLoadingItemHeaders(prev => ({ ...prev, [itemId]: false }));
+    }
+  };
+
+  const loadSmartRecommendations = async (itemId: number, csvHeaders?: string[]) => {
+    if (!order?.items) return;
+
+    const item = order.items.find(item => item.item_id === itemId);
+    if (!item) return;
+
+    setLoadingRecommendations(prev => ({ ...prev, [itemId]: true }));
+    try {
+      let apiUrl = `${process.env.NEXT_PUBLIC_API_URL}/companies/${item.company_id}/document-types/${item.doc_type_id}/suggested-mapping-keys?limit=5`;
+
+      // If csvHeaders are provided, include them in the request
+      if (csvHeaders && csvHeaders.length > 0) {
+        const csvHeadersParam = csvHeaders.join(',');
+        apiUrl += `&csv_headers=${encodeURIComponent(csvHeadersParam)}`;
+      }
+
+      const response = await fetch(apiUrl);
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch smart recommendations');
+      }
+
+      const data = await response.json();
+      setSmartRecommendations(prev => ({ ...prev, [itemId]: data.suggestions || [] }));
+    } catch (error) {
+      console.error('Error loading smart recommendations:', error);
+      // Don't set error state for recommendations as it's not critical
+    } finally {
+      setLoadingRecommendations(prev => ({ ...prev, [itemId]: false }));
+    }
+  };
+
+  const loadOrderLevelSuggestions = async () => {
+    if (!order?.items || order.items.length === 0) return;
+
+    setLoadingOrderSuggestions(true);
+    try {
+      // Use the first item's company and document type for order-level suggestions
+      const firstItem = order.items[0];
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL}/companies/${firstItem.company_id}/document-types/${firstItem.doc_type_id}/suggested-mapping-keys?limit=3`
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        setOrderLevelSuggestions(data.suggestions || []);
+      }
+    } catch (error) {
+      console.error('Error loading order-level suggestions:', error);
+    } finally {
+      setLoadingOrderSuggestions(false);
+    }
+  };
+
+  const applySmartRecommendation = (itemId: number, recommendedKey: string, keyIndex: number) => {
+    setItemMappingKeys(prev => {
+      const currentKeys = [...(prev[itemId] || [])];
+      currentKeys[keyIndex] = recommendedKey;
+      return { ...prev, [itemId]: currentKeys };
+    });
+  };
+
+  const applyOrderLevelSuggestion = (keyIndex: number, suggestedKey: string) => {
+    setSelectedMappingKeys(prev => {
+      const newKeys = [...prev];
+      newKeys[keyIndex] = suggestedKey;
+      return newKeys;
+    });
+  };
+
+  const saveItemMappingKeys = async (itemId: number) => {
+    setSavingItemMapping(prev => ({ ...prev, [itemId]: true }));
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}/mapping-keys`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          mapping_keys: itemMappingKeys[itemId] || []
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to update item mapping keys');
+      }
+
+      // Refresh the order to show updated mapping keys
+      loadOrder();
+    } catch (error) {
+      console.error('Error saving item mapping keys:', error);
+      setError('Failed to save item mapping keys');
+    } finally {
+      setSavingItemMapping(prev => ({ ...prev, [itemId]: false }));
+    }
+  };
+
+  const updateItemMappingKey = (itemId: number, keyIndex: number, value: string) => {
+    setItemMappingKeys(prev => {
+      const currentKeys = [...(prev[itemId] || [])];
+      if (value) {
+        currentKeys[keyIndex] = value;
+      } else {
+        currentKeys.splice(keyIndex);
+      }
+      return { ...prev, [itemId]: currentKeys };
+    });
+  };
+
+  const downloadFinalMappedResults = async (format: 'csv' | 'excel') => {
+    const downloadKey = `final-${format}`;
+    setDownloadingFiles(prev => ({ ...prev, [downloadKey]: true }));
+
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/download/mapped-${format}`);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `Failed to download final ${format.toUpperCase()} results`);
+      }
+
+      // Create download link
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+
+      // Get filename from response headers or create default
+      const contentDisposition = response.headers.get('content-disposition');
+      let filename = `order_${orderId}_mapped_results.${format === 'excel' ? 'xlsx' : 'csv'}`;
+
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+        if (filenameMatch) {
+          filename = filenameMatch[1].replace(/['"]/g, '');
+        }
+      }
+
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+
+      // Cleanup
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+    } catch (error) {
+      console.error(`Error downloading final ${format} results:`, error);
+      setError(error instanceof Error ? error.message : `Failed to download final ${format.toUpperCase()} results`);
+    } finally {
+      setDownloadingFiles(prev => ({ ...prev, [downloadKey]: false }));
+    }
+  };
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'DRAFT':
         return 'bg-gray-100 text-gray-800';
       case 'PROCESSING':
         return 'bg-blue-100 text-blue-800';
+      case 'OCR_COMPLETED':
+        return 'bg-purple-100 text-purple-800';
       case 'MAPPING':
         return 'bg-yellow-100 text-yellow-800';
       case 'COMPLETED':
@@ -472,6 +704,10 @@ export default function OrderDetailsPage() {
 
   const canEdit = order.status === 'DRAFT';
   const canSubmit = order.status === 'DRAFT' && order.total_items > 0;
+  const canStartOcrOnly = order.status === 'DRAFT' && order.total_items > 0;
+  const canStartFullProcess = order.status === 'DRAFT' && order.total_items > 0 && order.mapping_file_path && order.mapping_keys && order.mapping_keys.length > 0;
+  const canStartMapping = order.status === 'OCR_COMPLETED';
+  const canConfigureMapping = order.status === 'DRAFT' || order.status === 'OCR_COMPLETED' || order.status === 'COMPLETED' || order.status === 'MAPPING';
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -491,19 +727,57 @@ export default function OrderDetailsPage() {
             {order.status}
           </span>
         </div>
-        {canSubmit && (
-          <button
-            onClick={submitOrder}
-            className="bg-green-600 hover:bg-green-700 text-white py-2 px-6 rounded"
-          >
-            Submit Order
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {canStartOcrOnly && (
+            <button
+              onClick={startOcrOnlyProcessing}
+              className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded font-medium"
+              title="Start OCR processing only. You can configure mapping later."
+            >
+              开始OCR处理
+            </button>
+          )}
+          {canStartFullProcess && (
+            <button
+              onClick={submitOrder}
+              className="bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded font-medium"
+              title="Start OCR processing with mapping (requires mapping file and keys)"
+            >
+              OCR + 映射处理
+            </button>
+          )}
+          {canStartMapping && (
+            <button
+              onClick={startMappingProcessing}
+              className="bg-purple-600 hover:bg-purple-700 text-white py-2 px-4 rounded font-medium"
+              title="Start mapping processing (OCR already completed)"
+            >
+              开始映射处理
+            </button>
+          )}
+        </div>
       </div>
 
       {error && (
         <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6">
           {error}
+        </div>
+      )}
+
+      {/* Status Information */}
+      {order.status === 'OCR_COMPLETED' && (
+        <div className="bg-purple-50 border border-purple-200 rounded-lg p-4 mb-6">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-purple-600 font-semibold">🔍 OCR Processing Completed</span>
+          </div>
+          <p className="text-sm text-purple-700">
+            All files have been processed with OCR. You can now:
+          </p>
+          <ul className="text-sm text-purple-700 list-disc list-inside mt-1 space-y-1">
+            <li>Review the OCR results by downloading CSV files from individual items</li>
+            <li>Configure mapping by uploading a mapping file and selecting keys</li>
+            <li>Start mapping processing once configuration is complete</li>
+          </ul>
         </div>
       )}
 
@@ -662,6 +936,112 @@ export default function OrderDetailsPage() {
                   </div>
                 )}
 
+                {/* Per-Item Mapping Configuration - Show for completed items with CSV results */}
+                {item.status === 'COMPLETED' && item.ocr_result_csv_path && (
+                  <div className="mt-4 pt-3 border-t border-gray-200">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-sm font-medium text-gray-700">Item Mapping Keys:</div>
+                      <div className="flex items-center gap-2">
+                        {/* Smart Recommendations Button */}
+                        {!smartRecommendations[item.item_id] && (
+                          <button
+                            onClick={() => loadSmartRecommendations(item.item_id)}
+                            disabled={loadingRecommendations[item.item_id]}
+                            className="bg-yellow-100 hover:bg-yellow-200 disabled:bg-gray-200 text-yellow-700 disabled:text-gray-500 py-1 px-3 rounded text-xs font-medium"
+                            title="Get AI-powered mapping key suggestions"
+                          >
+                            {loadingRecommendations[item.item_id] ? '🔮 Loading...' : '🔮 Smart Suggest'}
+                          </button>
+                        )}
+                        {!itemCsvHeaders[item.item_id] && (
+                          <button
+                            onClick={() => loadItemCsvHeaders(item.item_id)}
+                            disabled={loadingItemHeaders[item.item_id]}
+                            className="bg-purple-100 hover:bg-purple-200 disabled:bg-gray-200 text-purple-700 disabled:text-gray-500 py-1 px-3 rounded text-sm font-medium"
+                          >
+                            {loadingItemHeaders[item.item_id] ? 'Loading...' : 'Configure Mapping'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Smart Recommendations Display */}
+                    {smartRecommendations[item.item_id] && smartRecommendations[item.item_id].length > 0 && (
+                      <div className="bg-yellow-50 border border-yellow-200 p-3 rounded mb-3">
+                        <div className="text-sm font-medium text-yellow-800 mb-2">🔮 AI Recommendations:</div>
+                        <div className="space-y-2">
+                          {smartRecommendations[item.item_id].map((rec, index) => (
+                            <div key={index} className="flex items-center justify-between bg-white p-2 rounded border border-yellow-200">
+                              <div className="flex-1">
+                                <div className="text-sm font-medium text-gray-800">{rec.key}</div>
+                                <div className="text-xs text-gray-600">
+                                  {rec.reason} (信心度: {(rec.confidence * 100).toFixed(0)}%)
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => applySmartRecommendation(item.item_id, rec.key, rec.priority - 1)}
+                                className="bg-yellow-500 hover:bg-yellow-600 text-white py-1 px-2 rounded text-xs font-medium"
+                                title={`Apply as mapping key ${rec.priority}`}
+                              >
+                                Apply Key {rec.priority}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {itemCsvHeaders[item.item_id] && (
+                      <div className="bg-gray-50 p-3 rounded">
+                        <div className="text-xs text-gray-600 mb-3">
+                          Available columns: {itemCsvHeaders[item.item_id].join(', ')}
+                        </div>
+                        <div className="space-y-2">
+                          {[1, 2, 3].map((keyNum) => (
+                            <div key={keyNum} className="flex items-center gap-2">
+                              <span className="text-sm font-medium w-16">Key {keyNum}:</span>
+                              <select
+                                value={itemMappingKeys[item.item_id]?.[keyNum - 1] || ''}
+                                onChange={(e) => updateItemMappingKey(item.item_id, keyNum - 1, e.target.value)}
+                                className="border border-gray-300 rounded px-2 py-1 text-sm flex-1"
+                                disabled={!canConfigureMapping}
+                              >
+                                <option value="">Select column...</option>
+                                {itemCsvHeaders[item.item_id].map((header, index) => (
+                                  <option key={index} value={header}>{header}</option>
+                                ))}
+                              </select>
+                            </div>
+                          ))}
+                        </div>
+                        {canConfigureMapping && itemMappingKeys[item.item_id]?.length > 0 && (
+                          <div className="mt-3">
+                            <button
+                              onClick={() => saveItemMappingKeys(item.item_id)}
+                              disabled={savingItemMapping[item.item_id]}
+                              className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white py-1 px-3 rounded text-sm font-medium"
+                            >
+                              {savingItemMapping[item.item_id] ? 'Saving...' : 'Save Item Mapping Keys'}
+                            </button>
+                          </div>
+                        )}
+                        {item.mapping_keys && item.mapping_keys.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-xs text-gray-600">Current keys:</div>
+                            <div className="flex gap-1 mt-1">
+                              {item.mapping_keys.map((key, index) => (
+                                <span key={index} className="bg-purple-100 text-purple-800 px-2 py-1 rounded text-xs">
+                                  {index + 1}. {key}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {item.error_message && (
                   <div className="mt-2 text-sm text-red-600">
                     Error: {item.error_message}
@@ -682,15 +1062,15 @@ export default function OrderDetailsPage() {
           </p>
         </div>
 
-        {canEdit && (
+        {canConfigureMapping && (
           <div className="mb-6">
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Upload Mapping File (Excel)
+              Upload Mapping File (Excel/CSV)
             </label>
             <div className="flex items-center gap-4">
               <input
                 type="file"
-                accept=".xlsx"
+                accept=".xlsx,.csv"
                 onChange={(e) => setMappingFile(e.target.files?.[0] || null)}
                 className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
               />
@@ -711,7 +1091,7 @@ export default function OrderDetailsPage() {
               <div className="text-sm text-green-600">
                 ✓ Mapping file uploaded
               </div>
-              {canEdit && (
+              {canConfigureMapping && (
                 <button
                   onClick={deleteMappingFile}
                   disabled={isDeletingMapping}
@@ -721,6 +1101,50 @@ export default function OrderDetailsPage() {
                   {isDeletingMapping ? 'Deleting...' : 'Delete'}
                 </button>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Order-Level Smart Recommendations */}
+        {mappingHeaders && order.items.some(item => item.status === 'COMPLETED') && !orderLevelSuggestions && (
+          <div className="mb-4">
+            <button
+              onClick={() => loadOrderLevelSuggestions()}
+              disabled={loadingOrderSuggestions}
+              className="bg-green-100 hover:bg-green-200 disabled:bg-gray-200 text-green-700 disabled:text-gray-500 py-2 px-4 rounded text-sm font-medium flex items-center gap-2"
+              title="Get AI suggestions based on completed order items"
+            >
+              {loadingOrderSuggestions ? (
+                <>🔮 Loading Order Suggestions...</>
+              ) : (
+                <>🔮 Get Smart Order-Level Suggestions</>
+              )}
+            </button>
+          </div>
+        )}
+
+        {/* Display Order-Level Smart Recommendations */}
+        {orderLevelSuggestions && orderLevelSuggestions.length > 0 && (
+          <div className="bg-green-50 border border-green-200 p-4 rounded mb-4">
+            <div className="text-sm font-medium text-green-800 mb-3">🔮 Order-Level AI Recommendations:</div>
+            <div className="space-y-2 mb-4">
+              {orderLevelSuggestions.map((rec, index) => (
+                <div key={index} className="flex items-center justify-between bg-white p-2 rounded border border-green-200">
+                  <div className="flex-1">
+                    <div className="text-sm font-medium text-gray-800">{rec.key}</div>
+                    <div className="text-xs text-gray-600">
+                      {rec.reason} (信心度: {(rec.confidence * 100).toFixed(0)}%)
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => applyOrderLevelSuggestion(rec.key, rec.priority - 1)}
+                    className="bg-green-500 hover:bg-green-600 text-white py-1 px-2 rounded text-xs font-medium"
+                    title={`Apply as order mapping key ${rec.priority}`}
+                  >
+                    Apply Key {rec.priority}
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -746,7 +1170,7 @@ export default function OrderDetailsPage() {
                       setSelectedMappingKeys(newKeys);
                     }}
                     className="border border-gray-300 rounded px-3 py-1 text-sm flex-1"
-                    disabled={!canEdit}
+                    disabled={!canConfigureMapping}
                   >
                     <option value="">Select column...</option>
                     {Object.values(mappingHeaders).flat().map((header, index) => (
@@ -756,7 +1180,7 @@ export default function OrderDetailsPage() {
                 </div>
               ))}
             </div>
-            {canEdit && selectedMappingKeys.length > 0 && (
+            {canConfigureMapping && selectedMappingKeys.length > 0 && (
               <button
                 onClick={updateMappingKeys}
                 className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded"
@@ -780,6 +1204,73 @@ export default function OrderDetailsPage() {
           </div>
         )}
       </div>
+
+      {/* Final Mapped Results Section - Show only for completed orders with mapped results */}
+      {order.status === 'COMPLETED' && order.final_report_paths && (order.final_report_paths.mapped_csv || order.final_report_paths.mapped_excel) && (
+        <div className="bg-white rounded-lg shadow p-6 mb-8">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold text-green-600">📊 Final Mapped Results</h2>
+            <p className="text-sm text-gray-600 mt-1">
+              Download the complete results with mapping applied based on your configured keys.
+            </p>
+          </div>
+
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="flex items-center text-green-700">
+                <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                </svg>
+                <span className="font-medium">Mapping Completed Successfully</span>
+              </div>
+            </div>
+
+            <div className="text-sm text-green-700 mb-4">
+              All order items have been processed and mapped according to your configuration. Download the final results below:
+            </div>
+
+            <div className="flex items-center gap-3">
+              {order.final_report_paths.mapped_csv && (
+                <button
+                  onClick={() => downloadFinalMappedResults('csv')}
+                  disabled={downloadingFiles['final-csv']}
+                  className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white py-2 px-4 rounded font-medium flex items-center gap-2"
+                  title="Download final mapped results as CSV"
+                >
+                  {downloadingFiles['final-csv'] ? (
+                    'Downloading...'
+                  ) : (
+                    <>
+                      📊 Download CSV Results
+                    </>
+                  )}
+                </button>
+              )}
+
+              {order.final_report_paths.mapped_excel && (
+                <button
+                  onClick={() => downloadFinalMappedResults('excel')}
+                  disabled={downloadingFiles['final-excel']}
+                  className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white py-2 px-4 rounded font-medium flex items-center gap-2"
+                  title="Download final mapped results as Excel (includes analysis sheets)"
+                >
+                  {downloadingFiles['final-excel'] ? (
+                    'Downloading...'
+                  ) : (
+                    <>
+                      📈 Download Excel Report
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
+
+            <div className="mt-3 text-xs text-green-600">
+              💡 The Excel report includes multiple sheets: Mapped Results, Matched Records, Unmatched Records, and Summary analysis.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add Item Modal */}
       {showAddItemModal && (

@@ -111,6 +111,79 @@ class OrderProcessor:
                 order.error_message = str(e)
                 db.commit()
 
+    async def process_order_ocr_only(self, order_id: int):
+        """Process an OCR order without mapping (OCR-only mode)"""
+        with Session(engine) as db:
+            try:
+                # Get order
+                order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+                if not order:
+                    logger.error(f"Order {order_id} not found")
+                    return
+
+                if order.status != OrderStatus.PROCESSING:
+                    logger.warning(f"Order {order_id} is not in PROCESSING status")
+                    return
+
+                # Get order items
+                items = db.query(OcrOrderItem).filter(
+                    OcrOrderItem.order_id == order_id,
+                    OcrOrderItem.status == OrderItemStatus.PENDING
+                ).all()
+
+                if not items:
+                    logger.warning(f"No pending items found for order {order_id}")
+                    order.status = OrderStatus.FAILED
+                    order.error_message = "No items to process"
+                    db.commit()
+                    return
+
+                logger.info(f"Processing order {order_id} (OCR-only) with {len(items)} items")
+
+                # Process all items in parallel
+                tasks = []
+                for item in items:
+                    task = asyncio.create_task(self._process_order_item(item.item_id))
+                    tasks.append(task)
+
+                # Wait for all items to complete
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Check results and update order status
+                completed_count = 0
+                failed_count = 0
+
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        logger.error(f"Item processing failed: {result}")
+                        failed_count += 1
+                    elif result:
+                        completed_count += 1
+                    else:
+                        failed_count += 1
+
+                # Update order counts
+                order.completed_items = completed_count
+                order.failed_items = failed_count
+
+                if failed_count == len(items):
+                    # All items failed
+                    order.status = OrderStatus.FAILED
+                    order.error_message = "All items failed to process"
+                elif completed_count > 0:
+                    # At least some items succeeded - mark as OCR completed
+                    order.status = OrderStatus.OCR_COMPLETED
+                    logger.info(f"Order {order_id} OCR processing completed - ready for mapping configuration")
+
+                db.commit()
+                logger.info(f"Order {order_id} OCR-only processing completed: {completed_count} succeeded, {failed_count} failed")
+
+            except Exception as e:
+                logger.error(f"Error processing order OCR-only {order_id}: {str(e)}")
+                order.status = OrderStatus.FAILED
+                order.error_message = str(e)
+                db.commit()
+
     async def _process_order_item(self, item_id: int) -> bool:
         """Process a single order item"""
         with Session(engine) as db:
@@ -426,13 +499,377 @@ class OrderProcessor:
             logger.error(f"Error generating consolidated reports for order {order_id}: {str(e)}")
             raise
 
+    async def process_order_mapping_only(self, order_id: int):
+        """Process mapping for an order that already has OCR results (MAPPING status)"""
+        with Session(engine) as db:
+            try:
+                # Get order
+                order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+                if not order:
+                    logger.error(f"Order {order_id} not found")
+                    return
+
+                if order.status != OrderStatus.MAPPING:
+                    logger.warning(f"Order {order_id} is not in MAPPING status")
+                    return
+
+                logger.info(f"Starting mapping-only processing for order {order_id}")
+
+                # Get completed order items
+                items = db.query(OcrOrderItem).filter(
+                    OcrOrderItem.order_id == order_id,
+                    OcrOrderItem.status == OrderItemStatus.COMPLETED
+                ).all()
+
+                if not items:
+                    logger.error(f"No completed items found for order {order_id}")
+                    return
+
+                # Load existing OCR results for all items
+                all_ocr_results = []
+                for item in items:
+                    try:
+                        # Download item results from S3
+                        result_key = f"upload/results/orders/0/items/{item.item_id}/item_{item.item_id}_results.json"
+                        result_content = self.s3_manager.download_file_by_stored_path(result_key)
+                        if result_content:
+                            import json
+                            item_results = json.loads(result_content.decode('utf-8'))
+                            if isinstance(item_results, list):
+                                all_ocr_results.extend(item_results)
+                            else:
+                                all_ocr_results.append(item_results)
+                    except Exception as e:
+                        logger.warning(f"Could not load results for item {item.item_id}: {e}")
+
+                if not all_ocr_results:
+                    logger.error(f"No OCR results found for order {order_id}")
+                    return
+
+                logger.info(f"Loaded {len(all_ocr_results)} OCR result records")
+
+                # Load and parse mapping file
+                if not order.mapping_file_path:
+                    logger.error(f"No mapping file found for order {order_id}")
+                    return
+
+                mapping_content = self.s3_manager.download_file_by_stored_path(order.mapping_file_path)
+                if not mapping_content:
+                    logger.error(f"Could not read mapping file for order {order_id}")
+                    return
+
+                # Parse mapping file (CSV format)
+                import csv
+                import io
+                mapping_data = []
+                csv_reader = csv.DictReader(io.StringIO(mapping_content.decode('utf-8')))
+                for row in csv_reader:
+                    mapping_data.append(row)
+
+                logger.info(f"Loaded {len(mapping_data)} mapping records")
+
+                # Get mapping keys (what field to join on)
+                mapping_keys = order.mapping_keys or []
+                if not mapping_keys:
+                    logger.error(f"No mapping keys configured for order {order_id}")
+                    return
+
+                # Perform JOIN operation
+                # mapping_keys[0] is the field in mapping file to join on
+                # we'll join with 'number' field in OCR results
+                join_key = mapping_keys[0] if mapping_keys else 'PHONE'
+                logger.info(f"Performing JOIN on mapping_file.{join_key} = ocr_results.number")
+
+                # Create lookup dict from mapping data
+                mapping_lookup = {}
+                for mapping_row in mapping_data:
+                    if join_key in mapping_row and mapping_row[join_key]:
+                        # Clean phone number for matching
+                        clean_key = str(mapping_row[join_key]).strip()
+                        mapping_lookup[clean_key] = mapping_row
+
+                # Join OCR results with mapping data
+                joined_results = []
+                for ocr_row in all_ocr_results:
+                    # Get the number field from OCR results
+                    ocr_number = str(ocr_row.get('number', '')).strip()
+
+                    # Find matching mapping record
+                    mapping_match = mapping_lookup.get(ocr_number)
+
+                    # Create joined record
+                    joined_row = ocr_row.copy()
+                    if mapping_match:
+                        # Add mapping fields to OCR data
+                        for mapping_field, mapping_value in mapping_match.items():
+                            joined_row[f"mapping_{mapping_field}"] = mapping_value
+                        joined_row['join_status'] = 'matched'
+                    else:
+                        joined_row['join_status'] = 'unmatched'
+
+                    joined_results.append(joined_row)
+
+                logger.info(f"JOIN completed: {len(joined_results)} records processed")
+
+                # Generate final CSV
+                if joined_results:
+                    # Convert to CSV content directly
+                    import pandas as pd
+                    import io
+
+                    df = pd.DataFrame(joined_results)
+                    csv_buffer = io.StringIO()
+                    df.to_csv(csv_buffer, index=False)
+                    csv_content = csv_buffer.getvalue()
+
+                    # Save final results to S3
+                    final_key = f"upload/results/orders/{order_id}/final_mapped_results.csv"
+                    success = self.s3_manager.upload_file(csv_content.encode('utf-8'), final_key)
+
+                    if success:
+                        logger.info(f"Final mapped results saved to S3: {final_key}")
+
+                        # Update order status to COMPLETED
+                        order.status = OrderStatus.COMPLETED
+                        order.updated_at = datetime.utcnow()
+                        db.commit()
+
+                        logger.info(f"Order {order_id} mapping processing completed successfully")
+                    else:
+                        logger.error(f"Failed to save final results for order {order_id}")
+                else:
+                    logger.error(f"No results to save for order {order_id}")
+
+            except Exception as e:
+                logger.error(f"Error in mapping-only processing for order {order_id}: {str(e)}")
+                db.rollback()
+                # Update order status to FAILED
+                try:
+                    order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+                    if order:
+                        order.status = OrderStatus.FAILED
+                        order.updated_at = datetime.utcnow()
+                        db.commit()
+                except:
+                    pass
+                raise
+
     async def _apply_order_mapping(self, order_id: int, results: List[Dict[str, Any]]):
         """Apply mapping rules to consolidated order results"""
-        # TODO: Implement mapping logic similar to batch processing
-        # This would use the mapping file and keys from the order
-        # to enrich the consolidated results with business data
-        logger.info(f"Mapping application for order {order_id} - TODO: Implement")
-        pass
+        with Session(engine) as db:
+            try:
+                logger.info(f"Starting mapping application for order {order_id}")
+
+                # Get order with mapping configuration
+                order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+                if not order or not order.mapping_file_path:
+                    logger.warning(f"No mapping file found for order {order_id}")
+                    return
+
+                # Download and process mapping file
+                file_storage = get_file_storage()
+                mapping_file_content = file_storage.download_file(order.mapping_file_path)
+                if not mapping_file_content:
+                    logger.error(f"Failed to download mapping file for order {order_id}")
+                    return
+
+                # Import cost allocation modules
+                from cost_allocation.mapping_processor import process_mapping_file
+                from cost_allocation.matcher import SmartMatcher
+
+                # Process the mapping file to create unified lookup
+                mapping_result = process_mapping_file(mapping_file_content)
+                if not mapping_result['success']:
+                    logger.error(f"Failed to process mapping file: {mapping_result.get('error', 'Unknown error')}")
+                    return
+
+                unified_map = mapping_result['unified_map']
+                logger.info(f"Processed mapping file with {len(unified_map)} entries")
+
+                # Get completed order items with their individual mapping keys
+                completed_items = db.query(OcrOrderItem).filter(
+                    OcrOrderItem.order_id == order_id,
+                    OcrOrderItem.status == OrderItemStatus.COMPLETED,
+                    OcrOrderItem.ocr_result_csv_path.isnot(None)
+                ).all()
+
+                # Process each item's results with its individual mapping keys
+                all_enriched_results = []
+
+                for item in completed_items:
+                    try:
+                        # Download item's CSV results
+                        if not item.ocr_result_csv_path.startswith('s3://'):
+                            logger.error(f"Invalid CSV path for item {item.item_id}")
+                            continue
+
+                        s3_key = item.ocr_result_csv_path.replace(f"s3://{self.s3_manager.bucket_name}/", "")
+                        if s3_key.startswith(self.s3_manager.upload_prefix):
+                            s3_key = s3_key[len(self.s3_manager.upload_prefix):]
+
+                        csv_content = self.s3_manager.download_file(s3_key)
+                        if not csv_content:
+                            logger.error(f"Failed to download CSV for item {item.item_id}")
+                            continue
+
+                        # Parse CSV data
+                        import pandas as pd
+                        from io import StringIO
+
+                        df = pd.read_csv(StringIO(csv_content.decode('utf-8')))
+                        item_records = df.to_dict('records')
+
+                        # Apply item-specific mapping with priority-based matching
+                        item_mapping_keys = item.mapping_keys or order.mapping_keys or []
+
+                        for record in item_records:
+                            # Add item metadata
+                            record['__item_id'] = item.item_id
+                            record['__item_name'] = item.item_name
+                            record['__company'] = item.company.company_name if item.company else None
+                            record['__doc_type'] = item.document_type.type_name if item.document_type else None
+
+                            # Apply mapping with priority order
+                            enriched_record = self._apply_priority_mapping(
+                                record, unified_map, item_mapping_keys
+                            )
+                            all_enriched_results.append(enriched_record)
+
+                        logger.info(f"Processed {len(item_records)} records from item {item.item_id}")
+
+                    except Exception as e:
+                        logger.error(f"Error processing item {item.item_id}: {str(e)}")
+                        continue
+
+                if not all_enriched_results:
+                    logger.error(f"No enriched results generated for order {order_id}")
+                    return
+
+                # Generate final mapped reports
+                await self._generate_mapped_reports(order_id, all_enriched_results)
+
+                logger.info(f"Successfully completed mapping for order {order_id} with {len(all_enriched_results)} records")
+
+            except Exception as e:
+                logger.error(f"Error applying order mapping {order_id}: {str(e)}")
+                raise
+
+    def _apply_priority_mapping(self, record: Dict[str, Any], unified_map: Dict[str, Any], mapping_keys: List[str]) -> Dict[str, Any]:
+        """Apply priority-based mapping to a single record"""
+        enriched_record = record.copy()
+
+        # Default values for unmatched records
+        enriched_record['Department'] = 'Unallocated'
+        enriched_record['ShopCode'] = 'UNMATCHED'
+        enriched_record['ServiceType'] = 'Unknown'
+        enriched_record['MatchedBy'] = 'unmatched'
+        enriched_record['MatchSource'] = ''
+        enriched_record['Matched'] = False
+
+        # Try matching with priority order (Key 1, Key 2, Key 3)
+        for i, mapping_key in enumerate(mapping_keys):
+            if not mapping_key or mapping_key not in record:
+                continue
+
+            # Get the value from the record for this mapping key
+            key_value = record[mapping_key]
+            if not key_value:
+                continue
+
+            # Normalize the identifier for matching
+            import re
+            normalized_key = str(key_value).strip()
+            normalized_key = re.sub(r'[^\w]', '', normalized_key).upper()
+
+            if normalized_key in unified_map:
+                match_data = unified_map[normalized_key]
+
+                # Apply the matched data
+                enriched_record['Department'] = match_data.get('Department', 'Retail')
+                enriched_record['ShopCode'] = match_data.get('ShopCode', '')
+                enriched_record['ServiceType'] = match_data.get('ServiceType', 'Unknown')
+                enriched_record['MatchedBy'] = f'key_{i+1}_{mapping_key}'
+                enriched_record['MatchSource'] = match_data.get('Source', '')
+                enriched_record['Matched'] = True
+                enriched_record['MatchedValue'] = key_value
+                enriched_record['MatchedKey'] = mapping_key
+
+                logger.debug(f"Matched record using key {i+1} ({mapping_key}={key_value}) to shop {match_data.get('ShopCode', 'Unknown')}")
+                break  # Stop at first successful match (priority order)
+
+        return enriched_record
+
+    async def _generate_mapped_reports(self, order_id: int, enriched_results: List[Dict[str, Any]]):
+        """Generate final mapped reports for the order"""
+        try:
+            s3_base = f"results/orders/{order_id // 1000}/mapped"
+
+            # Generate mapped CSV
+            import pandas as pd
+            df = pd.DataFrame(enriched_results)
+
+            # Create CSV content
+            csv_content = df.to_csv(index=False)
+            csv_s3_key = f"{s3_base}/order_{order_id}_mapped.csv"
+            csv_upload_success = self.s3_manager.upload_file(csv_content.encode('utf-8'), csv_s3_key)
+
+            # Generate Excel report with multiple sheets
+            excel_path = None
+            with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temp_excel:
+                temp_excel_path = temp_excel.name
+
+            try:
+                # Create Excel with multiple sheets
+                with pd.ExcelWriter(temp_excel_path, engine='openpyxl') as writer:
+                    # Main results sheet
+                    df.to_excel(writer, sheet_name='Mapped Results', index=False)
+
+                    # Matched vs Unmatched analysis
+                    matched_df = df[df['Matched'] == True]
+                    unmatched_df = df[df['Matched'] == False]
+
+                    matched_df.to_excel(writer, sheet_name='Matched Records', index=False)
+                    unmatched_df.to_excel(writer, sheet_name='Unmatched Records', index=False)
+
+                    # Summary sheet
+                    summary_data = {
+                        'Total Records': len(enriched_results),
+                        'Matched Records': len(matched_df),
+                        'Unmatched Records': len(unmatched_df),
+                        'Match Rate': f"{(len(matched_df) / len(enriched_results) * 100):.1f}%" if enriched_results else "0%"
+                    }
+                    summary_df = pd.DataFrame(list(summary_data.items()), columns=['Metric', 'Value'])
+                    summary_df.to_excel(writer, sheet_name='Summary', index=False)
+
+                # Upload Excel file
+                with open(temp_excel_path, 'rb') as excel_file:
+                    excel_content = excel_file.read()
+                    excel_s3_key = f"{s3_base}/order_{order_id}_mapped.xlsx"
+                    excel_upload_success = self.s3_manager.upload_file(excel_content, excel_s3_key)
+
+                    if excel_upload_success:
+                        excel_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{excel_s3_key}"
+
+            finally:
+                os.unlink(temp_excel_path)
+
+            # Update order with mapped report paths
+            with Session(engine) as db:
+                order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+                if order:
+                    current_paths = order.final_report_paths or {}
+                    current_paths.update({
+                        'mapped_csv': f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{csv_s3_key}" if csv_upload_success else None,
+                        'mapped_excel': excel_path
+                    })
+                    order.final_report_paths = current_paths
+                    db.commit()
+
+            logger.info(f"Generated mapped reports for order {order_id}")
+
+        except Exception as e:
+            logger.error(f"Error generating mapped reports for order {order_id}: {str(e)}")
+            raise
 
 # Global order processor instance
 order_processor = OrderProcessor()
@@ -440,3 +877,11 @@ order_processor = OrderProcessor()
 async def start_order_processing(order_id: int):
     """Start processing an order in the background"""
     await order_processor.process_order(order_id)
+
+async def start_order_ocr_only_processing(order_id: int):
+    """Start OCR-only processing (no mapping) for an order in the background"""
+    await order_processor.process_order_ocr_only(order_id)
+
+async def start_order_mapping_only_processing(order_id: int):
+    """Start mapping-only processing for an order that already has OCR results"""
+    await order_processor.process_order_mapping_only(order_id)

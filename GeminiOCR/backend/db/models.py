@@ -270,6 +270,7 @@ class BatchJob(Base):
 class OrderStatus(enum.Enum):
     DRAFT = "DRAFT"
     PROCESSING = "PROCESSING"
+    OCR_COMPLETED = "OCR_COMPLETED"  # NEW: OCR finished, ready for mapping configuration
     MAPPING = "MAPPING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
@@ -314,6 +315,7 @@ class OcrOrderItem(Base):
     file_count = Column(Integer, nullable=False, default=0, comment='Number of files in this item')
     ocr_result_json_path = Column(String(500), nullable=True, comment='S3 path to OCR result JSON file')
     ocr_result_csv_path = Column(String(500), nullable=True, comment='S3 path to OCR result CSV file')
+    mapping_keys = Column(JSON, nullable=True, comment='Selected mapping keys for this item (up to 3 keys)')
     processing_started_at = Column(DateTime, nullable=True)
     processing_completed_at = Column(DateTime, nullable=True)
     processing_time_seconds = Column(Float, nullable=True)
