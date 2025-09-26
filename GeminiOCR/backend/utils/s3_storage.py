@@ -1539,12 +1539,16 @@ class S3StorageManager:
                 s3_key = s3_parts[1]
                 
                 logger.info(f"📥 Downloading from S3 URI: bucket={bucket_name}, key={s3_key}")
-                
+
+                # Validate bucket name matches current instance
+                if bucket_name != self.bucket_name:
+                    logger.warning(f"⚠️ Bucket mismatch: URI bucket={bucket_name}, current bucket={self.bucket_name}")
+
                 # Direct S3 download
                 response = self.s3_client.get_object(Bucket=bucket_name, Key=s3_key)
                 content = response["Body"].read()
-                
-                logger.info(f"✅ Successfully downloaded from S3 URI: {stored_path}")
+
+                logger.info(f"✅ Successfully downloaded from S3 URI: {stored_path} (size: {len(content)} bytes)")
                 return content
                 
             # Handle relative paths (assume they're relative to current bucket)

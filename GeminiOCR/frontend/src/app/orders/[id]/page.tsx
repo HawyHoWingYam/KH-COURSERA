@@ -70,12 +70,16 @@ export default function OrderDetailsPage() {
 
   // File Upload State
   const [uploadingFiles, setUploadingFiles] = useState<{[key: number]: boolean}>({});
+  const [fileInputKeys, setFileInputKeys] = useState<{[key: number]: string}>({});
 
   // File Delete State
   const [deletingFiles, setDeletingFiles] = useState<{[key: string]: boolean}>({});
 
   // Item Delete State
   const [deletingItems, setDeletingItems] = useState<{[key: number]: boolean}>({});
+
+  // Download State
+  const [downloadingFiles, setDownloadingFiles] = useState<{[key: string]: boolean}>({});
 
   // Mapping File State
   const [mappingFile, setMappingFile] = useState<File | null>(null);
@@ -206,6 +210,9 @@ export default function OrderDetailsPage() {
 
       // Reload order to show updated file counts
       loadOrder();
+
+      // Reset file input by changing its key to force re-render
+      setFileInputKeys(prev => ({ ...prev, [itemId]: Date.now().toString() }));
     } catch (error) {
       console.error('Error uploading files:', error);
       setError('Failed to upload files');
@@ -233,6 +240,9 @@ export default function OrderDetailsPage() {
 
       // Reload order to show updated file counts and lists
       loadOrder();
+
+      // Reset file input by changing its key to force re-render and allow same filename re-upload
+      setFileInputKeys(prev => ({ ...prev, [itemId]: Date.now().toString() }));
     } catch (error) {
       console.error('Error deleting file:', error);
       setError('Failed to delete file');
@@ -264,6 +274,51 @@ export default function OrderDetailsPage() {
       setError('Failed to delete item');
     } finally {
       setDeletingItems(prev => ({ ...prev, [itemId]: false }));
+    }
+  };
+
+  const downloadItemResult = async (itemId: number, format: 'json' | 'csv', itemName: string) => {
+    const downloadKey = `${itemId}-${format}`;
+    setDownloadingFiles(prev => ({ ...prev, [downloadKey]: true }));
+
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}/download/${format}`);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `Failed to download ${format.toUpperCase()} file`);
+      }
+
+      // Create download link
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+
+      // Get filename from response headers or create default
+      const contentDisposition = response.headers.get('content-disposition');
+      let filename = `order_${orderId}_item_${itemId}_${itemName || 'result'}.${format}`;
+
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+        if (filenameMatch) {
+          filename = filenameMatch[1].replace(/['"]/g, '');
+        }
+      }
+
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+
+      // Cleanup
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+    } catch (error) {
+      console.error(`Error downloading ${format} file:`, error);
+      setError(error instanceof Error ? error.message : `Failed to download ${format.toUpperCase()} file`);
+    } finally {
+      setDownloadingFiles(prev => ({ ...prev, [downloadKey]: false }));
     }
   };
 
@@ -559,6 +614,7 @@ export default function OrderDetailsPage() {
                     <label className="cursor-pointer bg-gray-100 hover:bg-gray-200 text-gray-700 py-2 px-4 rounded border">
                       {uploadingFiles[item.item_id] ? 'Uploading...' : 'Upload Files'}
                       <input
+                        key={fileInputKeys[item.item_id] || `file-input-${item.item_id}`}
                         type="file"
                         multiple
                         accept=".pdf,.jpg,.jpeg,.png"
@@ -574,6 +630,35 @@ export default function OrderDetailsPage() {
                     <span className="text-sm text-gray-500">
                       Supported: PDF, JPG, PNG
                     </span>
+                  </div>
+                )}
+
+                {/* Download Results Section - Show for completed items */}
+                {item.status === 'COMPLETED' && (item.ocr_result_json_path || item.ocr_result_csv_path) && (
+                  <div className="mt-4 pt-3 border-t border-gray-200">
+                    <div className="text-sm font-medium text-gray-700 mb-2">Download Results:</div>
+                    <div className="flex items-center gap-2">
+                      {item.ocr_result_json_path && (
+                        <button
+                          onClick={() => downloadItemResult(item.item_id, 'json', item.item_name)}
+                          disabled={downloadingFiles[`${item.item_id}-json`]}
+                          className="bg-blue-100 hover:bg-blue-200 disabled:bg-gray-200 text-blue-700 disabled:text-gray-500 py-1 px-3 rounded text-sm font-medium"
+                          title="Download JSON results"
+                        >
+                          {downloadingFiles[`${item.item_id}-json`] ? 'Downloading...' : '📄 JSON'}
+                        </button>
+                      )}
+                      {item.ocr_result_csv_path && (
+                        <button
+                          onClick={() => downloadItemResult(item.item_id, 'csv', item.item_name)}
+                          disabled={downloadingFiles[`${item.item_id}-csv`]}
+                          className="bg-green-100 hover:bg-green-200 disabled:bg-gray-200 text-green-700 disabled:text-gray-500 py-1 px-3 rounded text-sm font-medium"
+                          title="Download CSV results"
+                        >
+                          {downloadingFiles[`${item.item_id}-csv`] ? 'Downloading...' : '📊 CSV'}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
 

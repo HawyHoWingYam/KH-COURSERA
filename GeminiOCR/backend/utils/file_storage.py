@@ -116,8 +116,8 @@ class FileStorageService:
             if not success:
                 raise Exception("S3 upload failed")
 
-            # Generate full S3 URI
-            s3_uri = f"s3://{self.s3_manager.bucket_name}/{s3_key}"
+            # Generate full S3 URI (including upload_prefix since S3StorageManager adds it during upload)
+            s3_uri = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{s3_key}"
 
             logger.info(f"✅ Order file uploaded to S3: {s3_uri}")
             return s3_uri, filename
@@ -268,8 +268,8 @@ class FileStorageService:
             if not success:
                 raise Exception("S3 upload failed")
 
-            # Generate full S3 URI
-            s3_uri = f"s3://{self.s3_manager.bucket_name}/{s3_key}"
+            # Generate full S3 URI (including upload_prefix since S3StorageManager adds it during upload)
+            s3_uri = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{s3_key}"
 
             logger.info(f"✅ Order mapping file uploaded to S3: {s3_uri}")
             return s3_uri, filename

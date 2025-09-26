@@ -4843,6 +4843,126 @@ def delete_mapping_file(order_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Failed to delete mapping file: {str(e)}")
 
 
+@app.get("/orders/{order_id}/items/{item_id}/download/json")
+def download_order_item_json(order_id: int, item_id: int, db: Session = Depends(get_db)):
+    """Download OCR result JSON file for a specific order item"""
+    try:
+        # Verify order and item exist
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Check if item is completed and has JSON result
+        if item.status != OrderItemStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Order item is not completed yet")
+
+        if not item.ocr_result_json_path:
+            raise HTTPException(status_code=404, detail="JSON result file not found for this item")
+
+        # Use existing S3 download infrastructure
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+
+        # Download file content from S3
+        file_content = s3_manager.download_file_by_stored_path(item.ocr_result_json_path)
+        if not file_content:
+            raise HTTPException(status_code=404, detail=f"File not found in S3: {item.ocr_result_json_path}")
+
+        # Generate filename for download
+        filename = f"order_{order_id}_item_{item_id}_{item.item_name or 'result'}.json"
+
+        # Create temporary file to serve
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+
+        # Return file response
+        response = FileResponse(
+            path=temp_file_path,
+            filename=filename,
+            media_type="application/json",
+        )
+
+        response.headers["X-File-Source"] = "S3"
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download order item JSON {item_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download JSON file: {str(e)}")
+
+
+@app.get("/orders/{order_id}/items/{item_id}/download/csv")
+def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(get_db)):
+    """Download OCR result CSV file for a specific order item"""
+    try:
+        # Verify order and item exist
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Check if item is completed and has CSV result
+        if item.status != OrderItemStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Order item is not completed yet")
+
+        if not item.ocr_result_csv_path:
+            raise HTTPException(status_code=404, detail="CSV result file not found for this item")
+
+        # Use existing S3 download infrastructure
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+
+        # Download file content from S3
+        file_content = s3_manager.download_file_by_stored_path(item.ocr_result_csv_path)
+        if not file_content:
+            raise HTTPException(status_code=404, detail=f"File not found in S3: {item.ocr_result_csv_path}")
+
+        # Generate filename for download
+        filename = f"order_{order_id}_item_{item_id}_{item.item_name or 'result'}.csv"
+
+        # Create temporary file to serve
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+
+        # Return file response
+        response = FileResponse(
+            path=temp_file_path,
+            filename=filename,
+            media_type="text/csv",
+        )
+
+        response.headers["X-File-Source"] = "S3"
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download order item CSV {item_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download CSV file: {str(e)}")
+
+
 if __name__ == "__main__":
     import uvicorn
 
