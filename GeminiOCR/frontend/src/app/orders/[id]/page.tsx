@@ -87,6 +87,8 @@ export default function OrderDetailsPage() {
   const [selectedMappingKeys, setSelectedMappingKeys] = useState<string[]>([]);
   const [isUploadingMapping, setIsUploadingMapping] = useState(false);
   const [isDeletingMapping, setIsDeletingMapping] = useState(false);
+  const [isUpdatingMappingKeys, setIsUpdatingMappingKeys] = useState(false);
+  const [isStartingMapping, setIsStartingMapping] = useState(false);
 
   // Per-item Mapping State
   const [itemCsvHeaders, setItemCsvHeaders] = useState<{[key: number]: string[]}>({});
@@ -401,6 +403,8 @@ export default function OrderDetailsPage() {
   };
 
   const updateMappingKeys = async () => {
+    setIsUpdatingMappingKeys(true);
+    setError('');
     try {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}`, {
         method: 'PUT',
@@ -413,13 +417,20 @@ export default function OrderDetailsPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to update mapping keys');
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to update mapping keys');
       }
+
+      // Show success feedback
+      setError('✅ Mapping keys saved successfully');
+      setTimeout(() => setError(''), 3000);
 
       loadOrder();
     } catch (error) {
       console.error('Error updating mapping keys:', error);
-      setError('Failed to update mapping keys');
+      setError(error instanceof Error ? error.message : 'Failed to update mapping keys');
+    } finally {
+      setIsUpdatingMappingKeys(false);
     }
   };
 
@@ -460,6 +471,8 @@ export default function OrderDetailsPage() {
   };
 
   const startMappingProcessing = async () => {
+    setIsStartingMapping(true);
+    setError('');
     try {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/process-mapping`, {
         method: 'POST',
@@ -470,10 +483,16 @@ export default function OrderDetailsPage() {
         throw new Error(errorData.detail || 'Failed to start mapping processing');
       }
 
+      // Show success feedback
+      setError('✅ Mapping processing started successfully');
+      setTimeout(() => setError(''), 3000);
+
       loadOrder();
     } catch (error) {
       console.error('Error starting mapping processing:', error);
       setError(error instanceof Error ? error.message : 'Failed to start mapping processing');
+    } finally {
+      setIsStartingMapping(false);
     }
   };
 
@@ -599,9 +618,24 @@ export default function OrderDetailsPage() {
     setItemMappingKeys(prev => {
       const currentKeys = [...(prev[itemId] || [])];
       if (value) {
+        // Ensure we have enough slots in the array
+        while (currentKeys.length <= keyIndex) {
+          currentKeys.push('');
+        }
         currentKeys[keyIndex] = value;
+        // Remove empty trailing elements to keep array clean
+        while (currentKeys.length > 0 && currentKeys[currentKeys.length - 1] === '') {
+          currentKeys.pop();
+        }
       } else {
-        currentKeys.splice(keyIndex);
+        // Clear the value at this index
+        if (keyIndex < currentKeys.length) {
+          currentKeys[keyIndex] = '';
+          // Remove empty trailing elements
+          while (currentKeys.length > 0 && currentKeys[currentKeys.length - 1] === '') {
+            currentKeys.pop();
+          }
+        }
       }
       return { ...prev, [itemId]: currentKeys };
     });
@@ -706,7 +740,7 @@ export default function OrderDetailsPage() {
   const canSubmit = order.status === 'DRAFT' && order.total_items > 0;
   const canStartOcrOnly = order.status === 'DRAFT' && order.total_items > 0;
   const canStartFullProcess = order.status === 'DRAFT' && order.total_items > 0 && order.mapping_file_path && order.mapping_keys && order.mapping_keys.length > 0;
-  const canStartMapping = order.status === 'OCR_COMPLETED';
+  const canStartMapping = (order.status === 'OCR_COMPLETED' || order.status === 'MAPPING') && order.mapping_file_path && order.mapping_keys && order.mapping_keys.length > 0;
   const canConfigureMapping = order.status === 'DRAFT' || order.status === 'OCR_COMPLETED' || order.status === 'COMPLETED' || order.status === 'MAPPING';
 
   return (
@@ -749,17 +783,22 @@ export default function OrderDetailsPage() {
           {canStartMapping && (
             <button
               onClick={startMappingProcessing}
-              className="bg-purple-600 hover:bg-purple-700 text-white py-2 px-4 rounded font-medium"
+              disabled={isStartingMapping}
+              className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white py-2 px-4 rounded font-medium"
               title="Start mapping processing (OCR already completed)"
             >
-              开始映射处理
+              {isStartingMapping ? '正在启动映射处理...' : '开始映射处理'}
             </button>
           )}
         </div>
       </div>
 
       {error && (
-        <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6">
+        <div className={`border-l-4 p-4 mb-6 ${
+          error.startsWith('✅')
+            ? 'bg-green-100 border-green-500 text-green-700'
+            : 'bg-red-100 border-red-500 text-red-700'
+        }`}>
           {error}
         </div>
       )}
@@ -1014,7 +1053,7 @@ export default function OrderDetailsPage() {
                             </div>
                           ))}
                         </div>
-                        {canConfigureMapping && itemMappingKeys[item.item_id]?.length > 0 && (
+                        {canConfigureMapping && itemMappingKeys[item.item_id]?.some(key => key && key.trim() !== '') && (
                           <div className="mt-3">
                             <button
                               onClick={() => saveItemMappingKeys(item.item_id)}
@@ -1163,9 +1202,24 @@ export default function OrderDetailsPage() {
                     onChange={(e) => {
                       const newKeys = [...selectedMappingKeys];
                       if (e.target.value) {
+                        // Ensure we have enough slots in the array
+                        while (newKeys.length <= keyNum - 1) {
+                          newKeys.push('');
+                        }
                         newKeys[keyNum - 1] = e.target.value;
+                        // Remove empty trailing elements to keep array clean
+                        while (newKeys.length > 0 && newKeys[newKeys.length - 1] === '') {
+                          newKeys.pop();
+                        }
                       } else {
-                        newKeys.splice(keyNum - 1);
+                        // Clear the value at this index
+                        if (keyNum - 1 < newKeys.length) {
+                          newKeys[keyNum - 1] = '';
+                          // Remove empty trailing elements
+                          while (newKeys.length > 0 && newKeys[newKeys.length - 1] === '') {
+                            newKeys.pop();
+                          }
+                        }
                       }
                       setSelectedMappingKeys(newKeys);
                     }}
@@ -1180,12 +1234,13 @@ export default function OrderDetailsPage() {
                 </div>
               ))}
             </div>
-            {canConfigureMapping && selectedMappingKeys.length > 0 && (
+            {canConfigureMapping && selectedMappingKeys.some(key => key && key.trim() !== '') && (
               <button
                 onClick={updateMappingKeys}
-                className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded"
+                disabled={isUpdatingMappingKeys}
+                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white py-2 px-4 rounded"
               >
-                Save Mapping Keys
+                {isUpdatingMappingKeys ? 'Saving...' : 'Save Mapping Keys'}
               </button>
             )}
           </div>

@@ -11,6 +11,7 @@ import zipfile
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 import logging
+import pandas as pd
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -513,42 +514,17 @@ class OrderProcessor:
                     logger.warning(f"Order {order_id} is not in MAPPING status")
                     return
 
-                logger.info(f"Starting mapping-only processing for order {order_id}")
+                logger.info(f"Starting dynamic mapping processing for order {order_id}")
 
-                # Get completed order items
-                items = db.query(OcrOrderItem).filter(
-                    OcrOrderItem.order_id == order_id,
-                    OcrOrderItem.status == OrderItemStatus.COMPLETED
-                ).all()
-
-                if not items:
-                    logger.error(f"No completed items found for order {order_id}")
-                    return
-
-                # Load existing OCR results for all items
-                all_ocr_results = []
-                for item in items:
-                    try:
-                        # Download item results from S3
-                        result_key = f"upload/results/orders/0/items/{item.item_id}/item_{item.item_id}_results.json"
-                        result_content = self.s3_manager.download_file_by_stored_path(result_key)
-                        if result_content:
-                            import json
-                            item_results = json.loads(result_content.decode('utf-8'))
-                            if isinstance(item_results, list):
-                                all_ocr_results.extend(item_results)
-                            else:
-                                all_ocr_results.append(item_results)
-                    except Exception as e:
-                        logger.warning(f"Could not load results for item {item.item_id}: {e}")
-
+                # Load existing OCR results - get the expanded CSV format
+                all_ocr_results = await self._load_expanded_ocr_results(order_id)
                 if not all_ocr_results:
                     logger.error(f"No OCR results found for order {order_id}")
                     return
 
                 logger.info(f"Loaded {len(all_ocr_results)} OCR result records")
 
-                # Load and parse mapping file
+                # Load and parse mapping file using dynamic processor
                 if not order.mapping_file_path:
                     logger.error(f"No mapping file found for order {order_id}")
                     return
@@ -558,69 +534,36 @@ class OrderProcessor:
                     logger.error(f"Could not read mapping file for order {order_id}")
                     return
 
-                # Parse mapping file (CSV format)
-                import csv
-                import io
-                mapping_data = []
-                csv_reader = csv.DictReader(io.StringIO(mapping_content.decode('utf-8')))
-                for row in csv_reader:
-                    mapping_data.append(row)
+                # Use dynamic mapping processor
+                from cost_allocation.dynamic_mapping_processor import process_dynamic_mapping_file
+                mapping_result = process_dynamic_mapping_file(mapping_content)
 
-                logger.info(f"Loaded {len(mapping_data)} mapping records")
+                if not mapping_result['success']:
+                    logger.error(f"Failed to process mapping file: {mapping_result.get('error', 'Unknown error')}")
+                    return
 
-                # Get mapping keys (what field to join on)
-                mapping_keys = order.mapping_keys or []
-                if not mapping_keys:
+                mapping_data = mapping_result['mapping_data']
+                mapping_columns = mapping_result['columns']
+                logger.info(f"Loaded {len(mapping_data)} mapping records with columns: {mapping_columns}")
+
+                # Get user-selected mapping keys
+                user_mapping_keys = order.mapping_keys or []
+                if not user_mapping_keys:
                     logger.error(f"No mapping keys configured for order {order_id}")
                     return
 
-                # Perform JOIN operation
-                # mapping_keys[0] is the field in mapping file to join on
-                # we'll join with 'number' field in OCR results
-                join_key = mapping_keys[0] if mapping_keys else 'PHONE'
-                logger.info(f"Performing JOIN on mapping_file.{join_key} = ocr_results.number")
+                logger.info(f"Using user-selected mapping keys: {user_mapping_keys}")
 
-                # Create lookup dict from mapping data
-                mapping_lookup = {}
-                for mapping_row in mapping_data:
-                    if join_key in mapping_row and mapping_row[join_key]:
-                        # Clean phone number for matching
-                        clean_key = str(mapping_row[join_key]).strip()
-                        mapping_lookup[clean_key] = mapping_row
-
-                # Join OCR results with mapping data
-                joined_results = []
-                for ocr_row in all_ocr_results:
-                    # Get the number field from OCR results
-                    ocr_number = str(ocr_row.get('number', '')).strip()
-
-                    # Find matching mapping record
-                    mapping_match = mapping_lookup.get(ocr_number)
-
-                    # Create joined record
-                    joined_row = ocr_row.copy()
-                    if mapping_match:
-                        # Add mapping fields to OCR data
-                        for mapping_field, mapping_value in mapping_match.items():
-                            joined_row[f"mapping_{mapping_field}"] = mapping_value
-                        joined_row['join_status'] = 'matched'
-                    else:
-                        joined_row['join_status'] = 'unmatched'
-
-                    joined_results.append(joined_row)
+                # Perform dynamic JOIN operation
+                joined_results = await self._perform_dynamic_join(
+                    all_ocr_results, mapping_data, mapping_columns, user_mapping_keys
+                )
 
                 logger.info(f"JOIN completed: {len(joined_results)} records processed")
 
-                # Generate final CSV
+                # Generate final CSV with proper format
                 if joined_results:
-                    # Convert to CSV content directly
-                    import pandas as pd
-                    import io
-
-                    df = pd.DataFrame(joined_results)
-                    csv_buffer = io.StringIO()
-                    df.to_csv(csv_buffer, index=False)
-                    csv_content = csv_buffer.getvalue()
+                    csv_content = self._generate_mapped_csv(joined_results, mapping_columns)
 
                     # Save final results to S3
                     final_key = f"upload/results/orders/{order_id}/final_mapped_results.csv"
@@ -629,12 +572,19 @@ class OrderProcessor:
                     if success:
                         logger.info(f"Final mapped results saved to S3: {final_key}")
 
-                        # Update order status to COMPLETED
+                        # Update order status to COMPLETED and set final_report_paths
                         order.status = OrderStatus.COMPLETED
                         order.updated_at = datetime.utcnow()
+
+                        # Update final_report_paths with the CSV path
+                        csv_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{final_key}"
+                        current_paths = order.final_report_paths or {}
+                        current_paths['mapped_csv'] = csv_path
+                        order.final_report_paths = current_paths
+
                         db.commit()
 
-                        logger.info(f"Order {order_id} mapping processing completed successfully")
+                        logger.info(f"Order {order_id} mapping processing completed successfully with final_report_paths updated")
                     else:
                         logger.error(f"Failed to save final results for order {order_id}")
                 else:
@@ -653,6 +603,177 @@ class OrderProcessor:
                 except:
                     pass
                 raise
+
+    async def _load_expanded_ocr_results(self, order_id: int) -> List[Dict[str, Any]]:
+        """Load OCR results in expanded format (individual rows per phone service)"""
+        with Session(engine) as db:
+            # Get completed order items
+            items = db.query(OcrOrderItem).filter(
+                OcrOrderItem.order_id == order_id,
+                OcrOrderItem.status == OrderItemStatus.COMPLETED
+            ).all()
+
+            all_expanded_results = []
+
+            for item in items:
+                try:
+                    # Download item's CSV results (expanded format)
+                    if not item.ocr_result_csv_path or not item.ocr_result_csv_path.startswith('s3://'):
+                        logger.error(f"Invalid CSV path for item {item.item_id}")
+                        continue
+
+                    s3_key = item.ocr_result_csv_path.replace(f"s3://{self.s3_manager.bucket_name}/", "")
+                    if s3_key.startswith(self.s3_manager.upload_prefix):
+                        s3_key = s3_key[len(self.s3_manager.upload_prefix):]
+
+                    csv_content = self.s3_manager.download_file(s3_key)
+                    if not csv_content:
+                        logger.error(f"Failed to download CSV for item {item.item_id}")
+                        continue
+
+                    # Parse CSV data
+                    import pandas as pd
+                    from io import StringIO
+
+                    df = pd.read_csv(StringIO(csv_content.decode('utf-8')))
+                    item_records = df.to_dict('records')
+
+                    # Add item metadata to each record
+                    for record in item_records:
+                        record['__item_id'] = item.item_id
+                        record['__item_name'] = item.item_name
+                        record['__company'] = item.company.company_name if item.company else None
+                        record['__doc_type'] = item.document_type.type_name if item.document_type else None
+
+                    all_expanded_results.extend(item_records)
+                    logger.info(f"Loaded {len(item_records)} expanded records from item {item.item_id}")
+
+                except Exception as e:
+                    logger.error(f"Error loading expanded results for item {item.item_id}: {str(e)}")
+                    continue
+
+            return all_expanded_results
+
+    async def _perform_dynamic_join(self, ocr_results: List[Dict], mapping_data: List[Dict],
+                                   mapping_columns: List[str], user_mapping_keys: List[str]) -> List[Dict]:
+        """Perform dynamic JOIN based on user-selected mapping keys"""
+
+        # Create OCR field to mapping field mapping
+        ocr_to_mapping_map = {
+            'number': 'PHONE',  # Default mapping
+            'account_number': 'ACCOUNT_NO',
+        }
+
+        # Create lookup dictionary from mapping data
+        mapping_lookup = {}
+
+        for mapping_row in mapping_data:
+            # Create composite lookup key using user-selected mapping keys
+            lookup_keys = []
+
+            for mapping_key in user_mapping_keys:
+                if mapping_key in mapping_row and pd.notna(mapping_row[mapping_key]):
+                    # Normalize the lookup key
+                    normalized_key = self._normalize_identifier(str(mapping_row[mapping_key]))
+                    if normalized_key:
+                        lookup_keys.append(normalized_key)
+
+            # Use first available key as primary lookup
+            if lookup_keys:
+                primary_key = lookup_keys[0]
+                mapping_lookup[primary_key] = mapping_row.copy()
+
+        logger.info(f"Created mapping lookup with {len(mapping_lookup)} entries")
+
+        # Perform JOIN operation
+        joined_results = []
+        matched_count = 0
+
+        for ocr_row in ocr_results:
+            # Try to find matching record using user-selected mapping keys
+            mapping_match = None
+
+            for mapping_key in user_mapping_keys:
+                # Find corresponding OCR field
+                ocr_field = None
+                for ocr_field_name, map_field_name in ocr_to_mapping_map.items():
+                    if map_field_name == mapping_key:
+                        ocr_field = ocr_field_name
+                        break
+
+                if not ocr_field:
+                    # If no explicit mapping, try lowercase version
+                    ocr_field = mapping_key.lower()
+
+                # Get value from OCR record
+                if ocr_field in ocr_row and pd.notna(ocr_row[ocr_field]):
+                    lookup_value = self._normalize_identifier(str(ocr_row[ocr_field]))
+                    mapping_match = mapping_lookup.get(lookup_value)
+                    if mapping_match:
+                        matched_count += 1
+                        break
+
+            # Create joined record
+            joined_row = {}
+
+            # Add mapping columns first (empty if no match)
+            for col in mapping_columns:
+                if mapping_match and col in mapping_match:
+                    joined_row[col] = mapping_match[col]
+                else:
+                    joined_row[col] = ''
+
+            # Add all OCR columns
+            for col, value in ocr_row.items():
+                joined_row[col] = value
+
+            joined_results.append(joined_row)
+
+        logger.info(f"JOIN operation completed: {matched_count} matched out of {len(ocr_results)} total records")
+        return joined_results
+
+    def _normalize_identifier(self, identifier: str) -> str:
+        """Normalize identifier for consistent matching"""
+        import re
+
+        if not identifier or pd.isna(identifier):
+            return ""
+
+        # Convert to string and remove spaces, special characters
+        normalized = str(identifier).strip()
+        normalized = re.sub(r'[^\w]', '', normalized)
+        return normalized.upper()
+
+    def _generate_mapped_csv(self, joined_results: List[Dict], mapping_columns: List[str]) -> str:
+        """Generate CSV content with proper column ordering"""
+        if not joined_results:
+            return ""
+
+        # Get all unique columns
+        all_columns = set()
+        for row in joined_results:
+            all_columns.update(row.keys())
+
+        # Order columns: mapping columns first, then OCR columns
+        ocr_columns = [col for col in all_columns if col not in mapping_columns and not col.startswith('__')]
+        ordered_columns = mapping_columns + ocr_columns
+
+        # Generate CSV
+        import pandas as pd
+        import io
+
+        # Ensure all rows have all columns
+        normalized_results = []
+        for row in joined_results:
+            normalized_row = {}
+            for col in ordered_columns:
+                normalized_row[col] = row.get(col, '')
+            normalized_results.append(normalized_row)
+
+        df = pd.DataFrame(normalized_results, columns=ordered_columns)
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        return csv_buffer.getvalue()
 
     async def _apply_order_mapping(self, order_id: int, results: List[Dict[str, Any]]):
         """Apply mapping rules to consolidated order results"""
