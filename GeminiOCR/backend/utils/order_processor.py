@@ -1856,7 +1856,16 @@ class OrderProcessor:
             if normalized_key in unified_map:
                 match_data = unified_map[normalized_key]
 
-                # Apply the matched data
+                # Apply the matched data - copy ALL mapping file data (not just debug fields)
+                logger.info(f"🔄 Copying mapping data to enriched_record: {match_data}")
+
+                # Copy all mapping file data to enriched record
+                for mapping_field, mapping_value in match_data.items():
+                    if mapping_field not in ['Source']:  # Skip internal fields
+                        enriched_record[mapping_field] = mapping_value
+                        logger.debug(f"   Copied: {mapping_field} = {mapping_value}")
+
+                # Add debug/tracking fields
                 enriched_record['Department'] = match_data.get('Department', 'Retail')
                 enriched_record['ShopCode'] = match_data.get('ShopCode', '')
                 enriched_record['ServiceType'] = match_data.get('ServiceType', 'Unknown')
@@ -1882,11 +1891,44 @@ class OrderProcessor:
         try:
             s3_base = f"results/orders/{order_id // 1000}/mapped"
 
-            # Generate mapped CSV
+            # Generate mapped CSV with business-friendly format (dynamic column detection)
             import pandas as pd
-            df = pd.DataFrame(enriched_results)
 
-            # Create CSV content
+            # Debug columns to exclude (internal/debugging columns)
+            debug_columns = {
+                '__filename', '__item_id', '__item_name', '__company', '__doc_type',
+                'Department', 'ShopCode', 'ServiceType', 'MatchedBy', 'MatchSource',
+                'Matched', 'MatchedValue', 'MatchedKey', 'ActualFieldUsed'
+            }
+
+            # Get all available columns from first record
+            if enriched_results:
+                all_columns = set(enriched_results[0].keys())
+                # Filter out debug columns to get business columns
+                business_columns = [col for col in all_columns if col not in debug_columns]
+                business_columns.sort()  # Sort for consistent order
+
+                logger.info(f"📊 All columns in enriched_results: {sorted(all_columns)}")
+                logger.info(f"📊 Filtered debug columns: {sorted(debug_columns & all_columns)}")
+                logger.info(f"📊 Business columns: {business_columns}")
+            else:
+                business_columns = []
+                logger.warning("📊 No enriched_results to extract columns from")
+
+            # Create business-friendly records with only business columns
+            business_results = []
+            for record in enriched_results:
+                business_record = {}
+                for col in business_columns:
+                    business_record[col] = record.get(col, '')
+                business_results.append(business_record)
+
+            logger.info(f"📊 Generating business CSV with {len(business_results)} records")
+            logger.info(f"📊 Final column count: {len(business_columns)}")
+
+            df = pd.DataFrame(business_results)
+
+            # Create CSV content with clean business format
             csv_content = df.to_csv(index=False)
             csv_s3_key = f"{s3_base}/order_{order_id}_mapped.csv"
             csv_upload_success = self.s3_manager.upload_file(csv_content.encode('utf-8'), csv_s3_key)
@@ -1897,24 +1939,35 @@ class OrderProcessor:
                 temp_excel_path = temp_excel.name
 
             try:
-                # Create Excel with multiple sheets
+                # Create Excel with multiple sheets using business format
                 with pd.ExcelWriter(temp_excel_path, engine='openpyxl') as writer:
                     # Main results sheet
                     df.to_excel(writer, sheet_name='Mapped Results', index=False)
 
-                    # Matched vs Unmatched analysis
-                    matched_df = df[df['Matched'] == True]
-                    unmatched_df = df[df['Matched'] == False]
+                    # Matched vs Unmatched analysis (determine from original enriched_results)
+                    matched_records = []
+                    unmatched_records = []
+                    for i, record in enumerate(enriched_results):
+                        business_record = business_results[i]
+                        if record.get('Matched', False):
+                            matched_records.append(business_record)
+                        else:
+                            unmatched_records.append(business_record)
 
-                    matched_df.to_excel(writer, sheet_name='Matched Records', index=False)
-                    unmatched_df.to_excel(writer, sheet_name='Unmatched Records', index=False)
+                    if matched_records:
+                        matched_df = pd.DataFrame(matched_records)
+                        matched_df.to_excel(writer, sheet_name='Matched Records', index=False)
+
+                    if unmatched_records:
+                        unmatched_df = pd.DataFrame(unmatched_records)
+                        unmatched_df.to_excel(writer, sheet_name='Unmatched Records', index=False)
 
                     # Summary sheet
                     summary_data = {
                         'Total Records': len(enriched_results),
-                        'Matched Records': len(matched_df),
-                        'Unmatched Records': len(unmatched_df),
-                        'Match Rate': f"{(len(matched_df) / len(enriched_results) * 100):.1f}%" if enriched_results else "0%"
+                        'Matched Records': len(matched_records),
+                        'Unmatched Records': len(unmatched_records),
+                        'Match Rate': f"{(len(matched_records) / len(enriched_results) * 100):.1f}%" if enriched_results else "0%"
                     }
                     summary_df = pd.DataFrame(list(summary_data.items()), columns=['Metric', 'Value'])
                     summary_df.to_excel(writer, sheet_name='Summary', index=False)
