@@ -1875,13 +1875,40 @@ class OrderProcessor:
                 logger.warning(f"⚠️ Empty value for {actual_field_used}")
                 continue
 
-            # Normalize the identifier for matching
+            # Enhanced identifier matching with intelligent extraction
             import re
-            normalized_key = str(key_value).strip()
-            normalized_key = re.sub(r'[^\w]', '', normalized_key).upper()
+            logger.info(f"🔍 ENHANCED MATCHING: Starting intelligent identifier extraction for value='{key_value}'")
 
-            if normalized_key in unified_map:
-                match_data = unified_map[normalized_key]
+            # Use MatchingEngine for intelligent identifier extraction
+            extracted_identifiers = self.matching_engine.extract_identifiers(str(key_value))
+            logger.info(f"🔍 ENHANCED MATCHING: MatchingEngine extracted {len(extracted_identifiers)} identifiers: {extracted_identifiers}")
+
+            # Also keep the legacy normalization for backward compatibility
+            legacy_normalized_key = str(key_value).strip()
+            legacy_normalized_key = re.sub(r'[^\w]', '', legacy_normalized_key).upper()
+            logger.info(f"🔍 ENHANCED MATCHING: Legacy normalized key: '{legacy_normalized_key}'")
+
+            # Try matching in priority order: extracted identifiers first, then legacy
+            all_candidates = extracted_identifiers + [legacy_normalized_key]
+            logger.info(f"🔍 ENHANCED MATCHING: All matching candidates: {all_candidates}")
+
+            match_data = None
+            matched_identifier = None
+
+            for i, candidate in enumerate(all_candidates):
+                logger.info(f"🔍 ENHANCED MATCHING: Trying candidate {i+1}/{len(all_candidates)}: '{candidate}'")
+                if candidate in unified_map:
+                    match_data = unified_map[candidate]
+                    matched_identifier = candidate
+                    if i < len(extracted_identifiers):
+                        logger.info(f"✅ ENHANCED MATCHING: SUCCESS! Matched on extracted identifier '{candidate}' (intelligent extraction)")
+                    else:
+                        logger.info(f"✅ ENHANCED MATCHING: SUCCESS! Matched on legacy normalized key '{candidate}' (backward compatibility)")
+                    break
+                else:
+                    logger.info(f"❌ ENHANCED MATCHING: Candidate '{candidate}' not found in unified_map")
+
+            if match_data:
 
                 # Apply the matched data - copy ALL mapping file data (not just debug fields)
                 logger.info(f"🔄 Copying mapping data to enriched_record: {match_data}")
@@ -1915,12 +1942,12 @@ class OrderProcessor:
                 logger.info(f"🏁 ALL KEYS: {list(enriched_record.keys())[:20]}...")  # Show first 20 keys
 
                 if auto_mapping_enabled and actual_field_used != mapping_key:
-                    logger.info(f"✅ Auto mapping success: OCR[{actual_field_used}]={key_value} ↔ User[{mapping_key}] -> shop {match_data.get('ShopCode', 'Unknown')}")
+                    logger.info(f"✅ ENHANCED MATCHING: Auto mapping success: OCR[{actual_field_used}]={key_value} ↔ User[{mapping_key}] matched on '{matched_identifier}' -> shop {match_data.get('ShopCode', 'Unknown')}")
                 else:
-                    logger.info(f"✅ Manual mapping success: {mapping_key}={key_value} -> shop {match_data.get('ShopCode', 'Unknown')}")
+                    logger.info(f"✅ ENHANCED MATCHING: Manual mapping success: {mapping_key}={key_value} matched on '{matched_identifier}' -> shop {match_data.get('ShopCode', 'Unknown')}")
                 break  # Stop at first successful match (priority order)
             else:
-                logger.warning(f"❌ Normalized key '{normalized_key}' not found in unified_map")
+                logger.warning(f"❌ ENHANCED MATCHING: No match found for value '{key_value}' with {len(all_candidates)} candidates: {all_candidates}")
 
         return enriched_record
 

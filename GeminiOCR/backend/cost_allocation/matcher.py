@@ -7,6 +7,9 @@ import logging
 import re
 from typing import Dict, List, Optional, Any, Tuple
 
+# Import enhanced matching engine for intelligent identifier extraction
+from utils.order_processor import MatchingEngine, MatchingConfig, MatchingStrategy
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,6 +29,16 @@ class SmartMatcher:
                 "customer_reference": 0
             }
         }
+
+        # Initialize enhanced matching engine for intelligent identifier extraction
+        logger.info("🔧 SmartMatcher: Initializing enhanced MatchingEngine for identifier extraction")
+        matching_config = MatchingConfig(
+            separators=["/", ",", ";", "|", "-", "_", ":", ".", " "],  # Support multiple separators
+            min_match_length=3,
+            case_sensitive=False
+        )
+        self.matching_engine = MatchingEngine(matching_config)
+        logger.info(f"🔧 SmartMatcher: MatchingEngine initialized with separators: {matching_config.separators}")
     
     def normalize_identifier(self, identifier: str) -> str:
         """Normalize identifier for consistent matching."""
@@ -38,22 +51,46 @@ class SmartMatcher:
         return normalized.upper()
     
     def extract_identifiers(self, ocr_record: Dict[str, Any]) -> Dict[str, str]:
-        """Extract and normalize all possible identifiers from OCR record."""
+        """
+        Extract and normalize all possible identifiers from OCR record.
+        Enhanced with intelligent multi-separator extraction.
+        """
         identifiers = {}
-        
-        # Priority 1: Mobile/Service numbers
+
+        # Priority 1: Mobile/Service numbers - Enhanced extraction
         for field in ['mobile_number', 'service_number', 'phone_number']:
             if field in ocr_record and ocr_record[field]:
-                # Handle multiple numbers (e.g., "53156812/14714300536")
                 value = str(ocr_record[field])
-                if '/' in value:
-                    # Take the first number for primary matching
-                    numbers = value.split('/')
-                    identifiers['mobile_number'] = self.normalize_identifier(numbers[0])
-                    # Store the full string for reference
-                    identifiers['mobile_number_full'] = self.normalize_identifier(value.replace('/', ''))
+                logger.info(f"🔍 SmartMatcher: Extracting identifiers from {field}='{value}'")
+
+                # Use enhanced MatchingEngine for intelligent extraction
+                extracted_parts = self.matching_engine.extract_identifiers(value)
+                logger.info(f"🔍 SmartMatcher: MatchingEngine extracted parts: {extracted_parts}")
+
+                if extracted_parts:
+                    # Store primary identifier (first part for backward compatibility)
+                    identifiers['mobile_number'] = extracted_parts[0]
+                    logger.info(f"🔍 SmartMatcher: Primary mobile_number='{extracted_parts[0]}'")
+
+                    # Store all individual parts for comprehensive matching
+                    for i, part in enumerate(extracted_parts):
+                        identifiers[f'mobile_number_part_{i}'] = part
+                        logger.info(f"🔍 SmartMatcher: Added mobile_number_part_{i}='{part}'")
+
+                    # Also store using legacy naming for compatibility if multiple parts
+                    if len(extracted_parts) > 1:
+                        # Store second part explicitly (this will fix CMHK 19519057870 issue)
+                        identifiers['mobile_number_alt'] = extracted_parts[1]
+                        logger.info(f"🔍 SmartMatcher: Added mobile_number_alt='{extracted_parts[1]}' (second part)")
+
+                        # Store concatenated version for legacy compatibility
+                        identifiers['mobile_number_full'] = ''.join(extracted_parts)
+                        logger.info(f"🔍 SmartMatcher: Added mobile_number_full='{identifiers['mobile_number_full']}' (concatenated)")
                 else:
+                    # Fallback to simple normalization if no extraction possible
                     identifiers['mobile_number'] = self.normalize_identifier(value)
+                    logger.warning(f"🔍 SmartMatcher: Fallback normalization for {field}='{value}' -> '{identifiers['mobile_number']}'")
+
                 break
         
         # Priority 2: Account numbers
@@ -73,34 +110,62 @@ class SmartMatcher:
     def find_match(self, identifiers: Dict[str, str]) -> Tuple[Optional[Dict[str, Any]], str]:
         """
         Find matching entry in unified_map based on priority order.
-        
+        Enhanced to try all extracted identifier parts.
+
         Returns:
             Tuple of (match_data, match_type) where match_type indicates which identifier was used
         """
-        # Priority 1: Mobile/Service number
+        logger.info(f"🔍 SmartMatcher.find_match: Trying to match with identifiers: {list(identifiers.keys())}")
+
+        # Priority 1: Mobile/Service number - Try primary identifier first
         if 'mobile_number' in identifiers:
             normalized_id = identifiers['mobile_number']
+            logger.info(f"🔍 SmartMatcher.find_match: Trying primary mobile_number='{normalized_id}'")
             if normalized_id in self.unified_map:
+                logger.info(f"✅ SmartMatcher.find_match: MATCHED on primary mobile_number='{normalized_id}'")
                 return self.unified_map[normalized_id], 'mobile_number'
-            
-            # Try full mobile number if available
-            if 'mobile_number_full' in identifiers:
-                full_id = identifiers['mobile_number_full']
-                if full_id in self.unified_map:
-                    return self.unified_map[full_id], 'mobile_number'
-        
+
+        # Priority 1.1: Try alternative mobile number (second part) - NEW: This fixes CMHK issue!
+        if 'mobile_number_alt' in identifiers:
+            alt_id = identifiers['mobile_number_alt']
+            logger.info(f"🔍 SmartMatcher.find_match: Trying mobile_number_alt='{alt_id}' (second part)")
+            if alt_id in self.unified_map:
+                logger.info(f"✅ SmartMatcher.find_match: MATCHED on mobile_number_alt='{alt_id}' (second part)")
+                return self.unified_map[alt_id], 'mobile_number_alt'
+
+        # Priority 1.2: Try all individual parts
+        for key, value in identifiers.items():
+            if key.startswith('mobile_number_part_'):
+                logger.info(f"🔍 SmartMatcher.find_match: Trying {key}='{value}'")
+                if value in self.unified_map:
+                    logger.info(f"✅ SmartMatcher.find_match: MATCHED on {key}='{value}'")
+                    return self.unified_map[value], key
+
+        # Priority 1.3: Try legacy full mobile number
+        if 'mobile_number_full' in identifiers:
+            full_id = identifiers['mobile_number_full']
+            logger.info(f"🔍 SmartMatcher.find_match: Trying legacy mobile_number_full='{full_id}'")
+            if full_id in self.unified_map:
+                logger.info(f"✅ SmartMatcher.find_match: MATCHED on mobile_number_full='{full_id}'")
+                return self.unified_map[full_id], 'mobile_number_full'
+
         # Priority 2: Account number
         if 'account_number' in identifiers:
             normalized_id = identifiers['account_number']
+            logger.info(f"🔍 SmartMatcher.find_match: Trying account_number='{normalized_id}'")
             if normalized_id in self.unified_map:
+                logger.info(f"✅ SmartMatcher.find_match: MATCHED on account_number='{normalized_id}'")
                 return self.unified_map[normalized_id], 'account_number'
-        
+
         # Priority 3: Customer reference
         if 'customer_reference' in identifiers:
             normalized_id = identifiers['customer_reference']
+            logger.info(f"🔍 SmartMatcher.find_match: Trying customer_reference='{normalized_id}'")
             if normalized_id in self.unified_map:
+                logger.info(f"✅ SmartMatcher.find_match: MATCHED on customer_reference='{normalized_id}'")
                 return self.unified_map[normalized_id], 'customer_reference'
-        
+
+        logger.warning("❌ SmartMatcher.find_match: No match found for any identifier")
         return None, 'unmatched'
     
     def enrich_ocr_record(self, ocr_record: Dict[str, Any]) -> Dict[str, Any]:
