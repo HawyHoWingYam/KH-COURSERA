@@ -890,13 +890,41 @@ class OrderProcessor:
             with Session(engine) as db:
                 order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
                 if order:
-                    report_paths = {
+                    logger.info(f"🔍 CONSOLIDATION - BEFORE update - Order {order_id} final_report_paths: {order.final_report_paths}")
+
+                    # Preserve existing final_report_paths and update consolidation results
+                    current_paths = order.final_report_paths or {}
+                    consolidation_paths = {
                         'consolidated_json': f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{json_s3_key}" if json_upload_success else None,
                         'consolidated_excel': excel_path,
                         'consolidated_csv': csv_path
                     }
-                    order.final_report_paths = report_paths
-                    db.commit()
+
+                    logger.info(f"🔍 CONSOLIDATION - Adding paths: {consolidation_paths}")
+                    logger.info(f"🔍 CONSOLIDATION - Current existing paths: {current_paths}")
+
+                    # Update consolidation paths while preserving mapping paths
+                    current_paths.update(consolidation_paths)
+                    order.final_report_paths = current_paths
+
+                    # Force SQLAlchemy to detect JSONB field changes
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(order, 'final_report_paths')
+
+                    logger.info(f"🔍 CONSOLIDATION - AFTER update - final_report_paths: {current_paths}")
+
+                    try:
+                        db.commit()
+                        logger.info(f"✅ CONSOLIDATION - Successfully committed for order {order_id}")
+
+                        # Verify the commit worked by re-querying
+                        db.refresh(order)
+                        logger.info(f"🔍 CONSOLIDATION - POST-COMMIT verification - final_report_paths: {order.final_report_paths}")
+
+                    except Exception as commit_error:
+                        logger.error(f"❌ CONSOLIDATION - Failed to commit for order {order_id}: {str(commit_error)}")
+                        db.rollback()
+                        raise
 
             logger.info(f"Consolidated reports generated for order {order_id}")
 
@@ -1020,8 +1048,9 @@ class OrderProcessor:
                 if joined_results:
                     csv_content = self._generate_mapped_csv(joined_results, mapping_columns)
 
-                    # Save final results to S3
-                    final_key = f"upload/results/orders/{order_id}/final_mapped_results.csv"
+                    # Save final results to S3 - using consistent path format
+                    s3_base = f"results/orders/{order_id // 1000}/mapped"
+                    final_key = f"{s3_base}/order_{order_id}_mapped.csv"
                     success = self.s3_manager.upload_file(csv_content.encode('utf-8'), final_key)
 
                     if success:
@@ -1130,9 +1159,10 @@ class OrderProcessor:
         if ocr_results:
             ocr_columns = set(ocr_results[0].keys())
 
-        logger.info(f"Available OCR columns: {sorted(ocr_columns)}")
-        logger.info(f"Available mapping columns: {mapping_columns}")
-        logger.info(f"User selected mapping keys: {user_mapping_keys}")
+        logger.info(f"🔍 MAPPING ANALYSIS START - Order {order_id}")
+        logger.info(f"   Available OCR columns: {sorted(ocr_columns)}")
+        logger.info(f"   Available mapping columns: {mapping_columns}")
+        logger.info(f"   User selected mapping keys: {user_mapping_keys}")
 
         # Enhanced intelligent field mapping with cross-field matching
         ocr_fields = []
@@ -1160,8 +1190,9 @@ class OrderProcessor:
                     ).first()
 
                     if config and config.cross_field_mappings:
-                        logger.info(f"Found cross-field mappings configuration: {config.cross_field_mappings}")
+                        logger.info(f"📋 Found cross-field mappings configuration: {config.cross_field_mappings}")
                         auto_cross_field_mappings.update(config.cross_field_mappings)
+                        logger.info(f"📋 Updated auto_cross_field_mappings: {auto_cross_field_mappings}")
                         break  # Use first found configuration
 
         # AUTO-DERIVE: Enhance mapping with auto-derived relationships from Default Keys + User Selection
@@ -1182,14 +1213,22 @@ class OrderProcessor:
                     ).first()
 
                     if config and config.default_mapping_keys:
-                        logger.info(f"Found default mapping keys: {config.default_mapping_keys}")
+                        logger.info(f"🎯 Found default mapping keys: {config.default_mapping_keys}")
+                        logger.info(f"🎯 User mapping keys: {user_mapping_keys}")
                         # Auto-derive cross-field mappings: default_key (OCR) -> user_key (mapping_file)
                         for priority, default_key in enumerate(config.default_mapping_keys):
+                            logger.info(f"🔗 Processing default_key[{priority}]: '{default_key}'")
                             if default_key and priority < len(user_mapping_keys):
                                 user_key = user_mapping_keys[priority]
+                                logger.info(f"🔗 Pairing with user_key[{priority}]: '{user_key}'")
                                 if default_key != user_key:  # Only if they're different
                                     auto_cross_field_mappings[default_key] = user_key
-                                    logger.info(f"🔗 Auto-derived mapping: '{default_key}' (OCR) -> '{user_key}' (mapping file)")
+                                    logger.info(f"✅ Auto-derived mapping: '{default_key}' (OCR) -> '{user_key}' (mapping file)")
+                                else:
+                                    logger.info(f"⚠️ Skipped self-mapping: '{default_key}' == '{user_key}'")
+                            else:
+                                logger.info(f"❌ No user_key available for default_key[{priority}]: '{default_key}'")
+                        logger.info(f"🔗 Final auto_cross_field_mappings: {auto_cross_field_mappings}")
                         break
 
         logger.info(f"🔍 Starting field analysis with auto-derived mappings: {auto_cross_field_mappings}")
@@ -1612,8 +1651,32 @@ class OrderProcessor:
                     logger.error(f"Failed to process mapping file: {mapping_result.get('error', 'Unknown error')}")
                     return
 
-                unified_map = mapping_result['unified_map']
+                # Create proper lookup map using user-selected mapping keys
+                logger.info(f"🔧 Creating unified lookup map...")
+                logger.info(f"🔧 Raw mapping_data type: {type(mapping_result.get('mapping_data', 'NOT_FOUND'))}")
+                logger.info(f"🔧 Raw mapping_data length: {len(mapping_result.get('mapping_data', []))}")
+                logger.info(f"🔧 Order mapping_keys: {order.mapping_keys}")
+
+                from cost_allocation.dynamic_mapping_processor import DynamicMappingProcessor
+                processor = DynamicMappingProcessor()
+                unified_map = processor.create_lookup_map(mapping_result['mapping_data'], order.mapping_keys or [])
+
+                logger.info(f"🔧 Created unified_map type: {type(unified_map)}")
                 logger.info(f"Processed mapping file with {len(unified_map)} entries")
+
+                # Debug unified_map content
+                logger.info(f"🔍 DEBUG: unified_map keys (first 10): {list(unified_map.keys())[:10]}")
+                logger.info(f"🔍 DEBUG: unified_map sample entries:")
+                for i, (key, value) in enumerate(list(unified_map.items())[:5]):
+                    logger.info(f"    [{i+1}] key='{key}' -> {value}")
+
+                # Check specifically for service_numbers we expect
+                expected_service_numbers = ['52857834', '90171042', '57410267', '57410268']
+                for service_number in expected_service_numbers:
+                    if service_number in unified_map:
+                        logger.info(f"✅ Found expected service_number '{service_number}' in unified_map")
+                    else:
+                        logger.warning(f"❌ Expected service_number '{service_number}' NOT found in unified_map")
 
                 # Get completed order items with their individual mapping keys
                 completed_items = db.query(OcrOrderItem).filter(
@@ -1660,7 +1723,7 @@ class OrderProcessor:
 
                             # Apply mapping with priority order
                             enriched_record = self._apply_priority_mapping(
-                                record, unified_map, item_mapping_keys
+                                record, unified_map, item_mapping_keys, order_id, item.item_id
                             )
                             all_enriched_results.append(enriched_record)
 
@@ -1683,8 +1746,8 @@ class OrderProcessor:
                 logger.error(f"Error applying order mapping {order_id}: {str(e)}")
                 raise
 
-    def _apply_priority_mapping(self, record: Dict[str, Any], unified_map: Dict[str, Any], mapping_keys: List[str]) -> Dict[str, Any]:
-        """Apply priority-based mapping to a single record"""
+    def _apply_priority_mapping(self, record: Dict[str, Any], unified_map: Dict[str, Any], mapping_keys: List[str], order_id: int = None, item_id: int = None) -> Dict[str, Any]:
+        """Apply priority-based mapping to a single record with auto-derivation support"""
         enriched_record = record.copy()
 
         # Default values for unmatched records
@@ -1695,14 +1758,94 @@ class OrderProcessor:
         enriched_record['MatchSource'] = ''
         enriched_record['Matched'] = False
 
+        # Get document config for auto-derivation
+        auto_mapping_enabled = False
+        default_mapping_keys = []
+        if item_id:
+            try:
+                with Session(engine) as db:
+                    logger.info(f"🔍 Looking up document config for item_id={item_id}")
+
+                    # Get the order item with company and document type info
+                    item = db.query(OcrOrderItem).filter(OcrOrderItem.item_id == item_id).first()
+                    if not item:
+                        logger.error(f"❌ Item {item_id} not found in database")
+                        return enriched_record
+
+                    logger.info(f"📋 Item {item_id}: company_id={item.company_id}, doc_type_id={item.doc_type_id}")
+
+                    # Find the CompanyDocumentConfig using company_id and doc_type_id
+                    from db.models import CompanyDocumentConfig
+                    config = db.query(CompanyDocumentConfig).filter(
+                        CompanyDocumentConfig.company_id == item.company_id,
+                        CompanyDocumentConfig.doc_type_id == item.doc_type_id,
+                        CompanyDocumentConfig.active == True
+                    ).first()
+
+                    if config:
+                        auto_mapping_enabled = config.auto_mapping_enabled or False
+                        default_mapping_keys = config.default_mapping_keys or []
+                        logger.info(f"✅ Found document config: auto_mapping_enabled={auto_mapping_enabled}, default_keys={default_mapping_keys}")
+                    else:
+                        logger.warning(f"⚠️ No active CompanyDocumentConfig found for company_id={item.company_id}, doc_type_id={item.doc_type_id}")
+
+            except Exception as e:
+                logger.error(f"❌ Failed to get document config for item {item_id}: {e}")
+                import traceback
+                logger.error(f"❌ Traceback: {traceback.format_exc()}")
+        else:
+            logger.warning("⚠️ No item_id provided for document config lookup")
+
+        # Log available OCR fields for debugging
+        ocr_fields = list(record.keys())
+        logger.info(f"🔍 Available OCR fields: {ocr_fields}")
+        logger.info(f"🎯 User mapping keys: {mapping_keys}")
+        logger.info(f"🤖 Auto mapping enabled: {auto_mapping_enabled}")
+        logger.info(f"📝 Default mapping keys: {default_mapping_keys}")
+
         # Try matching with priority order (Key 1, Key 2, Key 3)
         for i, mapping_key in enumerate(mapping_keys):
-            if not mapping_key or mapping_key not in record:
+            if not mapping_key:
+                logger.warning(f"⚠️ Empty mapping key at position {i+1}")
                 continue
 
-            # Get the value from the record for this mapping key
-            key_value = record[mapping_key]
+            logger.info(f"🔄 Processing mapping key {i+1}: '{mapping_key}'")
+
+            # Auto-derivation logic: user selects mapping_key (PHONE), system uses default_key (service_number)
+            key_value = None
+            actual_field_used = None
+
+            if auto_mapping_enabled and default_mapping_keys:
+                # Auto mapping mode: use default keys to find value, but match against user key
+                logger.info(f"🤖 Auto mapping mode: looking for default keys in OCR record")
+                for default_key in default_mapping_keys:
+                    logger.info(f"    🔍 Checking if '{default_key}' exists in OCR record...")
+                    if default_key in record:
+                        key_value = record[default_key]
+                        actual_field_used = default_key
+                        logger.info(f"    ✅ Found! Using OCR[{default_key}]={key_value} for user key '{mapping_key}'")
+                        break
+                    else:
+                        logger.info(f"    ❌ '{default_key}' not found in OCR record")
+
+                if key_value is None:
+                    logger.warning(f"⚠️ Auto mapping failed: none of the default keys {default_mapping_keys} found in OCR record")
+            else:
+                # Manual mapping mode: use mapping key directly
+                logger.info(f"👤 Manual mapping mode: looking for user key '{mapping_key}' directly in OCR record")
+                if mapping_key in record:
+                    key_value = record[mapping_key]
+                    actual_field_used = mapping_key
+                    logger.info(f"    ✅ Found! Direct mapping: {mapping_key}={key_value}")
+                else:
+                    logger.info(f"    ❌ '{mapping_key}' not found in OCR record")
+
+            if key_value is None:
+                logger.warning(f"⚠️ No value found for mapping key '{mapping_key}' - skipping")
+                continue
+
             if not key_value:
+                logger.warning(f"⚠️ Empty value for {actual_field_used}")
                 continue
 
             # Normalize the identifier for matching
@@ -1722,9 +1865,15 @@ class OrderProcessor:
                 enriched_record['Matched'] = True
                 enriched_record['MatchedValue'] = key_value
                 enriched_record['MatchedKey'] = mapping_key
+                enriched_record['ActualFieldUsed'] = actual_field_used
 
-                logger.debug(f"Matched record using key {i+1} ({mapping_key}={key_value}) to shop {match_data.get('ShopCode', 'Unknown')}")
+                if auto_mapping_enabled and actual_field_used != mapping_key:
+                    logger.info(f"✅ Auto mapping success: OCR[{actual_field_used}]={key_value} ↔ User[{mapping_key}] -> shop {match_data.get('ShopCode', 'Unknown')}")
+                else:
+                    logger.info(f"✅ Manual mapping success: {mapping_key}={key_value} -> shop {match_data.get('ShopCode', 'Unknown')}")
                 break  # Stop at first successful match (priority order)
+            else:
+                logger.warning(f"❌ Normalized key '{normalized_key}' not found in unified_map")
 
         return enriched_record
 
@@ -1786,13 +1935,45 @@ class OrderProcessor:
             with Session(engine) as db:
                 order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
                 if order:
+                    logger.info(f"🔍 BEFORE mapping update - Order {order_id} final_report_paths: {order.final_report_paths}")
+
                     current_paths = order.final_report_paths or {}
+                    # Fix path construction - csv_s3_key already contains the correct path
+                    csv_full_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{csv_s3_key}" if csv_upload_success else None
+
+                    logger.info(f"🔍 S3 Path Construction Debug:")
+                    logger.info(f"   bucket_name: {self.s3_manager.bucket_name}")
+                    logger.info(f"   upload_prefix: {self.s3_manager.upload_prefix}")
+                    logger.info(f"   csv_s3_key: {csv_s3_key}")
+                    logger.info(f"   final csv_full_path: {csv_full_path}")
+                    logger.info(f"   excel_path: {excel_path}")
+
                     current_paths.update({
-                        'mapped_csv': f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{csv_s3_key}" if csv_upload_success else None,
+                        'mapped_csv': csv_full_path,
                         'mapped_excel': excel_path
                     })
                     order.final_report_paths = current_paths
-                    db.commit()
+
+                    # Force SQLAlchemy to detect JSONB field changes
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(order, 'final_report_paths')
+
+                    logger.info(f"🔍 AFTER mapping update - final_report_paths: {current_paths}")
+
+                    try:
+                        db.commit()
+                        logger.info(f"✅ Successfully committed mapping paths for order {order_id}")
+
+                        # Verify the commit worked by re-querying
+                        db.refresh(order)
+                        logger.info(f"🔍 POST-COMMIT verification - final_report_paths: {order.final_report_paths}")
+
+                    except Exception as commit_error:
+                        logger.error(f"❌ Failed to commit database changes for order {order_id}: {str(commit_error)}")
+                        db.rollback()
+                        raise
+                else:
+                    logger.error(f"❌ Order {order_id} not found in database for final_report_paths update")
 
             logger.info(f"Generated mapped reports for order {order_id}")
 

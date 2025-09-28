@@ -253,27 +253,47 @@ class DynamicMappingProcessor:
         Returns:
             Dictionary with lookup keys mapped to full record data
         """
+        logger.info(f"🔧 LOOKUP_MAP: Starting creation with {len(mapping_data)} records and keys: {user_mapping_keys}")
+
+        # Debug first few records structure
+        if mapping_data:
+            sample_record = mapping_data[0]
+            logger.info(f"🔧 LOOKUP_MAP: Sample record structure: {list(sample_record.keys())}")
+            logger.info(f"🔧 LOOKUP_MAP: Sample record content: {sample_record}")
+
         lookup_map = {}
 
-        for record in mapping_data:
+        for i, record in enumerate(mapping_data):
             # Create lookup keys based on user selection
             lookup_keys = []
+            logger.info(f"🔧 LOOKUP_MAP: Processing record {i+1}: {record}")
 
             for mapping_key in user_mapping_keys:
+                logger.info(f"🔧 LOOKUP_MAP: Checking mapping_key '{mapping_key}' in record")
+
                 if mapping_key in record and pd.notna(record[mapping_key]):
+                    original_value = record[mapping_key]
                     # Normalize the lookup key
-                    normalized_key = self.normalize_identifier(str(record[mapping_key]))
+                    normalized_key = self.normalize_identifier(str(original_value))
+                    logger.info(f"🔧 LOOKUP_MAP: Found '{mapping_key}' = '{original_value}' -> normalized: '{normalized_key}'")
+
                     if normalized_key:
                         lookup_keys.append(normalized_key)
+                else:
+                    logger.warning(f"🔧 LOOKUP_MAP: mapping_key '{mapping_key}' not found in record or is null")
+
+            logger.info(f"🔧 LOOKUP_MAP: Generated lookup_keys for record {i+1}: {lookup_keys}")
 
             # Store the full record for each lookup key
             for lookup_key in lookup_keys:
                 if lookup_key not in lookup_map:
                     lookup_map[lookup_key] = record.copy()
+                    logger.info(f"🔧 LOOKUP_MAP: Added lookup_key '{lookup_key}' -> {record}")
                 else:
                     # Handle duplicates - keep first occurrence, log warning
-                    logger.warning(f"Duplicate lookup key found: {lookup_key}")
+                    logger.warning(f"🔧 LOOKUP_MAP: Duplicate lookup key found: {lookup_key}")
 
+        logger.info(f"🔧 LOOKUP_MAP: Final lookup_map keys: {list(lookup_map.keys())}")
         logger.info(f"Created lookup map with {len(lookup_map)} entries from {len(user_mapping_keys)} mapping keys")
         return lookup_map
 
