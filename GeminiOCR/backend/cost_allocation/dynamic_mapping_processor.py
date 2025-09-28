@@ -26,18 +26,59 @@ class DynamicMappingProcessor:
             'account_no': 'ACCOUNT_NO'
         }
 
-    def detect_file_format(self, file_content: bytes) -> str:
-        """Detect if file is CSV or Excel format."""
+    def detect_file_format(self, file_content: bytes, file_path: Optional[str] = None) -> str:
+        """
+        Detect if file is CSV or Excel format.
+
+        Args:
+            file_content: Raw bytes content of the file
+            file_path: Optional file path for extension-based detection
+
+        Returns:
+            'csv', 'excel', or 'unknown'
+        """
+        # First, try to determine format from file extension if available
+        if file_path:
+            file_extension = file_path.lower().split('.')[-1] if '.' in file_path else ''
+            logger.info(f"File extension detected: '{file_extension}' from path: {file_path}")
+
+            if file_extension == 'csv':
+                # Verify it's actually a valid CSV
+                try:
+                    pd.read_csv(StringIO(file_content.decode('utf-8')), nrows=1)
+                    logger.info("File extension and content both indicate CSV format")
+                    return 'csv'
+                except Exception as e:
+                    logger.warning(f"File has .csv extension but CSV parsing failed: {e}")
+                    # Continue to content-based detection
+            elif file_extension in ['xlsx', 'xls']:
+                # Verify it's actually a valid Excel file
+                try:
+                    pd.read_excel(BytesIO(file_content), nrows=1)
+                    logger.info("File extension and content both indicate Excel format")
+                    return 'excel'
+                except Exception as e:
+                    logger.warning(f"File has Excel extension but Excel parsing failed: {e}")
+                    # Continue to content-based detection
+
+        # Fallback to content-based detection
+        logger.info("Performing content-based format detection...")
+
+        # Try CSV first (more reliable detection)
         try:
-            # Try to detect Excel file
-            pd.read_excel(BytesIO(file_content), nrows=1)
-            return 'excel'
-        except:
+            pd.read_csv(StringIO(file_content.decode('utf-8')), nrows=1)
+            logger.info("Content-based detection indicates CSV format")
+            return 'csv'
+        except Exception as csv_error:
+            logger.debug(f"CSV detection failed: {csv_error}")
+
+            # Try Excel as fallback
             try:
-                # Try to detect CSV file
-                pd.read_csv(StringIO(file_content.decode('utf-8')), nrows=1)
-                return 'csv'
-            except:
+                pd.read_excel(BytesIO(file_content), nrows=1)
+                logger.info("Content-based detection indicates Excel format")
+                return 'excel'
+            except Exception as excel_error:
+                logger.error(f"Both CSV and Excel detection failed. CSV error: {csv_error}, Excel error: {excel_error}")
                 return 'unknown'
 
     def process_csv_file(self, file_content: bytes) -> Dict[str, Any]:
@@ -82,7 +123,10 @@ class DynamicMappingProcessor:
                 "columns": self.columns,
                 "total_rows": len(self.mapping_data),
                 "original_rows": len(df),
-                "file_format": "csv"
+                "file_format": "csv",
+                # Backward compatibility fields
+                "unified_map": self.mapping_data,
+                "total_mappings": len(self.mapping_data)
             }
 
             logger.info(f"Successfully processed CSV with {len(self.mapping_data)} valid rows and columns: {self.columns}")
@@ -94,7 +138,10 @@ class DynamicMappingProcessor:
                 "success": False,
                 "error": str(e),
                 "mapping_data": [],
-                "columns": []
+                "columns": [],
+                # Backward compatibility fields
+                "unified_map": [],
+                "total_mappings": 0
             }
 
     def process_excel_file(self, file_content: bytes) -> Dict[str, Any]:
@@ -142,7 +189,10 @@ class DynamicMappingProcessor:
                 "total_rows": len(self.mapping_data),
                 "original_rows": len(df),
                 "file_format": "excel",
-                "sheet_name": sheet_name
+                "sheet_name": sheet_name,
+                # Backward compatibility fields
+                "unified_map": self.mapping_data,
+                "total_mappings": len(self.mapping_data)
             }
 
             logger.info(f"Successfully processed Excel with {len(self.mapping_data)} valid rows and columns: {self.columns}")
@@ -154,29 +204,40 @@ class DynamicMappingProcessor:
                 "success": False,
                 "error": str(e),
                 "mapping_data": [],
-                "columns": []
+                "columns": [],
+                # Backward compatibility fields
+                "unified_map": [],
+                "total_mappings": 0
             }
 
-    def process_mapping_file(self, file_content: bytes) -> Dict[str, Any]:
+    def process_mapping_file(self, file_content: bytes, file_path: Optional[str] = None) -> Dict[str, Any]:
         """
         Process mapping file (auto-detect CSV or Excel format).
 
         Args:
             file_content: Raw bytes content of mapping file
+            file_path: Optional file path for extension-based format detection
 
         Returns:
             Dict containing mapping data and metadata
         """
-        file_format = self.detect_file_format(file_content)
+        logger.info(f"Processing mapping file{f' from path: {file_path}' if file_path else ''}")
+
+        file_format = self.detect_file_format(file_content, file_path)
+        logger.info(f"Detected file format: {file_format}")
 
         if file_format == 'csv':
+            logger.info("Processing as CSV file")
             return self.process_csv_file(file_content)
         elif file_format == 'excel':
+            logger.info("Processing as Excel file")
             return self.process_excel_file(file_content)
         else:
+            error_msg = f"Unsupported file format: {file_format}. Please use CSV or Excel files."
+            logger.error(error_msg)
             return {
                 "success": False,
-                "error": "Unsupported file format. Please use CSV or Excel files.",
+                "error": error_msg,
                 "mapping_data": [],
                 "columns": []
             }
@@ -245,15 +306,16 @@ class DynamicMappingProcessor:
         return mapping_key.lower()
 
 
-def process_dynamic_mapping_file(file_content: bytes) -> Dict[str, Any]:
+def process_dynamic_mapping_file(file_content: bytes, file_path: Optional[str] = None) -> Dict[str, Any]:
     """
     Convenience function to process mapping file with dynamic column detection.
 
     Args:
         file_content: Raw bytes content of mapping file
+        file_path: Optional file path for extension-based format detection
 
     Returns:
         Dict containing mapping data and metadata
     """
     processor = DynamicMappingProcessor()
-    return processor.process_mapping_file(file_content)
+    return processor.process_mapping_file(file_content, file_path)

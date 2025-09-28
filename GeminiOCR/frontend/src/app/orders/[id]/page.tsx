@@ -102,6 +102,12 @@ export default function OrderDetailsPage() {
   const [orderLevelSuggestions, setOrderLevelSuggestions] = useState<any[]>([]);
   const [loadingOrderSuggestions, setLoadingOrderSuggestions] = useState(false);
 
+  // Order Management State
+  const [isLockingOrder, setIsLockingOrder] = useState(false);
+  const [isUnlockingOrder, setIsUnlockingOrder] = useState(false);
+  const [isRestartingOcr, setIsRestartingOcr] = useState(false);
+  const [isRestartingMapping, setIsRestartingMapping] = useState(false);
+
   useEffect(() => {
     loadOrder();
     loadCompanies();
@@ -436,6 +442,11 @@ export default function OrderDetailsPage() {
 
   const submitOrder = async () => {
     try {
+      // Save mapping keys first if they haven't been saved
+      if (selectedMappingKeys.length > 0 && JSON.stringify(selectedMappingKeys) !== JSON.stringify(order.mapping_keys || [])) {
+        await updateMappingKeys();
+      }
+
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/submit`, {
         method: 'POST',
       });
@@ -474,6 +485,11 @@ export default function OrderDetailsPage() {
     setIsStartingMapping(true);
     setError('');
     try {
+      // Save mapping keys first if they haven't been saved
+      if (selectedMappingKeys.length > 0 && JSON.stringify(selectedMappingKeys) !== JSON.stringify(order.mapping_keys || [])) {
+        await updateMappingKeys();
+      }
+
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/process-mapping`, {
         method: 'POST',
       });
@@ -686,6 +702,119 @@ export default function OrderDetailsPage() {
     }
   };
 
+  // Order Management Functions
+  const lockOrder = async () => {
+    if (!window.confirm('Are you sure you want to lock this order? Locked orders cannot be modified.')) {
+      return;
+    }
+
+    setIsLockingOrder(true);
+    setError('');
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/lock`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to lock order');
+      }
+
+      setError('✅ Order locked successfully');
+      setTimeout(() => setError(''), 3000);
+      loadOrder();
+    } catch (error) {
+      console.error('Error locking order:', error);
+      setError(error instanceof Error ? error.message : 'Failed to lock order');
+    } finally {
+      setIsLockingOrder(false);
+    }
+  };
+
+  const unlockOrder = async () => {
+    if (!window.confirm('Are you sure you want to unlock this order? This will allow modifications again.')) {
+      return;
+    }
+
+    setIsUnlockingOrder(true);
+    setError('');
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/unlock`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to unlock order');
+      }
+
+      setError('✅ Order unlocked successfully');
+      setTimeout(() => setError(''), 3000);
+      loadOrder();
+    } catch (error) {
+      console.error('Error unlocking order:', error);
+      setError(error instanceof Error ? error.message : 'Failed to unlock order');
+    } finally {
+      setIsUnlockingOrder(false);
+    }
+  };
+
+  const restartOcr = async () => {
+    if (!window.confirm('Are you sure you want to restart OCR processing? This will reprocess all items and overwrite existing OCR results.')) {
+      return;
+    }
+
+    setIsRestartingOcr(true);
+    setError('');
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/restart-ocr`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to restart OCR processing');
+      }
+
+      setError('✅ OCR processing restarted successfully');
+      setTimeout(() => setError(''), 3000);
+      loadOrder();
+    } catch (error) {
+      console.error('Error restarting OCR:', error);
+      setError(error instanceof Error ? error.message : 'Failed to restart OCR processing');
+    } finally {
+      setIsRestartingOcr(false);
+    }
+  };
+
+  const restartMapping = async () => {
+    if (!window.confirm('Are you sure you want to restart mapping processing? This will reprocess mapping with current configuration.')) {
+      return;
+    }
+
+    setIsRestartingMapping(true);
+    setError('');
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/restart-mapping`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to restart mapping processing');
+      }
+
+      setError('✅ Mapping processing restarted successfully');
+      setTimeout(() => setError(''), 3000);
+      loadOrder();
+    } catch (error) {
+      console.error('Error restarting mapping:', error);
+      setError(error instanceof Error ? error.message : 'Failed to restart mapping processing');
+    } finally {
+      setIsRestartingMapping(false);
+    }
+  };
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'DRAFT':
@@ -700,6 +829,8 @@ export default function OrderDetailsPage() {
         return 'bg-green-100 text-green-800';
       case 'FAILED':
         return 'bg-red-100 text-red-800';
+      case 'LOCKED':
+        return 'bg-orange-100 text-orange-800';
       default:
         return 'bg-gray-100 text-gray-800';
     }
@@ -736,12 +867,19 @@ export default function OrderDetailsPage() {
     );
   }
 
-  const canEdit = order.status === 'DRAFT';
-  const canSubmit = order.status === 'DRAFT' && order.total_items > 0;
-  const canStartOcrOnly = order.status === 'DRAFT' && order.total_items > 0;
-  const canStartFullProcess = order.status === 'DRAFT' && order.total_items > 0 && order.mapping_file_path && order.mapping_keys && order.mapping_keys.length > 0;
-  const canStartMapping = (order.status === 'OCR_COMPLETED' || order.status === 'MAPPING') && order.mapping_file_path && order.mapping_keys && order.mapping_keys.length > 0;
-  const canConfigureMapping = order.status === 'DRAFT' || order.status === 'OCR_COMPLETED' || order.status === 'COMPLETED' || order.status === 'MAPPING';
+  const isLocked = order.status === 'LOCKED';
+  const canEdit = order.status === 'DRAFT' && !isLocked;
+  const canSubmit = order.status === 'DRAFT' && order.total_items > 0 && !isLocked;
+  const canStartOcrOnly = order.status === 'DRAFT' && order.total_items > 0 && !isLocked;
+  // Use selectedMappingKeys (current user selection) if available, otherwise use saved mapping_keys
+  const effectiveMappingKeys = selectedMappingKeys.length > 0 ? selectedMappingKeys : (order.mapping_keys || []);
+  const canStartFullProcess = order.status === 'DRAFT' && order.total_items > 0 && order.mapping_file_path && effectiveMappingKeys.length > 0 && !isLocked;
+  const canStartMapping = (order.status === 'OCR_COMPLETED' || order.status === 'MAPPING' || order.status === 'COMPLETED') && order.mapping_file_path && effectiveMappingKeys.length > 0 && !isLocked;
+  const canConfigureMapping = (order.status === 'DRAFT' || order.status === 'OCR_COMPLETED' || order.status === 'COMPLETED' || order.status === 'MAPPING') && !isLocked;
+  const canLock = !isLocked && (order.status === 'COMPLETED' || order.status === 'OCR_COMPLETED' || order.status === 'FAILED');
+  const canUnlock = isLocked;
+  const canRestartOcr = !isLocked && (order.status === 'OCR_COMPLETED' || order.status === 'COMPLETED' || order.status === 'FAILED');
+  const canRestartMapping = !isLocked && (order.status === 'COMPLETED' || order.status === 'FAILED') && order.mapping_file_path;
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -762,6 +900,51 @@ export default function OrderDetailsPage() {
           </span>
         </div>
         <div className="flex items-center gap-3">
+          {/* Lock/Unlock Order Button */}
+          {canLock && (
+            <button
+              onClick={lockOrder}
+              disabled={isLockingOrder}
+              className="bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 text-white py-2 px-4 rounded font-medium"
+              title="Lock this order to prevent modifications"
+            >
+              {isLockingOrder ? '🔒 Locking...' : '🔒 Lock Order'}
+            </button>
+          )}
+          {canUnlock && (
+            <button
+              onClick={unlockOrder}
+              disabled={isUnlockingOrder}
+              className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white py-2 px-4 rounded font-medium"
+              title="Unlock this order to allow modifications"
+            >
+              {isUnlockingOrder ? '🔓 Unlocking...' : '🔓 Unlock Order'}
+            </button>
+          )}
+
+          {/* Restart Buttons - Only show when unlocked */}
+          {canRestartOcr && (
+            <button
+              onClick={restartOcr}
+              disabled={isRestartingOcr}
+              className="bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-400 text-white py-2 px-4 rounded font-medium"
+              title="Restart OCR processing for all items"
+            >
+              {isRestartingOcr ? '🔄 Restarting OCR...' : '🔄 Re-OCR'}
+            </button>
+          )}
+          {canRestartMapping && (
+            <button
+              onClick={restartMapping}
+              disabled={isRestartingMapping}
+              className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white py-2 px-4 rounded font-medium"
+              title="Restart mapping processing with current configuration"
+            >
+              {isRestartingMapping ? '🔄 Restarting Mapping...' : '🔄 Re-Mapping'}
+            </button>
+          )}
+
+          {/* Processing Buttons - Only show when unlocked */}
           {canStartOcrOnly && (
             <button
               onClick={startOcrOnlyProcessing}
@@ -804,6 +987,22 @@ export default function OrderDetailsPage() {
       )}
 
       {/* Status Information */}
+      {order.status === 'LOCKED' && (
+        <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 mb-6">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-orange-600 font-semibold">🔒 Order Locked</span>
+          </div>
+          <p className="text-sm text-orange-700">
+            This order is currently locked and cannot be modified. Auto-mapping configuration is applied from the document settings.
+          </p>
+          <ul className="text-sm text-orange-700 list-disc list-inside mt-1 space-y-1">
+            <li>All processing operations are disabled</li>
+            <li>File uploads and modifications are not allowed</li>
+            <li>Use the "🔓 Unlock Order" button to enable modifications</li>
+          </ul>
+        </div>
+      )}
+
       {order.status === 'OCR_COMPLETED' && (
         <div className="bg-purple-50 border border-purple-200 rounded-lg p-4 mb-6">
           <div className="flex items-center gap-2 mb-2">

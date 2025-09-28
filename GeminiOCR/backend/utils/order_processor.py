@@ -8,10 +8,14 @@ import json
 import os
 import tempfile
 import zipfile
+import re
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union, Tuple
+from enum import Enum
+from dataclasses import dataclass, field
 import logging
 import pandas as pd
+from difflib import SequenceMatcher
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -22,11 +26,396 @@ from db.models import (
 )
 from main import extract_text_from_image, extract_text_from_pdf
 from utils.s3_storage import get_s3_manager
+from utils.file_storage import get_file_storage
 from utils.prompt_schema_manager import get_prompt_schema_manager
 from utils.excel_converter import json_to_excel, json_to_csv
 from config_loader import config_loader
 
 logger = logging.getLogger(__name__)
+
+
+class MatchingStrategy(Enum):
+    """Matching strategy options for intelligent field matching"""
+    EXACT = "exact"          # Exact match only
+    CONTAINS = "contains"    # One field contains the other
+    SPLIT = "split"          # Split compound fields and match parts
+    FUZZY = "fuzzy"          # Fuzzy matching with similarity threshold
+    REGEX = "regex"          # Regular expression matching
+    SMART = "smart"          # Intelligent combination of strategies
+
+
+@dataclass
+class MatchingConfig:
+    """Configuration for intelligent matching behavior"""
+    strategies: List[MatchingStrategy] = field(default_factory=lambda: [MatchingStrategy.EXACT])
+    separators: List[str] = field(default_factory=lambda: ["/", ",", ";", "|", "-", "_", ":", ".", " "])
+    fuzzy_threshold: float = 0.8  # Similarity threshold for fuzzy matching (0.0-1.0)
+    min_match_length: int = 3     # Minimum length for partial matches
+    case_sensitive: bool = False  # Case sensitivity for matching
+    regex_patterns: Dict[str, str] = field(default_factory=dict)  # Custom regex patterns per field
+    priority_order: List[MatchingStrategy] = field(default_factory=lambda: [
+        MatchingStrategy.EXACT,
+        MatchingStrategy.CONTAINS,
+        MatchingStrategy.SPLIT,
+        MatchingStrategy.FUZZY
+    ])
+
+
+@dataclass
+class MatchResult:
+    """Result of a matching operation"""
+    success: bool
+    strategy: MatchingStrategy
+    ocr_value: str
+    mapping_value: str
+    similarity_score: float = 0.0
+    extracted_parts: List[str] = field(default_factory=list)
+    match_reason: str = ""
+
+
+class MatchingEngine:
+    """
+    Universal intelligent matching engine for flexible field mapping.
+    Supports multiple matching strategies for various business scenarios.
+    """
+
+    def __init__(self, config: MatchingConfig = None):
+        self.config = config or MatchingConfig()
+        self.logger = logging.getLogger(f"{__name__}.MatchingEngine")
+
+    def extract_identifiers(self, value: str) -> List[str]:
+        """
+        Extract all possible identifiers from a compound field.
+
+        Args:
+            value: Input string that may contain multiple identifiers
+
+        Returns:
+            List of extracted identifier candidates
+        """
+        if not value or pd.isna(value):
+            return []
+
+        value_str = str(value).strip()
+        if not value_str:
+            return []
+
+        # Start with the original value
+        identifiers = [value_str]
+
+        # Split by configured separators
+        for separator in self.config.separators:
+            new_parts = []
+            for identifier in identifiers:
+                parts = [part.strip() for part in identifier.split(separator) if part.strip()]
+                if len(parts) > 1:  # Only split if it produces multiple parts
+                    new_parts.extend(parts)
+                else:
+                    new_parts.append(identifier)
+            identifiers = new_parts
+
+        # Remove duplicates while preserving order
+        unique_identifiers = []
+        seen = set()
+        for identifier in identifiers:
+            if identifier not in seen and len(identifier) >= self.config.min_match_length:
+                unique_identifiers.append(identifier)
+                seen.add(identifier)
+
+        # Add normalized versions
+        normalized_identifiers = []
+        for identifier in unique_identifiers:
+            # Original form
+            normalized_identifiers.append(identifier)
+
+            # Remove all non-alphanumeric characters
+            alphanumeric_only = re.sub(r'[^a-zA-Z0-9]', '', identifier)
+            if alphanumeric_only and alphanumeric_only != identifier:
+                normalized_identifiers.append(alphanumeric_only)
+
+            # Digits only
+            digits_only = re.sub(r'[^0-9]', '', identifier)
+            if digits_only and len(digits_only) >= self.config.min_match_length:
+                normalized_identifiers.append(digits_only)
+
+        # Remove duplicates again
+        final_identifiers = []
+        seen = set()
+        for identifier in normalized_identifiers:
+            if identifier not in seen and len(identifier) >= self.config.min_match_length:
+                final_identifiers.append(identifier)
+                seen.add(identifier)
+
+        self.logger.debug(f"Extracted identifiers from '{value_str}': {final_identifiers}")
+        return final_identifiers
+
+    def exact_match(self, ocr_value: str, mapping_value: str) -> MatchResult:
+        """Perform exact string matching"""
+        ocr_norm = str(ocr_value).strip()
+        mapping_norm = str(mapping_value).strip()
+
+        if not self.config.case_sensitive:
+            ocr_norm = ocr_norm.lower()
+            mapping_norm = mapping_norm.lower()
+
+        success = ocr_norm == mapping_norm
+
+        return MatchResult(
+            success=success,
+            strategy=MatchingStrategy.EXACT,
+            ocr_value=ocr_value,
+            mapping_value=mapping_value,
+            similarity_score=1.0 if success else 0.0,
+            match_reason=f"Exact match: '{ocr_norm}' == '{mapping_norm}'" if success else "No exact match"
+        )
+
+    def contains_match(self, ocr_value: str, mapping_value: str) -> MatchResult:
+        """Perform contains-based matching (one field contains the other)"""
+        ocr_norm = str(ocr_value).strip()
+        mapping_norm = str(mapping_value).strip()
+
+        if not self.config.case_sensitive:
+            ocr_norm = ocr_norm.lower()
+            mapping_norm = mapping_norm.lower()
+
+        # Check minimum length requirements
+        if len(ocr_norm) < self.config.min_match_length or len(mapping_norm) < self.config.min_match_length:
+            return MatchResult(
+                success=False,
+                strategy=MatchingStrategy.CONTAINS,
+                ocr_value=ocr_value,
+                mapping_value=mapping_value,
+                match_reason=f"Values too short for contains matching (min_length={self.config.min_match_length})"
+            )
+
+        # Check if one contains the other
+        ocr_contains_mapping = mapping_norm in ocr_norm
+        mapping_contains_ocr = ocr_norm in mapping_norm
+
+        if ocr_contains_mapping or mapping_contains_ocr:
+            # Calculate similarity based on length ratio
+            shorter_len = min(len(ocr_norm), len(mapping_norm))
+            longer_len = max(len(ocr_norm), len(mapping_norm))
+            similarity = shorter_len / longer_len if longer_len > 0 else 0.0
+
+            direction = "OCR contains mapping" if ocr_contains_mapping else "Mapping contains OCR"
+
+            return MatchResult(
+                success=True,
+                strategy=MatchingStrategy.CONTAINS,
+                ocr_value=ocr_value,
+                mapping_value=mapping_value,
+                similarity_score=similarity,
+                match_reason=f"Contains match: {direction} ('{ocr_norm}' vs '{mapping_norm}')"
+            )
+
+        return MatchResult(
+            success=False,
+            strategy=MatchingStrategy.CONTAINS,
+            ocr_value=ocr_value,
+            mapping_value=mapping_value,
+            match_reason=f"No contains relationship: '{ocr_norm}' vs '{mapping_norm}'"
+        )
+
+    def split_match(self, ocr_value: str, mapping_value: str) -> MatchResult:
+        """Perform split-based matching (extract parts and match)"""
+        ocr_identifiers = self.extract_identifiers(ocr_value)
+        mapping_identifiers = self.extract_identifiers(mapping_value)
+
+        # Normalize for comparison if needed
+        if not self.config.case_sensitive:
+            ocr_identifiers = [id.lower() for id in ocr_identifiers]
+            mapping_identifiers = [id.lower() for id in mapping_identifiers]
+
+        # Find intersections
+        ocr_set = set(ocr_identifiers)
+        mapping_set = set(mapping_identifiers)
+        common_identifiers = ocr_set.intersection(mapping_set)
+
+        if common_identifiers:
+            # Calculate similarity based on overlap
+            total_unique = len(ocr_set.union(mapping_set))
+            similarity = len(common_identifiers) / total_unique if total_unique > 0 else 0.0
+
+            return MatchResult(
+                success=True,
+                strategy=MatchingStrategy.SPLIT,
+                ocr_value=ocr_value,
+                mapping_value=mapping_value,
+                similarity_score=similarity,
+                extracted_parts=list(common_identifiers),
+                match_reason=f"Split match found common identifiers: {sorted(common_identifiers)}"
+            )
+
+        return MatchResult(
+            success=False,
+            strategy=MatchingStrategy.SPLIT,
+            ocr_value=ocr_value,
+            mapping_value=mapping_value,
+            extracted_parts=[],
+            match_reason=f"No common identifiers: OCR={ocr_identifiers} vs Mapping={mapping_identifiers}"
+        )
+
+    def fuzzy_match(self, ocr_value: str, mapping_value: str) -> MatchResult:
+        """Perform fuzzy string matching using similarity ratio"""
+        ocr_norm = str(ocr_value).strip()
+        mapping_norm = str(mapping_value).strip()
+
+        if not self.config.case_sensitive:
+            ocr_norm = ocr_norm.lower()
+            mapping_norm = mapping_norm.lower()
+
+        # Calculate similarity using SequenceMatcher
+        similarity = SequenceMatcher(None, ocr_norm, mapping_norm).ratio()
+
+        success = similarity >= self.config.fuzzy_threshold
+
+        return MatchResult(
+            success=success,
+            strategy=MatchingStrategy.FUZZY,
+            ocr_value=ocr_value,
+            mapping_value=mapping_value,
+            similarity_score=similarity,
+            match_reason=f"Fuzzy match: similarity={similarity:.3f} (threshold={self.config.fuzzy_threshold})"
+        )
+
+    def regex_match(self, ocr_value: str, mapping_value: str, pattern: str = None) -> MatchResult:
+        """Perform regex-based matching"""
+        if not pattern:
+            return MatchResult(
+                success=False,
+                strategy=MatchingStrategy.REGEX,
+                ocr_value=ocr_value,
+                mapping_value=mapping_value,
+                match_reason="No regex pattern provided"
+            )
+
+        try:
+            # Try to match both values against the pattern
+            ocr_match = re.search(pattern, str(ocr_value))
+            mapping_match = re.search(pattern, str(mapping_value))
+
+            if ocr_match and mapping_match:
+                # Extract matched groups
+                ocr_groups = ocr_match.groups() if ocr_match.groups() else [ocr_match.group()]
+                mapping_groups = mapping_match.groups() if mapping_match.groups() else [mapping_match.group()]
+
+                # Check if extracted groups match
+                success = ocr_groups == mapping_groups
+                similarity = 1.0 if success else 0.0
+
+                return MatchResult(
+                    success=success,
+                    strategy=MatchingStrategy.REGEX,
+                    ocr_value=ocr_value,
+                    mapping_value=mapping_value,
+                    similarity_score=similarity,
+                    extracted_parts=list(ocr_groups) if success else [],
+                    match_reason=f"Regex match: OCR groups={ocr_groups}, Mapping groups={mapping_groups}"
+                )
+
+            return MatchResult(
+                success=False,
+                strategy=MatchingStrategy.REGEX,
+                ocr_value=ocr_value,
+                mapping_value=mapping_value,
+                match_reason=f"Regex pattern '{pattern}' did not match both values"
+            )
+
+        except re.error as e:
+            return MatchResult(
+                success=False,
+                strategy=MatchingStrategy.REGEX,
+                ocr_value=ocr_value,
+                mapping_value=mapping_value,
+                match_reason=f"Invalid regex pattern '{pattern}': {str(e)}"
+            )
+
+    def smart_match(self, ocr_value: str, mapping_value: str, field_name: str = None) -> MatchResult:
+        """
+        Intelligent matching that tries multiple strategies in priority order.
+        Returns the best match found.
+        """
+        best_result = MatchResult(
+            success=False,
+            strategy=MatchingStrategy.SMART,
+            ocr_value=ocr_value,
+            mapping_value=mapping_value,
+            match_reason="No successful strategy found"
+        )
+
+        # Try strategies in priority order
+        for strategy in self.config.priority_order:
+            if strategy not in self.config.strategies:
+                continue  # Skip strategies not enabled in config
+
+            result = None
+
+            if strategy == MatchingStrategy.EXACT:
+                result = self.exact_match(ocr_value, mapping_value)
+            elif strategy == MatchingStrategy.CONTAINS:
+                result = self.contains_match(ocr_value, mapping_value)
+            elif strategy == MatchingStrategy.SPLIT:
+                result = self.split_match(ocr_value, mapping_value)
+            elif strategy == MatchingStrategy.FUZZY:
+                result = self.fuzzy_match(ocr_value, mapping_value)
+            elif strategy == MatchingStrategy.REGEX and field_name in self.config.regex_patterns:
+                pattern = self.config.regex_patterns[field_name]
+                result = self.regex_match(ocr_value, mapping_value, pattern)
+
+            if result and result.success:
+                # Found a successful match, update strategy to show which one worked
+                result.strategy = MatchingStrategy.SMART
+                result.match_reason = f"SMART strategy succeeded with {strategy.value}: {result.match_reason}"
+                return result
+            elif result and result.similarity_score > best_result.similarity_score:
+                # Keep track of the best unsuccessful match
+                best_result = result
+                best_result.strategy = MatchingStrategy.SMART
+                best_result.match_reason = f"SMART strategy best attempt with {strategy.value}: {result.match_reason}"
+
+        return best_result
+
+    def match(self, ocr_value: str, mapping_value: str, strategy: MatchingStrategy = None, field_name: str = None) -> MatchResult:
+        """
+        Perform matching using the specified strategy or the default configured strategy.
+
+        Args:
+            ocr_value: Value from OCR data
+            mapping_value: Value from mapping file
+            strategy: Specific strategy to use (if None, uses first strategy in config)
+            field_name: Field name for regex pattern lookup
+
+        Returns:
+            MatchResult with success status and details
+        """
+        if strategy is None:
+            strategy = self.config.strategies[0] if self.config.strategies else MatchingStrategy.EXACT
+
+        self.logger.debug(f"Matching '{ocr_value}' vs '{mapping_value}' using {strategy.value}")
+
+        if strategy == MatchingStrategy.EXACT:
+            return self.exact_match(ocr_value, mapping_value)
+        elif strategy == MatchingStrategy.CONTAINS:
+            return self.contains_match(ocr_value, mapping_value)
+        elif strategy == MatchingStrategy.SPLIT:
+            return self.split_match(ocr_value, mapping_value)
+        elif strategy == MatchingStrategy.FUZZY:
+            return self.fuzzy_match(ocr_value, mapping_value)
+        elif strategy == MatchingStrategy.REGEX:
+            pattern = self.config.regex_patterns.get(field_name, "")
+            return self.regex_match(ocr_value, mapping_value, pattern)
+        elif strategy == MatchingStrategy.SMART:
+            return self.smart_match(ocr_value, mapping_value, field_name)
+        else:
+            return MatchResult(
+                success=False,
+                strategy=strategy,
+                ocr_value=ocr_value,
+                mapping_value=mapping_value,
+                match_reason=f"Unknown strategy: {strategy}"
+            )
+
 
 class OrderProcessor:
     """Main coordinator for OCR Order processing"""
@@ -35,6 +424,16 @@ class OrderProcessor:
         self.s3_manager = get_s3_manager()
         self.prompt_schema_manager = get_prompt_schema_manager()
         self.app_config = config_loader.get_app_config()
+
+        # Initialize intelligent matching engine with default configuration
+        default_config = MatchingConfig(
+            strategies=[MatchingStrategy.EXACT, MatchingStrategy.SPLIT, MatchingStrategy.CONTAINS, MatchingStrategy.FUZZY],
+            priority_order=[MatchingStrategy.EXACT, MatchingStrategy.SPLIT, MatchingStrategy.CONTAINS, MatchingStrategy.FUZZY],
+            fuzzy_threshold=0.8,
+            min_match_length=3,
+            case_sensitive=False
+        )
+        self.matching_engine = MatchingEngine(default_config)
 
     async def process_order(self, order_id: int):
         """Process an entire OCR order"""
@@ -120,6 +519,11 @@ class OrderProcessor:
                 order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
                 if not order:
                     logger.error(f"Order {order_id} not found")
+                    return
+
+                # Check if order is locked
+                if order.status == OrderStatus.LOCKED:
+                    logger.error(f"Order {order_id} is locked and cannot be processed for OCR")
                     return
 
                 if order.status != OrderStatus.PROCESSING:
@@ -510,11 +914,27 @@ class OrderProcessor:
                     logger.error(f"Order {order_id} not found")
                     return
 
+                # Check if order is locked
+                if order.status == OrderStatus.LOCKED:
+                    logger.error(f"Order {order_id} is locked and cannot be processed for mapping")
+                    return
+
                 if order.status != OrderStatus.MAPPING:
                     logger.warning(f"Order {order_id} is not in MAPPING status")
                     return
 
-                logger.info(f"Starting dynamic mapping processing for order {order_id}")
+                # Get order details for logging
+                total_items = db.query(OcrOrderItem).filter(OcrOrderItem.order_id == order_id).count()
+                completed_items = db.query(OcrOrderItem).filter(
+                    OcrOrderItem.order_id == order_id,
+                    OcrOrderItem.status == OrderItemStatus.COMPLETED
+                ).count()
+
+                logger.info(f"🚀 Starting dynamic mapping processing for order {order_id}")
+                logger.info(f"📊 Order overview: {completed_items}/{total_items} items completed")
+                logger.info(f"📁 Mapping file: {order.mapping_file_path}")
+                logger.info(f"🔑 Mapping keys: {order.mapping_keys}")
+                logger.info(f"📈 Status: {order.status}")
 
                 # Load existing OCR results - get the expanded CSV format
                 all_ocr_results = await self._load_expanded_ocr_results(order_id)
@@ -536,7 +956,7 @@ class OrderProcessor:
 
                 # Use dynamic mapping processor
                 from cost_allocation.dynamic_mapping_processor import process_dynamic_mapping_file
-                mapping_result = process_dynamic_mapping_file(mapping_content)
+                mapping_result = process_dynamic_mapping_file(mapping_content, order.mapping_file_path)
 
                 if not mapping_result['success']:
                     logger.error(f"Failed to process mapping file: {mapping_result.get('error', 'Unknown error')}")
@@ -546,17 +966,52 @@ class OrderProcessor:
                 mapping_columns = mapping_result['columns']
                 logger.info(f"Loaded {len(mapping_data)} mapping records with columns: {mapping_columns}")
 
-                # Get user-selected mapping keys
+                # Get user-selected mapping keys or auto-apply from document configuration
                 user_mapping_keys = order.mapping_keys or []
+
+                # AUTO-MAPPING: Check if no user mapping keys are configured and auto-mapping is enabled
                 if not user_mapping_keys:
-                    logger.error(f"No mapping keys configured for order {order_id}")
-                    return
+                    logger.info(f"No user mapping keys found for order {order_id}, checking for auto-mapping configuration...")
+
+                    # Get distinct company/document type pairs from order items
+                    order_items = db.query(OcrOrderItem).filter(
+                        OcrOrderItem.order_id == order_id,
+                        OcrOrderItem.status == OrderItemStatus.COMPLETED
+                    ).all()
+
+                    auto_mapping_keys = []
+                    for item in order_items:
+                        # Check if auto-mapping is enabled for this company/document type
+                        config = db.query(CompanyDocumentConfig).filter(
+                            CompanyDocumentConfig.company_id == item.company_id,
+                            CompanyDocumentConfig.doc_type_id == item.doc_type_id,
+                            CompanyDocumentConfig.auto_mapping_enabled == True,
+                            CompanyDocumentConfig.active == True
+                        ).first()
+
+                        if config and config.default_mapping_keys:
+                            logger.info(f"Found auto-mapping config for company {item.company_id}, doc_type {item.doc_type_id}: {config.default_mapping_keys}")
+                            # Use default mapping keys from configuration
+                            auto_mapping_keys.extend(config.default_mapping_keys)
+                            break  # Use first found configuration
+
+                    if auto_mapping_keys:
+                        # Remove duplicates while preserving order
+                        user_mapping_keys = list(dict.fromkeys(auto_mapping_keys))
+                        logger.info(f"Applied auto-mapping keys: {user_mapping_keys}")
+
+                        # Update order with auto-applied mapping keys for record keeping
+                        order.mapping_keys = user_mapping_keys
+                        db.commit()
+                    else:
+                        logger.error(f"No mapping keys configured for order {order_id} and no auto-mapping configuration found")
+                        return
 
                 logger.info(f"Using user-selected mapping keys: {user_mapping_keys}")
 
                 # Perform dynamic JOIN operation
                 joined_results = await self._perform_dynamic_join(
-                    all_ocr_results, mapping_data, mapping_columns, user_mapping_keys
+                    all_ocr_results, mapping_data, mapping_columns, user_mapping_keys, order_id
                 )
 
                 logger.info(f"JOIN completed: {len(joined_results)} records processed")
@@ -584,7 +1039,18 @@ class OrderProcessor:
 
                         db.commit()
 
-                        logger.info(f"Order {order_id} mapping processing completed successfully with final_report_paths updated")
+                        # Count matching statistics
+                        matched_records = sum(1 for row in joined_results if row.get('Matched', False))
+                        unmatched_records = len(joined_results) - matched_records
+                        match_rate = (matched_records / len(joined_results) * 100) if joined_results else 0
+
+                        logger.info(f"✅ Order {order_id} mapping processing completed successfully")
+                        logger.info(f"📊 Final statistics:")
+                        logger.info(f"   - Total records processed: {len(joined_results)}")
+                        logger.info(f"   - Successfully matched: {matched_records}")
+                        logger.info(f"   - Unmatched records: {unmatched_records}")
+                        logger.info(f"   - Match rate: {match_rate:.1f}%")
+                        logger.info(f"📁 Results saved to: {csv_path}")
                     else:
                         logger.error(f"Failed to save final results for order {order_id}")
                 else:
@@ -655,63 +1121,341 @@ class OrderProcessor:
             return all_expanded_results
 
     async def _perform_dynamic_join(self, ocr_results: List[Dict], mapping_data: List[Dict],
-                                   mapping_columns: List[str], user_mapping_keys: List[str]) -> List[Dict]:
+                                   mapping_columns: List[str], user_mapping_keys: List[str],
+                                   order_id: int = None) -> List[Dict]:
         """Perform dynamic JOIN based on user-selected mapping keys"""
 
-        # Create OCR field to mapping field mapping
-        ocr_to_mapping_map = {
-            'number': 'PHONE',  # Default mapping
-            'account_number': 'ACCOUNT_NO',
-        }
+        # Get OCR columns to understand available fields
+        ocr_columns = set()
+        if ocr_results:
+            ocr_columns = set(ocr_results[0].keys())
 
-        # Create lookup dictionary from mapping data
+        logger.info(f"Available OCR columns: {sorted(ocr_columns)}")
+        logger.info(f"Available mapping columns: {mapping_columns}")
+        logger.info(f"User selected mapping keys: {user_mapping_keys}")
+
+        # Enhanced intelligent field mapping with cross-field matching
+        ocr_fields = []
+        mapping_fields = []
+        cross_field_mappings = []  # Store (ocr_field, mapping_field) pairs
+
+        logger.info(f"🚀 Starting field analysis for mapping keys...")
+
+        # AUTO-MAPPING: Load cross-field mappings from document configuration
+        auto_cross_field_mappings = {}  # {ocr_field: mapping_field}
+        if order_id:
+            with Session(engine) as db:
+                # Get order items to find company/document type configurations
+                order_items = db.query(OcrOrderItem).filter(
+                    OcrOrderItem.order_id == order_id,
+                    OcrOrderItem.status == OrderItemStatus.COMPLETED
+                ).all()
+
+                for item in order_items:
+                    config = db.query(CompanyDocumentConfig).filter(
+                        CompanyDocumentConfig.company_id == item.company_id,
+                        CompanyDocumentConfig.doc_type_id == item.doc_type_id,
+                        CompanyDocumentConfig.auto_mapping_enabled == True,
+                        CompanyDocumentConfig.active == True
+                    ).first()
+
+                    if config and config.cross_field_mappings:
+                        logger.info(f"Found cross-field mappings configuration: {config.cross_field_mappings}")
+                        auto_cross_field_mappings.update(config.cross_field_mappings)
+                        break  # Use first found configuration
+
+        # AUTO-DERIVE: Enhance mapping with auto-derived relationships from Default Keys + User Selection
+        if order_id and not auto_cross_field_mappings:
+            logger.info("🤖 Auto-deriving mapping relationships from Document Default Keys + User Selection")
+            with Session(engine) as db:
+                order_items = db.query(OcrOrderItem).filter(
+                    OcrOrderItem.order_id == order_id,
+                    OcrOrderItem.status == OrderItemStatus.COMPLETED
+                ).all()
+
+                for item in order_items:
+                    config = db.query(CompanyDocumentConfig).filter(
+                        CompanyDocumentConfig.company_id == item.company_id,
+                        CompanyDocumentConfig.doc_type_id == item.doc_type_id,
+                        CompanyDocumentConfig.auto_mapping_enabled == True,
+                        CompanyDocumentConfig.active == True
+                    ).first()
+
+                    if config and config.default_mapping_keys:
+                        logger.info(f"Found default mapping keys: {config.default_mapping_keys}")
+                        # Auto-derive cross-field mappings: default_key (OCR) -> user_key (mapping_file)
+                        for priority, default_key in enumerate(config.default_mapping_keys):
+                            if default_key and priority < len(user_mapping_keys):
+                                user_key = user_mapping_keys[priority]
+                                if default_key != user_key:  # Only if they're different
+                                    auto_cross_field_mappings[default_key] = user_key
+                                    logger.info(f"🔗 Auto-derived mapping: '{default_key}' (OCR) -> '{user_key}' (mapping file)")
+                        break
+
+        logger.info(f"🔍 Starting field analysis with auto-derived mappings: {auto_cross_field_mappings}")
+
+        for key in user_mapping_keys:
+            # First, check for direct field matches
+            direct_ocr_match = key in ocr_columns
+            direct_mapping_match = key in mapping_columns
+
+            if direct_ocr_match:
+                ocr_fields.append(key)
+                logger.info(f"'{key}' identified as OCR field")
+
+            if direct_mapping_match:
+                mapping_fields.append(key)
+                logger.info(f"'{key}' identified as mapping field")
+
+            # Always check for cross-field semantic mappings, regardless of direct matches
+            # This enables mapping_field -> ocr_field relationships
+            potential_ocr_matches = []
+            potential_mapping_matches = []
+
+            key_lower = key.lower()
+            logger.info(f"🔍 Analyzing key '{key}' for cross-field semantic matches...")
+
+            # Find semantically equivalent OCR fields
+            for ocr_col in ocr_columns:
+                ocr_col_lower = ocr_col.lower()
+                is_semantic = self._are_semantically_equivalent(key_lower, ocr_col_lower)
+                if is_semantic and ocr_col != key:  # Avoid self-mapping
+                    potential_ocr_matches.append(ocr_col)
+                    logger.info(f"   ✓ OCR semantic match: '{key}' <-> '{ocr_col}'")
+
+            # Find semantically equivalent mapping fields
+            for map_col in mapping_columns:
+                map_col_lower = map_col.lower()
+                is_semantic = self._are_semantically_equivalent(key_lower, map_col_lower)
+                if is_semantic and map_col != key:  # Avoid self-mapping
+                    potential_mapping_matches.append(map_col)
+                    logger.info(f"   ✓ Mapping semantic match: '{key}' <-> '{map_col}'")
+
+            # Create cross-field mappings when we have both direct and semantic matches
+            if direct_mapping_match and potential_ocr_matches:
+                # key is in mapping columns, but has semantic OCR equivalents
+                for ocr_match in potential_ocr_matches:
+                    cross_field_mappings.append((ocr_match, key))
+                    logger.info(f"🔗 Cross-field mapping created: '{ocr_match}' (OCR) -> '{key}' (mapping)")
+
+            elif direct_ocr_match and potential_mapping_matches:
+                # key is in OCR columns, but has semantic mapping equivalents
+                for mapping_match in potential_mapping_matches:
+                    cross_field_mappings.append((key, mapping_match))
+                    logger.info(f"🔗 Cross-field mapping created: '{key}' (OCR) -> '{mapping_match}' (mapping)")
+
+            # Handle case where key is not found in either column set
+            elif not direct_ocr_match and not direct_mapping_match:
+                logger.warning(f"'{key}' not found in either OCR or mapping columns")
+
+                if potential_ocr_matches and potential_mapping_matches:
+                    # Create cross-field mapping between semantic matches
+                    best_ocr = potential_ocr_matches[0]
+                    best_mapping = potential_mapping_matches[0]
+                    cross_field_mappings.append((best_ocr, best_mapping))
+                    logger.info(f"🔗 Cross-field mapping created: '{best_ocr}' (OCR) -> '{best_mapping}' (mapping)")
+                elif potential_ocr_matches:
+                    ocr_fields.append(potential_ocr_matches[0])
+                    logger.info(f"'{potential_ocr_matches[0]}' identified as similar OCR field for '{key}'")
+                elif potential_mapping_matches:
+                    mapping_fields.append(potential_mapping_matches[0])
+                    logger.info(f"'{potential_mapping_matches[0]}' identified as similar mapping field for '{key}'")
+                else:
+                    # Last resort: add to both lists
+                    ocr_fields.append(key)
+                    mapping_fields.append(key)
+                    logger.info(f"'{key}' added to both OCR and mapping fields as fallback")
+
+        # AUTO-MAPPING: Apply configured cross-field mappings
+        if auto_cross_field_mappings:
+            logger.info(f"Applying auto cross-field mappings: {auto_cross_field_mappings}")
+            for ocr_field, mapping_field in auto_cross_field_mappings.items():
+                # Check if both fields exist in their respective datasets
+                if ocr_field in ocr_columns and mapping_field in mapping_columns:
+                    cross_field_mappings.append((ocr_field, mapping_field))
+                    logger.info(f"🔗 Auto cross-field mapping applied: '{ocr_field}' (OCR) -> '{mapping_field}' (mapping)")
+                else:
+                    if ocr_field not in ocr_columns:
+                        logger.warning(f"Auto cross-field mapping skipped: OCR field '{ocr_field}' not found")
+                    if mapping_field not in mapping_columns:
+                        logger.warning(f"Auto cross-field mapping skipped: mapping field '{mapping_field}' not found")
+
+        logger.info(f"Final cross-field mappings: {cross_field_mappings}")
+
+        # Create lookup dictionary from mapping data using mapping fields AND cross-field mappings
         mapping_lookup = {}
 
         for mapping_row in mapping_data:
-            # Create composite lookup key using user-selected mapping keys
+            # Create lookup keys from mapping fields
             lookup_keys = []
 
-            for mapping_key in user_mapping_keys:
-                if mapping_key in mapping_row and pd.notna(mapping_row[mapping_key]):
+            # Use mapping fields (from mapping file) to create lookup keys
+            for mapping_field in mapping_fields:
+                if mapping_field in mapping_row and pd.notna(mapping_row[mapping_field]):
                     # Normalize the lookup key
-                    normalized_key = self._normalize_identifier(str(mapping_row[mapping_key]))
+                    normalized_key = self._normalize_identifier(str(mapping_row[mapping_field]))
                     if normalized_key:
                         lookup_keys.append(normalized_key)
+                        # Store the mapping record for each lookup key
+                        mapping_lookup[normalized_key] = mapping_row.copy()
 
-            # Use first available key as primary lookup
-            if lookup_keys:
-                primary_key = lookup_keys[0]
-                mapping_lookup[primary_key] = mapping_row.copy()
+            # Handle cross-field mappings: use mapping side of the pair
+            for ocr_field, mapping_field in cross_field_mappings:
+                if mapping_field in mapping_row and pd.notna(mapping_row[mapping_field]):
+                    normalized_key = self._normalize_identifier(str(mapping_row[mapping_field]))
+                    if normalized_key:
+                        lookup_keys.append(normalized_key)
+                        mapping_lookup[normalized_key] = mapping_row.copy()
+                        logger.info(f"Added cross-field lookup: mapping[{mapping_field}]='{mapping_row[mapping_field]}' -> key='{normalized_key}'")
 
-        logger.info(f"Created mapping lookup with {len(mapping_lookup)} entries")
+            # If no direct mapping fields identified, try all user-selected keys in mapping data
+            if not mapping_fields:
+                for user_key in user_mapping_keys:
+                    if user_key in mapping_row and pd.notna(mapping_row[user_key]):
+                        normalized_key = self._normalize_identifier(str(mapping_row[user_key]))
+                        if normalized_key:
+                            lookup_keys.append(normalized_key)
+                            mapping_lookup[normalized_key] = mapping_row.copy()
+                            logger.info(f"Added user-key lookup: mapping[{user_key}]='{mapping_row[user_key]}' -> key='{normalized_key}'")
 
-        # Perform JOIN operation
+        logger.info(f"Created mapping lookup with {len(mapping_lookup)} entries from mapping fields: {mapping_fields} and cross-field mappings: {cross_field_mappings}")
+
+        # Perform JOIN operation with improved multi-key matching
         joined_results = []
         matched_count = 0
+        debug_info = []
 
-        for ocr_row in ocr_results:
-            # Try to find matching record using user-selected mapping keys
+        for i, ocr_row in enumerate(ocr_results):
+            # Try to find matching record using multiple strategies
             mapping_match = None
+            match_info = {"row_index": i, "attempts": [], "matched": False}
 
-            for mapping_key in user_mapping_keys:
-                # Find corresponding OCR field
-                ocr_field = None
-                for ocr_field_name, map_field_name in ocr_to_mapping_map.items():
-                    if map_field_name == mapping_key:
-                        ocr_field = ocr_field_name
-                        break
-
-                if not ocr_field:
-                    # If no explicit mapping, try lowercase version
-                    ocr_field = mapping_key.lower()
-
-                # Get value from OCR record
+            # Strategy 1: Try matching using OCR fields
+            for ocr_field in ocr_fields:
                 if ocr_field in ocr_row and pd.notna(ocr_row[ocr_field]):
                     lookup_value = self._normalize_identifier(str(ocr_row[ocr_field]))
+                    match_info["attempts"].append({
+                        "strategy": "ocr_field",
+                        "field": ocr_field,
+                        "original_value": str(ocr_row[ocr_field]),
+                        "normalized_value": lookup_value
+                    })
+
                     mapping_match = mapping_lookup.get(lookup_value)
                     if mapping_match:
                         matched_count += 1
+                        match_info["matched"] = True
+                        match_info["matched_strategy"] = f"ocr_field:{ocr_field}"
+                        match_info["matched_value"] = lookup_value
+                        logger.info(f"✓ Row {i}: Matched OCR field '{ocr_field}' value '{lookup_value}'")
                         break
+
+            # Strategy 1.5: Try cross-field mappings (ocr_field -> mapping_field)
+            if not mapping_match:
+                for ocr_field, mapping_field in cross_field_mappings:
+                    if ocr_field in ocr_row and pd.notna(ocr_row[ocr_field]):
+                        lookup_value = self._normalize_identifier(str(ocr_row[ocr_field]))
+                        match_info["attempts"].append({
+                            "strategy": "cross_field",
+                            "ocr_field": ocr_field,
+                            "mapping_field": mapping_field,
+                            "original_value": str(ocr_row[ocr_field]),
+                            "normalized_value": lookup_value
+                        })
+
+                        mapping_match = mapping_lookup.get(lookup_value)
+                        if mapping_match:
+                            matched_count += 1
+                            match_info["matched"] = True
+                            match_info["matched_strategy"] = f"cross_field:{ocr_field}->{mapping_field}"
+                            match_info["matched_value"] = lookup_value
+                            logger.info(f"✓ Row {i}: Cross-field match '{ocr_field}' -> '{mapping_field}' value '{lookup_value}'")
+                            break
+
+            # Strategy 2: If no match found with OCR fields, try all user keys directly
+            if not mapping_match:
+                for user_key in user_mapping_keys:
+                    if user_key in ocr_row and pd.notna(ocr_row[user_key]):
+                        lookup_value = self._normalize_identifier(str(ocr_row[user_key]))
+                        match_info["attempts"].append({
+                            "strategy": "user_key",
+                            "field": user_key,
+                            "original_value": str(ocr_row[user_key]),
+                            "normalized_value": lookup_value
+                        })
+
+                        mapping_match = mapping_lookup.get(lookup_value)
+                        if mapping_match:
+                            matched_count += 1
+                            match_info["matched"] = True
+                            match_info["matched_strategy"] = f"user_key:{user_key}"
+                            match_info["matched_value"] = lookup_value
+                            logger.info(f"✓ Row {i}: Matched user key '{user_key}' value '{lookup_value}'")
+                            break
+
+            # Strategy 3: Intelligent matching using MatchingEngine for unmatched records
+            if not mapping_match:
+                # Try intelligent matching for each mapping key against each OCR field
+                best_match_result = None
+                best_mapping_record = None
+
+                for user_key in user_mapping_keys:
+                    # Get all possible OCR field values to try matching against
+                    ocr_values_to_try = []
+
+                    # Add values from all OCR fields
+                    for ocr_field, ocr_value in ocr_row.items():
+                        if ocr_value and not pd.isna(ocr_value) and not ocr_field.startswith('__'):
+                            ocr_values_to_try.append((ocr_field, str(ocr_value)))
+
+                    # Try matching against all mapping records
+                    for mapping_record in mapping_data:
+                        if user_key in mapping_record and pd.notna(mapping_record[user_key]):
+                            mapping_value = str(mapping_record[user_key])
+
+                            # Try intelligent matching with each OCR field value
+                            for ocr_field, ocr_value in ocr_values_to_try:
+                                match_result = self.matching_engine.match(
+                                    ocr_value=ocr_value,
+                                    mapping_value=mapping_value,
+                                    strategy=MatchingStrategy.SMART,
+                                    field_name=user_key
+                                )
+
+                                if match_result.success:
+                                    # Found a successful intelligent match
+                                    if (best_match_result is None or
+                                        match_result.similarity_score > best_match_result.similarity_score):
+                                        best_match_result = match_result
+                                        best_mapping_record = mapping_record
+
+                                        # Log detailed match information
+                                        logger.info(f"🎯 Row {i}: Intelligent match found!")
+                                        logger.info(f"   Strategy: {match_result.strategy.value}")
+                                        logger.info(f"   OCR field '{ocr_field}': '{ocr_value}'")
+                                        logger.info(f"   Mapping field '{user_key}': '{mapping_value}'")
+                                        logger.info(f"   Similarity: {match_result.similarity_score:.3f}")
+                                        logger.info(f"   Reason: {match_result.match_reason}")
+                                        if match_result.extracted_parts:
+                                            logger.info(f"   Extracted parts: {match_result.extracted_parts}")
+
+                if best_match_result and best_mapping_record:
+                    # Use the best intelligent match found
+                    mapping_match = best_mapping_record
+                    matched_count += 1
+                    match_info["matched"] = True
+                    match_info["matched_strategy"] = f"intelligent:{best_match_result.strategy.value}"
+                    match_info["matched_value"] = best_match_result.mapping_value
+                    match_info["similarity_score"] = best_match_result.similarity_score
+                    match_info["match_reason"] = best_match_result.match_reason
+
+                    logger.info(f"✓ Row {i}: Intelligent match success - {best_match_result.match_reason}")
+                else:
+                    # No intelligent match found either
+                    match_info["unmatched_reason"] = "No match found using exact or intelligent strategies"
+                    logger.warning(f"✗ Row {i}: No match found for OCR record with item_id={ocr_row.get('__item_id', 'unknown')}")
+
+            debug_info.append(match_info)
 
             # Create joined record
             joined_row = {}
@@ -729,12 +1473,76 @@ class OrderProcessor:
 
             joined_results.append(joined_row)
 
-        logger.info(f"JOIN operation completed: {matched_count} matched out of {len(ocr_results)} total records")
+        # Enhanced validation and debug logging
+        unmatched_count = len(ocr_results) - matched_count
+        match_rate = (matched_count / len(ocr_results) * 100) if ocr_results else 0
+
+        logger.info(f"🎯 JOIN OPERATION SUMMARY:")
+        logger.info(f"   Total OCR records processed: {len(ocr_results)}")
+        logger.info(f"   Successful matches: {matched_count}")
+        logger.info(f"   Unmatched records: {unmatched_count}")
+        logger.info(f"   Match rate: {match_rate:.1f}%")
+        logger.info(f"   Mapping lookup table size: {len(mapping_lookup)}")
+
+        # Log details about unmatched records for debugging
+        unmatched_items = set()
+        for info in debug_info:
+            if not info["matched"]:
+                item_id = ocr_results[info["row_index"]].get('__item_id', 'unknown')
+                unmatched_items.add(item_id)
+
+        if unmatched_items:
+            logger.warning(f"⚠️  Unmatched records found in items: {sorted(unmatched_items)}")
+            logger.info(f"💡 Debug tip: Check if mapping keys '{user_mapping_keys}' exist in both OCR and mapping data")
+
+        # Validate that mapping columns are properly populated in results
+        if joined_results and mapping_columns:
+            populated_mapping_cols = 0
+            for col in mapping_columns:
+                if any(row.get(col, '') != '' for row in joined_results):
+                    populated_mapping_cols += 1
+
+            logger.info(f"📊 Mapping columns validation: {populated_mapping_cols}/{len(mapping_columns)} columns have data")
+
         return joined_results
+
+    def _are_semantically_equivalent(self, field1: str, field2: str) -> bool:
+        """Check if two field names are semantically equivalent"""
+        # Define semantic equivalence mappings (case-insensitive)
+        equivalences = {
+            'phone': ['service_number', 'servicenumber', 'number', 'mobile', 'tel', 'telephone', 'contact'],
+            'service_number': ['phone', 'servicenumber', 'number', 'mobile', 'service_no', 'svc_num'],
+            'account': ['account_no', 'accountno', 'acc_no', 'account_number', 'acct'],
+            'vendor': ['provider', 'carrier', 'operator', 'company'],
+            'staff': ['employee', 'person', 'name', 'user'],
+            'department': ['dept', 'division', 'section', 'shop'],
+            'account_no': ['account', 'accountno', 'acc_no', 'account_number', 'acct']
+        }
+
+        # Normalize field names: lowercase, remove underscores, dashes, spaces
+        field1_normalized = field1.lower().replace('_', '').replace('-', '').replace(' ', '')
+        field2_normalized = field2.lower().replace('_', '').replace('-', '').replace(' ', '')
+
+        # Direct match after normalization
+        if field1_normalized == field2_normalized:
+            return True
+
+        # Check equivalences in both directions
+        for key, synonyms in equivalences.items():
+            key_normalized = key.lower().replace('_', '').replace('-', '').replace(' ', '')
+            synonyms_normalized = [s.lower().replace('_', '').replace('-', '').replace(' ', '') for s in synonyms]
+
+            # Check if field1 matches key or synonyms, and field2 matches key or synonyms
+            if (field1_normalized == key_normalized or field1_normalized in synonyms_normalized):
+                if (field2_normalized == key_normalized or field2_normalized in synonyms_normalized):
+                    return True
+
+        return False
 
     def _normalize_identifier(self, identifier: str) -> str:
         """Normalize identifier for consistent matching"""
         import re
+        import pandas as pd
 
         if not identifier or pd.isna(identifier):
             return ""
@@ -795,11 +1603,11 @@ class OrderProcessor:
                     return
 
                 # Import cost allocation modules
-                from cost_allocation.mapping_processor import process_mapping_file
+                from cost_allocation.dynamic_mapping_processor import process_dynamic_mapping_file
                 from cost_allocation.matcher import SmartMatcher
 
                 # Process the mapping file to create unified lookup
-                mapping_result = process_mapping_file(mapping_file_content)
+                mapping_result = process_dynamic_mapping_file(mapping_file_content, order.mapping_file_path)
                 if not mapping_result['success']:
                     logger.error(f"Failed to process mapping file: {mapping_result.get('error', 'Unknown error')}")
                     return

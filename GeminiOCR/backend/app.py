@@ -56,7 +56,7 @@ from utils.force_delete_manager import ForceDeleteManager
 from utils.order_processor import start_order_processing, start_order_ocr_only_processing, start_order_mapping_only_processing
 
 # Cost allocation imports
-from cost_allocation.mapping_processor import process_mapping_file
+from cost_allocation.dynamic_mapping_processor import process_dynamic_mapping_file
 from cost_allocation.matcher import enrich_ocr_data
 from cost_allocation.netsuite_formatter import generate_netsuite_csv
 from cost_allocation.report_generator import generate_matching_report, generate_summary_report
@@ -3520,7 +3520,7 @@ async def process_unified_batch(batch_id: int, file_paths: List[str], company_co
                     
                     if mapping_content:
                         # Process mapping file
-                        mapping_result = process_mapping_file(mapping_content)
+                        mapping_result = process_dynamic_mapping_file(mapping_content, mapping_file_path)
                         
                         if mapping_result.get('success', False):
                             unified_map = mapping_result['unified_map']
@@ -4536,8 +4536,8 @@ def process_order_mapping_only(order_id: int, background_tasks: BackgroundTasks,
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
 
-        if order.status not in [OrderStatus.OCR_COMPLETED, OrderStatus.MAPPING]:
-            raise HTTPException(status_code=400, detail="Can only process mapping for orders in OCR_COMPLETED or MAPPING status")
+        if order.status not in [OrderStatus.OCR_COMPLETED, OrderStatus.MAPPING, OrderStatus.COMPLETED]:
+            raise HTTPException(status_code=400, detail="Can only process mapping for orders in OCR_COMPLETED, MAPPING, or COMPLETED status")
 
         # Check if mapping configuration is complete
         if not order.mapping_file_path:
@@ -5292,6 +5292,202 @@ def update_default_mapping_keys(
         raise HTTPException(status_code=500, detail=f"Failed to update default keys: {str(e)}")
 
 
+# =============================================================================
+# Auto-Mapping Configuration APIs
+# =============================================================================
+
+@app.get("/companies/{company_id}/document-types/{doc_type_id}/auto-mapping-config", response_model=dict)
+def get_auto_mapping_config(
+    company_id: int,
+    doc_type_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get auto-mapping configuration for a company and document type"""
+    try:
+        config = db.query(CompanyDocumentConfig).filter(
+            CompanyDocumentConfig.company_id == company_id,
+            CompanyDocumentConfig.doc_type_id == doc_type_id,
+            CompanyDocumentConfig.active == True
+        ).first()
+
+        if not config:
+            raise HTTPException(status_code=404, detail="Company document configuration not found")
+
+        return {
+            "company_id": company_id,
+            "doc_type_id": doc_type_id,
+            "auto_mapping_enabled": config.auto_mapping_enabled or False,
+            "default_mapping_keys": config.default_mapping_keys or [],
+            "cross_field_mappings": config.cross_field_mappings or {},
+            "updated_at": config.updated_at.isoformat() if config.updated_at else None
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get auto-mapping config: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get auto-mapping config: {str(e)}")
+
+
+@app.put("/companies/{company_id}/document-types/{doc_type_id}/auto-mapping-config", response_model=dict)
+def update_auto_mapping_config(
+    company_id: int,
+    doc_type_id: int,
+    request: dict,
+    db: Session = Depends(get_db)
+):
+    """Update auto-mapping configuration for a company and document type"""
+    try:
+        config = db.query(CompanyDocumentConfig).filter(
+            CompanyDocumentConfig.company_id == company_id,
+            CompanyDocumentConfig.doc_type_id == doc_type_id,
+            CompanyDocumentConfig.active == True
+        ).first()
+
+        if not config:
+            raise HTTPException(status_code=404, detail="Company document configuration not found")
+
+        # Validate input
+        auto_mapping_enabled = request.get('auto_mapping_enabled', False)
+        default_mapping_keys = request.get('default_mapping_keys', [])
+        cross_field_mappings = request.get('cross_field_mappings', {})
+
+        if not isinstance(auto_mapping_enabled, bool):
+            raise HTTPException(status_code=400, detail="auto_mapping_enabled must be a boolean")
+
+        if not isinstance(default_mapping_keys, list):
+            raise HTTPException(status_code=400, detail="default_mapping_keys must be a list")
+
+        if len(default_mapping_keys) > 3:
+            raise HTTPException(status_code=400, detail="Maximum 3 default mapping keys allowed")
+
+        if not isinstance(cross_field_mappings, dict):
+            raise HTTPException(status_code=400, detail="cross_field_mappings must be a dictionary")
+
+        # Update configuration
+        config.auto_mapping_enabled = auto_mapping_enabled
+        config.default_mapping_keys = default_mapping_keys
+        config.cross_field_mappings = cross_field_mappings
+        config.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        logger.info(f"Auto-mapping config updated for company {company_id}, doc_type {doc_type_id}")
+        return {
+            "company_id": company_id,
+            "doc_type_id": doc_type_id,
+            "auto_mapping_enabled": auto_mapping_enabled,
+            "default_mapping_keys": default_mapping_keys,
+            "cross_field_mappings": cross_field_mappings,
+            "message": "Auto-mapping configuration updated successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update auto-mapping config: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update auto-mapping config: {str(e)}")
+
+
+@app.post("/companies/{company_id}/document-types/{doc_type_id}/test-auto-mapping", response_model=dict)
+def test_auto_mapping_config(
+    company_id: int,
+    doc_type_id: int,
+    request: dict,
+    db: Session = Depends(get_db)
+):
+    """Test auto-mapping configuration with sample data"""
+    try:
+        # Get configuration
+        config = db.query(CompanyDocumentConfig).filter(
+            CompanyDocumentConfig.company_id == company_id,
+            CompanyDocumentConfig.doc_type_id == doc_type_id,
+            CompanyDocumentConfig.active == True
+        ).first()
+
+        if not config:
+            raise HTTPException(status_code=404, detail="Company document configuration not found")
+
+        if not config.auto_mapping_enabled:
+            raise HTTPException(status_code=400, detail="Auto-mapping is not enabled for this configuration")
+
+        # Get sample OCR data from request
+        sample_ocr_data = request.get('sample_ocr_data', [])
+        sample_mapping_data = request.get('sample_mapping_data', [])
+
+        if not sample_ocr_data or not sample_mapping_data:
+            raise HTTPException(status_code=400, detail="Both sample_ocr_data and sample_mapping_data are required")
+
+        # Simulate auto-mapping logic
+        from utils.order_processor import OrderProcessor
+        processor = OrderProcessor()
+
+        # Create a mock matching result
+        test_results = {
+            "auto_mapping_enabled": config.auto_mapping_enabled,
+            "default_mapping_keys": config.default_mapping_keys or [],
+            "cross_field_mappings": config.cross_field_mappings or {},
+            "sample_matches": [],
+            "match_statistics": {
+                "total_ocr_records": len(sample_ocr_data),
+                "potential_matches": 0,
+                "cross_field_matches": 0
+            }
+        }
+
+        # Basic matching simulation
+        default_keys = config.default_mapping_keys or []
+        cross_mappings = config.cross_field_mappings or {}
+
+        for ocr_record in sample_ocr_data[:5]:  # Limit to first 5 for testing
+            matches = []
+            for mapping_record in sample_mapping_data:
+                # Test direct key matches
+                for key in default_keys:
+                    if key in mapping_record and key in ocr_record:
+                        if str(ocr_record[key]).strip() == str(mapping_record[key]).strip():
+                            matches.append({
+                                "strategy": "direct_match",
+                                "field": key,
+                                "ocr_value": ocr_record[key],
+                                "mapping_value": mapping_record[key]
+                            })
+
+                # Test cross-field matches
+                for ocr_field, mapping_field in cross_mappings.items():
+                    if ocr_field in ocr_record and mapping_field in mapping_record:
+                        if str(ocr_record[ocr_field]).strip() == str(mapping_record[mapping_field]).strip():
+                            matches.append({
+                                "strategy": "cross_field_match",
+                                "ocr_field": ocr_field,
+                                "mapping_field": mapping_field,
+                                "ocr_value": ocr_record[ocr_field],
+                                "mapping_value": mapping_record[mapping_field]
+                            })
+
+            if matches:
+                test_results["sample_matches"].append({
+                    "ocr_record": ocr_record,
+                    "matches": matches
+                })
+                test_results["match_statistics"]["potential_matches"] += len(matches)
+
+        test_results["match_statistics"]["cross_field_matches"] = len([
+            m for match_set in test_results["sample_matches"]
+            for m in match_set["matches"]
+            if m["strategy"] == "cross_field_match"
+        ])
+
+        return test_results
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to test auto-mapping config: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to test auto-mapping config: {str(e)}")
+
+
 @app.get("/mapping-analytics", response_model=dict)
 def get_mapping_analytics(
     company_id: Optional[int] = None,
@@ -5566,6 +5762,176 @@ def rollback_mapping_to_version(
     except Exception as e:
         logger.error(f"Failed to rollback order {order_id} to version {request.target_version}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to rollback mapping: {str(e)}")
+
+
+# =============================================================================
+# Order Management APIs (Lock/Unlock, Restart OCR/Mapping)
+# =============================================================================
+
+@app.post("/orders/{order_id}/lock")
+def lock_order(order_id: int, db: Session = Depends(get_db)):
+    """Lock an order to prevent further modifications"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status == OrderStatus.LOCKED:
+            return {"message": "Order is already locked", "status": "LOCKED"}
+
+        order.status = OrderStatus.LOCKED
+        order.updated_at = datetime.utcnow()
+        db.commit()
+
+        logger.info(f"Order {order_id} locked successfully")
+        return {"message": "Order locked successfully", "status": "LOCKED"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to lock order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to lock order: {str(e)}")
+
+
+@app.post("/orders/{order_id}/unlock")
+def unlock_order(order_id: int, db: Session = Depends(get_db)):
+    """Unlock an order to allow modifications"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.LOCKED:
+            return {"message": "Order is not locked", "status": order.status.value}
+
+        # Determine appropriate status based on order completion
+        if order.completed_items == order.total_items and order.total_items > 0:
+            new_status = OrderStatus.COMPLETED
+        elif order.completed_items > 0:
+            new_status = OrderStatus.OCR_COMPLETED
+        else:
+            new_status = OrderStatus.DRAFT
+
+        order.status = new_status
+        order.updated_at = datetime.utcnow()
+        db.commit()
+
+        logger.info(f"Order {order_id} unlocked successfully, status set to {new_status.value}")
+        return {"message": "Order unlocked successfully", "status": new_status.value}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to unlock order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to unlock order: {str(e)}")
+
+
+@app.post("/orders/{order_id}/restart-ocr")
+def restart_ocr_processing(order_id: int, db: Session = Depends(get_db)):
+    """Restart OCR processing for an order"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status == OrderStatus.LOCKED:
+            raise HTTPException(status_code=400, detail="Cannot restart OCR for locked order")
+
+        # Reset order status and counters
+        order.status = OrderStatus.PROCESSING
+        order.completed_items = 0
+        order.failed_items = 0
+        order.error_message = None
+        order.updated_at = datetime.utcnow()
+
+        # Reset all order items to PENDING
+        for item in order.items:
+            item.status = OrderItemStatus.PENDING
+            item.ocr_result_json_path = None
+            item.ocr_result_csv_path = None
+            item.error_message = None
+            item.processing_started_at = None
+            item.processing_completed_at = None
+            item.processing_time_seconds = None
+            item.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        # Trigger OCR processing
+        from utils.order_processor import OrderProcessor
+        processor = OrderProcessor()
+
+        # Process asynchronously
+        import asyncio
+        def run_async():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(processor.process_order(order_id))
+            loop.close()
+
+        import threading
+        thread = threading.Thread(target=run_async)
+        thread.start()
+
+        logger.info(f"Order {order_id} OCR processing restarted")
+        return {"message": "OCR processing restarted successfully", "order_id": order_id, "status": "PROCESSING"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to restart OCR for order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to restart OCR: {str(e)}")
+
+
+@app.post("/orders/{order_id}/restart-mapping")
+def restart_mapping_processing(order_id: int, db: Session = Depends(get_db)):
+    """Restart mapping processing for an order"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status == OrderStatus.LOCKED:
+            raise HTTPException(status_code=400, detail="Cannot restart mapping for locked order")
+
+        if order.status not in [OrderStatus.OCR_COMPLETED, OrderStatus.MAPPING, OrderStatus.COMPLETED]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot restart mapping for order in {order.status} status"
+            )
+
+        # Reset mapping-related fields
+        order.status = OrderStatus.MAPPING
+        order.final_report_paths = None
+        order.error_message = None
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        # Trigger mapping processing
+        from utils.order_processor import OrderProcessor
+        processor = OrderProcessor()
+
+        # Process asynchronously
+        import asyncio
+        def run_async():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(processor.process_dynamic_mapping(order_id))
+            loop.close()
+
+        import threading
+        thread = threading.Thread(target=run_async)
+        thread.start()
+
+        logger.info(f"Order {order_id} mapping processing restarted")
+        return {"message": "Mapping processing restarted successfully", "order_id": order_id, "status": "MAPPING"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to restart mapping for order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to restart mapping: {str(e)}")
 
 
 @app.get("/orders/{order_id}/mapping-statistics")

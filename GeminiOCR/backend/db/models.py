@@ -125,6 +125,9 @@ class CompanyDocumentConfig(Base):
     storage_metadata = Column(JSON, nullable=True, comment='Additional metadata for storage backend (e.g., S3 bucket info, cache settings)')
     original_prompt_filename = Column(String(255), nullable=True, comment='Original filename of uploaded prompt file (e.g., invoice_prompt.txt)')
     original_schema_filename = Column(String(255), nullable=True, comment='Original filename of uploaded schema file (e.g., invoice_schema.json)')
+    default_mapping_keys = Column(JSON, nullable=True, default=list, comment='Default mapping keys for auto-mapping [key1, key2, key3]')
+    auto_mapping_enabled = Column(Boolean, default=False, comment='Whether to enable auto-mapping for this document type')
+    cross_field_mappings = Column(JSON, nullable=True, default=dict, comment='Cross-field mappings for semantic field mapping {"ocr_field": "mapping_field"}')
     active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -274,6 +277,7 @@ class OrderStatus(enum.Enum):
     MAPPING = "MAPPING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    LOCKED = "LOCKED"  # NEW: Order is locked, no modifications allowed
 
 
 class OrderItemStatus(enum.Enum):

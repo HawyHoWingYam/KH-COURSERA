@@ -16,6 +16,10 @@ interface ConfigType {
     updated_at: string;
     company_name?: string;  // Joined from companies
     type_name?: string;     // Joined from document_types
+    // Auto-mapping fields
+    auto_mapping_enabled?: boolean;
+    default_mapping_keys?: string[];
+    cross_field_mappings?: Record<string, string>;
 }
 // Get base URL and port from config
 const API_BASE_URL = '/api';
@@ -94,7 +98,11 @@ export default function ConfigsPage() {
         doc_type_id: 0,
         prompt_path: '',
         schema_path: '',
-        active: true
+        active: true,
+        // Auto-mapping fields
+        auto_mapping_enabled: false,
+        default_mapping_keys: [] as string[],
+        cross_field_mappings: {} as Record<string, string>
     });
 
     const [promptFile, setPromptFile] = useState<File | null>(null);
@@ -149,6 +157,73 @@ export default function ConfigsPage() {
         }));
     };
 
+    // Handle default mapping keys changes
+    const handleMappingKeyChange = (index: number, value: string) => {
+        setFormData(prev => {
+            const newKeys = [...prev.default_mapping_keys];
+            newKeys[index] = value;
+            return { ...prev, default_mapping_keys: newKeys };
+        });
+    };
+
+    // Add new mapping key (max 3)
+    const addMappingKey = () => {
+        if (formData.default_mapping_keys.length < 3) {
+            setFormData(prev => ({
+                ...prev,
+                default_mapping_keys: [...prev.default_mapping_keys, '']
+            }));
+        }
+    };
+
+    // Remove mapping key
+    const removeMappingKey = (index: number) => {
+        setFormData(prev => ({
+            ...prev,
+            default_mapping_keys: prev.default_mapping_keys.filter((_, i) => i !== index)
+        }));
+    };
+
+    // Handle cross-field mapping changes
+    const handleCrossFieldMappingChange = (ocrField: string, mappingField: string, oldOcrField?: string) => {
+        setFormData(prev => {
+            const newMappings = { ...prev.cross_field_mappings };
+
+            // Remove old mapping if OCR field changed
+            if (oldOcrField && oldOcrField !== ocrField) {
+                delete newMappings[oldOcrField];
+            }
+
+            // Add or update mapping - keep the mapping even if mappingField is empty
+            if (ocrField) {
+                newMappings[ocrField] = mappingField || '';
+            }
+
+            return { ...prev, cross_field_mappings: newMappings };
+        });
+    };
+
+    // Add new cross-field mapping
+    const addCrossFieldMapping = () => {
+        const tempKey = `temp_${Date.now()}`;
+        setFormData(prev => ({
+            ...prev,
+            cross_field_mappings: {
+                ...prev.cross_field_mappings,
+                [tempKey]: ''
+            }
+        }));
+    };
+
+    // Remove cross-field mapping
+    const removeCrossFieldMapping = (ocrField: string) => {
+        setFormData(prev => {
+            const newMappings = { ...prev.cross_field_mappings };
+            delete newMappings[ocrField];
+            return { ...prev, cross_field_mappings: newMappings };
+        });
+    };
+
     // Handle file selection
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, fileType: 'prompt' | 'schema') => {
         if (e.target.files && e.target.files[0]) {
@@ -161,18 +236,72 @@ export default function ConfigsPage() {
     };
 
     // Start editing a config
-    const handleEdit = (config: ConfigType) => {
+    const handleEdit = async (config: ConfigType) => {
         setEditingConfig(config);
+
+        // Load auto-mapping configuration
+        let autoMappingData = {
+            auto_mapping_enabled: false,
+            default_mapping_keys: [] as string[],
+            cross_field_mappings: {} as Record<string, string>
+        };
+
+        try {
+            const autoMappingRes = await fetch(`${API_BASE_URL}/companies/${config.company_id}/document-types/${config.doc_type_id}/auto-mapping-config`);
+            if (autoMappingRes.ok) {
+                autoMappingData = await autoMappingRes.json();
+            }
+        } catch (err) {
+            console.warn('Failed to load auto-mapping configuration:', err);
+        }
+
         setFormData({
             company_id: config.company_id,
             doc_type_id: config.doc_type_id,
             prompt_path: config.prompt_path,
             schema_path: config.schema_path,
-            active: config.active
+            active: config.active,
+            // Auto-mapping fields
+            auto_mapping_enabled: autoMappingData.auto_mapping_enabled || false,
+            default_mapping_keys: autoMappingData.default_mapping_keys || [],
+            cross_field_mappings: autoMappingData.cross_field_mappings || {}
         });
         setIsCreating(false);
         setPromptFile(null);
         setSchemaFile(null);
+    };
+
+    // Validate cross-field mappings before saving
+    const validateCrossFieldMappings = () => {
+        const invalidMappings: string[] = [];
+        const temporaryMappings: string[] = [];
+
+        Object.entries(formData.cross_field_mappings).forEach(([ocrField, mappingField]) => {
+            // Check for temporary keys
+            if (ocrField.startsWith('temp_')) {
+                temporaryMappings.push(ocrField);
+            }
+            // Check for empty fields
+            if (!ocrField.trim() || !mappingField.trim()) {
+                invalidMappings.push(`${ocrField || '[empty]'} → ${mappingField || '[empty]'}`);
+            }
+        });
+
+        return { invalidMappings, temporaryMappings };
+    };
+
+    // Clean cross-field mappings by removing temporary keys and empty mappings
+    const cleanCrossFieldMappings = (mappings: Record<string, string>) => {
+        const cleaned: Record<string, string> = {};
+
+        Object.entries(mappings).forEach(([ocrField, mappingField]) => {
+            // Only include mappings that are not temporary and have both fields filled
+            if (!ocrField.startsWith('temp_') && ocrField.trim() && mappingField.trim()) {
+                cleaned[ocrField.trim()] = mappingField.trim();
+            }
+        });
+
+        return cleaned;
     };
 
     // Handle form submission
@@ -180,6 +309,19 @@ export default function ConfigsPage() {
         e.preventDefault();
 
         try {
+            // Validate cross-field mappings
+            const { invalidMappings, temporaryMappings } = validateCrossFieldMappings();
+
+            if (temporaryMappings.length > 0) {
+                setError('Please complete all cross-field mappings. Some fields are still incomplete.');
+                return;
+            }
+
+            if (invalidMappings.length > 0) {
+                setError(`Please complete the following cross-field mappings: ${invalidMappings.join(', ')}`);
+                return;
+            }
+
             const updatedFormData = { ...formData };
 
             // If files were uploaded, upload them first
@@ -221,6 +363,25 @@ export default function ConfigsPage() {
                 const updated = await updateConfig(editingConfig.config_id, {
                     prompt_path, schema_path, active
                 });
+
+                // Update auto-mapping configuration with cleaned data
+                const cleanedCrossFieldMappings = cleanCrossFieldMappings(formData.cross_field_mappings);
+                const autoMappingConfig = {
+                    auto_mapping_enabled: formData.auto_mapping_enabled,
+                    default_mapping_keys: formData.default_mapping_keys,
+                    cross_field_mappings: cleanedCrossFieldMappings
+                };
+
+                const response = await fetch(`${API_BASE_URL}/companies/${editingConfig.company_id}/document-types/${editingConfig.doc_type_id}/auto-mapping-config`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(autoMappingConfig)
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to update auto-mapping configuration');
+                }
+
                 setConfigs(prev =>
                     prev.map(c => c.config_id === editingConfig.config_id ? updated : c)
                 );
@@ -228,6 +389,25 @@ export default function ConfigsPage() {
             } else {
                 // Create new config
                 const created = await createConfig(updatedFormData);
+
+                // Set auto-mapping configuration for new config with cleaned data
+                const cleanedCrossFieldMappings = cleanCrossFieldMappings(formData.cross_field_mappings);
+                const autoMappingConfig = {
+                    auto_mapping_enabled: formData.auto_mapping_enabled,
+                    default_mapping_keys: formData.default_mapping_keys,
+                    cross_field_mappings: cleanedCrossFieldMappings
+                };
+
+                const response = await fetch(`${API_BASE_URL}/companies/${formData.company_id}/document-types/${formData.doc_type_id}/auto-mapping-config`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(autoMappingConfig)
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to set auto-mapping configuration');
+                }
+
                 setConfigs(prev => [...prev, created]);
                 setIsCreating(false);
             }
@@ -238,7 +418,11 @@ export default function ConfigsPage() {
                 doc_type_id: 0,
                 prompt_path: '',
                 schema_path: '',
-                active: true
+                active: true,
+                // Auto-mapping fields
+                auto_mapping_enabled: false,
+                default_mapping_keys: [],
+                cross_field_mappings: {}
             });
             setPromptFile(null);
             setSchemaFile(null);
@@ -286,7 +470,11 @@ export default function ConfigsPage() {
             doc_type_id: 0,
             prompt_path: '',
             schema_path: '',
-            active: true
+            active: true,
+            // Auto-mapping fields
+            auto_mapping_enabled: false,
+            default_mapping_keys: [],
+            cross_field_mappings: {}
         });
         setPromptFile(null);
         setSchemaFile(null);
@@ -501,6 +689,139 @@ export default function ConfigsPage() {
                                 <p className="mt-1 text-sm text-green-600">
                                     Selected: {schemaFile.name}
                                 </p>
+                            )}
+                        </div>
+
+                        {/* Auto-Mapping Configuration Section */}
+                        <div className="border-t pt-6">
+                            <h3 className="text-lg font-medium mb-4 text-gray-900">Auto-Mapping Configuration</h3>
+
+                            {/* Enable Auto-Mapping Toggle */}
+                            <div className="flex items-center mb-4">
+                                <input
+                                    type="checkbox"
+                                    id="auto_mapping_enabled"
+                                    name="auto_mapping_enabled"
+                                    checked={formData.auto_mapping_enabled}
+                                    onChange={handleInputChange}
+                                    className="mr-2"
+                                />
+                                <label htmlFor="auto_mapping_enabled" className="text-gray-700">
+                                    Enable Auto-Mapping
+                                </label>
+                                <span className="ml-2 text-sm text-gray-500">
+                                    (Automatically apply mapping keys when orders have no user-configured keys)
+                                </span>
+                            </div>
+
+                            {/* Default Mapping Keys (1-3 priority) */}
+                            {formData.auto_mapping_enabled && (
+                                <div className="mb-4">
+                                    <label className="block text-gray-700 mb-2">
+                                        Default Mapping Keys (Priority 1-3)
+                                    </label>
+                                    <div className="space-y-2">
+                                        {formData.default_mapping_keys.map((key, index) => (
+                                            <div key={index} className="flex items-center space-x-2">
+                                                <span className="text-sm text-gray-500 w-16">
+                                                    Priority {index + 1}:
+                                                </span>
+                                                <input
+                                                    type="text"
+                                                    value={key}
+                                                    onChange={(e) => handleMappingKeyChange(index, e.target.value)}
+                                                    placeholder={`Mapping key ${index + 1}`}
+                                                    className="flex-1 border border-gray-300 rounded px-3 py-2"
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => removeMappingKey(index)}
+                                                    className="text-red-600 hover:text-red-800 text-sm px-2 py-1"
+                                                >
+                                                    Remove
+                                                </button>
+                                            </div>
+                                        ))}
+                                        {formData.default_mapping_keys.length < 3 && (
+                                            <button
+                                                type="button"
+                                                onClick={addMappingKey}
+                                                className="text-blue-600 hover:text-blue-800 text-sm"
+                                            >
+                                                + Add Mapping Key ({formData.default_mapping_keys.length}/3)
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Cross-Field Mappings */}
+                            {formData.auto_mapping_enabled && (
+                                <div className="mb-4">
+                                    <label className="block text-gray-700 mb-2">
+                                        Cross-Field Mappings
+                                    </label>
+                                    <p className="text-sm text-gray-500 mb-3">
+                                        Map OCR field names to different mapping field names (e.g., "service_number" → "PHONE")
+                                    </p>
+                                    <div className="space-y-2">
+                                        {Object.entries(formData.cross_field_mappings).map(([ocrField, mappingField], index) => {
+                                            const isTemporary = ocrField.startsWith('temp_');
+                                            const hasEmptyFields = !ocrField.trim() || !mappingField.trim();
+                                            const hasValidationError = isTemporary || hasEmptyFields;
+
+                                            return (
+                                            <div key={index} className="space-y-1">
+                                                <div className="flex items-center space-x-2">
+                                                    <input
+                                                        type="text"
+                                                        value={ocrField}
+                                                        onChange={(e) => handleCrossFieldMappingChange(e.target.value, mappingField, ocrField)}
+                                                        placeholder="OCR field name"
+                                                        className={`flex-1 border rounded px-3 py-2 ${
+                                                            isTemporary || !ocrField.trim()
+                                                                ? 'border-red-300 bg-red-50'
+                                                                : 'border-gray-300'
+                                                        }`}
+                                                    />
+                                                    <span className="text-gray-500">→</span>
+                                                    <input
+                                                        type="text"
+                                                        value={mappingField}
+                                                        onChange={(e) => handleCrossFieldMappingChange(ocrField, e.target.value)}
+                                                        placeholder="Mapping field name"
+                                                        className={`flex-1 border rounded px-3 py-2 ${
+                                                            !mappingField.trim()
+                                                                ? 'border-red-300 bg-red-50'
+                                                                : 'border-gray-300'
+                                                        }`}
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => removeCrossFieldMapping(ocrField)}
+                                                        className="text-red-600 hover:text-red-800 text-sm px-2 py-1"
+                                                    >
+                                                        Remove
+                                                    </button>
+                                                </div>
+                                                {hasValidationError && (
+                                                    <div className="text-xs text-red-600 ml-1">
+                                                        {isTemporary && "Please enter a real OCR field name"}
+                                                        {!isTemporary && hasEmptyFields && "Both fields are required"}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            );
+                                        })}
+                                        <button
+                                            type="button"
+                                            onClick={addCrossFieldMapping}
+                                            className="text-blue-600 hover:text-blue-800 text-sm"
+                                        >
+                                            + Add Cross-Field Mapping
+                                        </button>
+                                    </div>
+                                </div>
                             )}
                         </div>
 
