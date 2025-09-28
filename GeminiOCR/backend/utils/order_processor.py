@@ -1725,7 +1725,18 @@ class OrderProcessor:
                             enriched_record = self._apply_priority_mapping(
                                 record, unified_map, item_mapping_keys, order_id, item.item_id
                             )
+
+                            # 🔍 DEBUG: Check enriched_record before adding to list
+                            mapping_keys_before_append = [k for k in enriched_record.keys() if k in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']]
+                            logger.info(f"🔍 BEFORE APPEND: enriched_record has mapping keys: {mapping_keys_before_append}")
+
                             all_enriched_results.append(enriched_record)
+
+                            # 🔍 DEBUG: Check the record after adding to list
+                            if all_enriched_results:
+                                last_record = all_enriched_results[-1]
+                                mapping_keys_after_append = [k for k in last_record.keys() if k in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']]
+                                logger.info(f"🔍 AFTER APPEND: last record in list has mapping keys: {mapping_keys_after_append}")
 
                         logger.info(f"Processed {len(item_records)} records from item {item.item_id}")
 
@@ -1736,6 +1747,22 @@ class OrderProcessor:
                 if not all_enriched_results:
                     logger.error(f"No enriched results generated for order {order_id}")
                     return
+
+                # 🔍 FINAL DEBUG: Check all_enriched_results before passing to report generation
+                logger.info(f"🔍 FINAL CHECK: all_enriched_results has {len(all_enriched_results)} records")
+                if all_enriched_results:
+                    # Check first, middle, and last records
+                    for idx, label in [(0, "FIRST"), (len(all_enriched_results)//2, "MIDDLE"), (-1, "LAST")]:
+                        if idx < len(all_enriched_results):
+                            sample_record = all_enriched_results[idx]
+                            all_columns = list(sample_record.keys())
+                            mapping_keys = [k for k in all_columns if k in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']]
+                            logger.info(f"🔍 FINAL CHECK: {label} record mapping keys: {mapping_keys}")
+
+                    # Count records with mapping data
+                    records_with_mapping = sum(1 for record in all_enriched_results
+                                             if any(k in record for k in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']))
+                    logger.info(f"🔍 FINAL CHECK: {records_with_mapping} out of {len(all_enriched_results)} records have mapping fields")
 
                 # Generate final mapped reports
                 await self._generate_mapped_reports(order_id, all_enriched_results)
@@ -1860,10 +1887,15 @@ class OrderProcessor:
                 logger.info(f"🔄 Copying mapping data to enriched_record: {match_data}")
 
                 # Copy all mapping file data to enriched record
+                mapping_fields_copied = []
                 for mapping_field, mapping_value in match_data.items():
                     if mapping_field not in ['Source']:  # Skip internal fields
                         enriched_record[mapping_field] = mapping_value
-                        logger.debug(f"   Copied: {mapping_field} = {mapping_value}")
+                        mapping_fields_copied.append(f"{mapping_field}={mapping_value}")
+                        logger.info(f"   📋 Copied: {mapping_field} = {mapping_value}")
+
+                logger.info(f"🎯 MAPPING COPY COMPLETE: Copied {len(mapping_fields_copied)} fields")
+                logger.info(f"🎯 MAPPING FIELDS: {mapping_fields_copied}")
 
                 # Add debug/tracking fields
                 enriched_record['Department'] = match_data.get('Department', 'Retail')
@@ -1875,6 +1907,12 @@ class OrderProcessor:
                 enriched_record['MatchedValue'] = key_value
                 enriched_record['MatchedKey'] = mapping_key
                 enriched_record['ActualFieldUsed'] = actual_field_used
+
+                # Log final enriched_record state
+                mapping_keys_in_record = [k for k in enriched_record.keys() if k in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']]
+                logger.info(f"🏁 ENRICHED RECORD STATE: total_fields={len(enriched_record)}")
+                logger.info(f"🏁 MAPPING KEYS IN RECORD: {mapping_keys_in_record}")
+                logger.info(f"🏁 ALL KEYS: {list(enriched_record.keys())[:20]}...")  # Show first 20 keys
 
                 if auto_mapping_enabled and actual_field_used != mapping_key:
                     logger.info(f"✅ Auto mapping success: OCR[{actual_field_used}]={key_value} ↔ User[{mapping_key}] -> shop {match_data.get('ShopCode', 'Unknown')}")
@@ -1901,16 +1939,48 @@ class OrderProcessor:
                 'Matched', 'MatchedValue', 'MatchedKey', 'ActualFieldUsed'
             }
 
-            # Get all available columns from first record
+            # Get all available columns from ALL records (critical fix for mapping columns)
             if enriched_results:
-                all_columns = set(enriched_results[0].keys())
+                all_columns = set()
+                # IMPORTANT: Check ALL records, not just first one, as mapping columns may only exist in some records
+                for record in enriched_results:
+                    all_columns.update(record.keys())
+
+                # Check for mapping columns specifically
+                mapping_cols_found = [col for col in all_columns if col in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']]
+
                 # Filter out debug columns to get business columns
                 business_columns = [col for col in all_columns if col not in debug_columns]
+
+                # CRITICAL FIX: Ensure mapping columns are ALWAYS included even if they appear in few records
+                for mapping_col in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']:
+                    if mapping_col in all_columns and mapping_col not in business_columns:
+                        business_columns.append(mapping_col)
+                        logger.info(f"📊 FORCE-ADDED missing mapping column: {mapping_col}")
+
                 business_columns.sort()  # Sort for consistent order
 
+                logger.info(f"📊 REPORT GENERATION DEBUG:")
+                logger.info(f"📊 Total enriched_results records: {len(enriched_results)}")
                 logger.info(f"📊 All columns in enriched_results: {sorted(all_columns)}")
+                logger.info(f"📊 Mapping columns found: {mapping_cols_found}")
                 logger.info(f"📊 Filtered debug columns: {sorted(debug_columns & all_columns)}")
-                logger.info(f"📊 Business columns: {business_columns}")
+                logger.info(f"📊 Business columns (FIXED - includes mapping): {business_columns}")
+                logger.info(f"📊 GUARANTEED MAPPING COLUMNS IN CSV: {[col for col in business_columns if col in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']]}")
+
+                # Sample records to check mapping data (check first, middle, last)
+                sample_indices = [0, len(enriched_results)//2, -1] if len(enriched_results) > 1 else [0]
+                for idx in sample_indices:
+                    if idx < len(enriched_results):
+                        record = enriched_results[idx]
+                        mapping_sample = {k:v for k,v in record.items() if k in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']}
+                        position = "FIRST" if idx == 0 else "MIDDLE" if idx == len(enriched_results)//2 else "LAST"
+                        logger.info(f"📊 {position} record ({idx}) mapping fields: {mapping_sample}")
+
+                # Count enriched_results records with mapping data
+                report_records_with_mapping = sum(1 for record in enriched_results
+                                                if any(k in record for k in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']))
+                logger.info(f"📊 REPORT LEVEL: {report_records_with_mapping} out of {len(enriched_results)} records have mapping fields")
             else:
                 business_columns = []
                 logger.warning("📊 No enriched_results to extract columns from")
