@@ -970,7 +970,7 @@ export default function OrderDetailsPage() {
               className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white py-2 px-4 rounded font-medium"
               title="Start mapping processing (OCR already completed)"
             >
-              {isStartingMapping ? '正在启动映射处理...' : '开始映射处理'}
+              {isStartingMapping ? 'Map Processing...' : 'Start Mapping'}
             </button>
           )}
         </div>
