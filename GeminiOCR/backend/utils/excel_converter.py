@@ -2,7 +2,8 @@ import pandas as pd
 import json
 import os
 import logging
-from typing import Dict, List, Any, Union
+import itertools
+from typing import Dict, List, Any, Union, Tuple
 
 # --- 日誌設定 (Setup Logging) ---
 # 建立一個 logger，用於在程式執行時輸出資訊
@@ -176,6 +177,367 @@ def json_to_excel(
         logger.error(f"建立 Excel 檔案時發生嚴重錯誤: {str(e)}")
         raise
 
+    return output_path
+
+
+# --- 新增：通用深度扁平化函式 (Universal Deep Flattening Functions) ---
+
+def find_all_arrays(data: Any, path: str = "") -> List[Tuple[str, List]]:
+    """
+    遞迴地找出所有的陣列及其路徑位置。
+    
+    Args:
+        data: 要分析的資料
+        path: 當前路徑
+        
+    Returns:
+        List of tuples containing (path, array_data)
+    """
+    arrays = []
+    
+    if isinstance(data, dict):
+        for key, value in data.items():
+            new_path = f"{path}.{key}" if path else key
+            if isinstance(value, list) and value:
+                # 檢查是否為包含字典的陣列（需要展開的陣列）
+                if all(isinstance(item, dict) for item in value):
+                    arrays.append((new_path, value))
+                # 遞迴檢查陣列中的每個元素
+                for i, item in enumerate(value):
+                    item_path = f"{new_path}[{i}]"
+                    arrays.extend(find_all_arrays(item, item_path))
+            else:
+                arrays.extend(find_all_arrays(value, new_path))
+    elif isinstance(data, list):
+        for i, item in enumerate(data):
+            item_path = f"{path}[{i}]" if path else f"[{i}]"
+            arrays.extend(find_all_arrays(item, item_path))
+    
+    return arrays
+
+
+def extract_primitives(data: Any, path: str = "") -> Dict[str, Any]:
+    """
+    提取所有原始值（非陣列、非物件）及其路徑。
+    
+    Args:
+        data: 要分析的資料
+        path: 當前路徑
+        
+    Returns:
+        Dictionary mapping paths to primitive values
+    """
+    primitives = {}
+    
+    if isinstance(data, dict):
+        for key, value in data.items():
+            new_path = f"{path}.{key}" if path else key
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                primitives[new_path] = value
+            elif isinstance(value, dict):
+                primitives.update(extract_primitives(value, new_path))
+            # 忽略陣列，它們會被單獨處理
+    elif isinstance(data, (str, int, float, bool)) or data is None:
+        primitives[path] = data
+    
+    return primitives
+
+
+def generate_array_combinations(arrays_info: List[Tuple[str, List]]) -> List[Dict[str, Any]]:
+    """
+    為所有陣列生成笛卡爾積組合。
+    
+    Args:
+        arrays_info: 陣列資訊列表 [(路徑, 陣列資料)]
+        
+    Returns:
+        所有可能組合的列表
+    """
+    if not arrays_info:
+        return [{}]
+    
+    combinations = []
+    
+    # 準備所有陣列的索引範圍
+    array_ranges = []
+    for path, array_data in arrays_info:
+        array_ranges.append([(path, i, item) for i, item in enumerate(array_data)])
+    
+    # 生成笛卡爾積
+    for combination in itertools.product(*array_ranges):
+        combo_data = {}
+        for path, index, item in combination:
+            # 提取該陣列項目的所有原始值
+            item_primitives = extract_primitives(item, path)
+            combo_data.update(item_primitives)
+        combinations.append(combo_data)
+    
+    return combinations
+
+
+def deep_flatten_json_universal(data: Any, parent_key: str = "", sep: str = ".") -> List[Dict[str, Any]]:
+    """
+    通用深度扁平化函式，將任何巢狀 JSON 結構完全展開到最深層級。
+    
+    這個函式會遞迴地展開所有陣列，確保每一行代表最深層級的一個項目。
+    與原始演算法不同的是，這個版本會持續深入到最深層級。
+    
+    Args:
+        data: 輸入的 JSON 資料
+        parent_key: 父級鍵名（用於維持層次結構）
+        sep: 路徑分隔符
+        
+    Returns:
+        完全扁平化的記錄列表
+    """
+    flattened_records = []
+    
+    # 如果輸入是陣列，遞迴處理每個項目
+    if isinstance(data, list):
+        for item in data:
+            flattened_records.extend(deep_flatten_json_universal(item, parent_key, sep))
+        return flattened_records
+    
+    # 如果不是字典，直接返回原始值
+    if not isinstance(data, dict):
+        return [{parent_key: data}] if parent_key else [{"value": data}]
+    
+    # 分離簡單值和需要展開的項目
+    simple_items = {}
+    expandable_items = {}
+    
+    for k, v in data.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        
+        if isinstance(v, list) and v:
+            # 檢查是否為包含字典的陣列（需要展開的陣列）
+            if all(isinstance(i, dict) for i in v):
+                expandable_items[new_key] = v
+            else:
+                # 包含原始值的陣列，直接當作簡單值處理
+                simple_items[new_key] = v
+        elif isinstance(v, dict):
+            # 嵌套字典，展開其內容
+            expandable_items[new_key] = [v]  # 將字典包裝成單項目陣列，方便統一處理
+        else:
+            # 原始值
+            simple_items[new_key] = v
+    
+    # 如果沒有需要展開的項目，返回簡單值
+    if not expandable_items:
+        return [simple_items]
+    
+    # 處理展開邏輯 - 類似原始演算法，但確保到達最深層級
+    # 選擇第一個需要展開的項目
+    first_key, first_array = list(expandable_items.items())[0]
+    remaining_expandable = {k: v for i, (k, v) in enumerate(expandable_items.items()) if i > 0}
+    
+    # 為第一個陣列的每個項目建立記錄
+    for item in first_array:
+        # 建立基礎記錄（包含簡單值）
+        base_record = simple_items.copy()
+        
+        # 將目前項目與剩餘的展開項目結合
+        combined_item = {**item, **remaining_expandable}
+        
+        # 遞迴處理結合後的項目
+        sub_records = deep_flatten_json_universal(combined_item, parent_key, sep)
+        
+        # 將基礎記錄與子記錄結合
+        for sub_record in sub_records:
+            final_record = {**base_record, **sub_record}
+            flattened_records.append(final_record)
+    
+    return flattened_records
+
+
+def ultra_deep_flatten_json(data: Any, parent_key: str = "", sep: str = ".", max_depth: int = 20) -> List[Dict[str, Any]]:
+    """
+    Ultra-comprehensive JSON flattening with explicit path-based naming and depth control.
+    
+    This function ensures EVERY nested object and array is completely flattened with 
+    full path traceability in column names.
+    
+    Args:
+        data: Input JSON data
+        parent_key: Parent key for maintaining hierarchy
+        sep: Path separator for column naming
+        max_depth: Maximum recursion depth to prevent infinite loops
+        
+    Returns:
+        List of completely flattened records with explicit path-based column names
+    """
+    if max_depth <= 0:
+        logger.warning(f"Maximum recursion depth reached, truncating further expansion")
+        return [{"_truncated_path": parent_key, "_value": str(data)[:100]}]
+    
+    flattened_records = []
+    
+    # Handle arrays
+    if isinstance(data, list):
+        if not data:  # Empty array
+            return [{f"{parent_key}_empty_array": True}] if parent_key else [{"empty_array": True}]
+        
+        for idx, item in enumerate(data):
+            array_key = f"{parent_key}[{idx}]" if parent_key else f"item[{idx}]"
+            sub_records = ultra_deep_flatten_json(item, array_key, sep, max_depth - 1)
+            flattened_records.extend(sub_records)
+        return flattened_records
+    
+    # Handle non-dict primitives
+    if not isinstance(data, dict):
+        key = parent_key if parent_key else "value"
+        return [{key: data}]
+    
+    # Handle empty dict
+    if not data:
+        return [{f"{parent_key}_empty_object": True}] if parent_key else [{"empty_object": True}]
+    
+    # Separate primitive values from complex structures
+    primitives = {}
+    complex_structures = {}
+    
+    for key, value in data.items():
+        full_key = f"{parent_key}{sep}{key}" if parent_key else key
+        
+        if isinstance(value, (str, int, float, bool, type(None))):
+            primitives[full_key] = value
+        elif isinstance(value, list):
+            if not value:  # Empty list
+                primitives[f"{full_key}_empty_list"] = True
+            elif all(isinstance(item, (str, int, float, bool, type(None))) for item in value):
+                # List of primitives - convert to string or keep as list
+                primitives[f"{full_key}_list"] = value
+            else:
+                # List containing complex objects
+                complex_structures[full_key] = value
+        elif isinstance(value, dict):
+            if not value:  # Empty dict
+                primitives[f"{full_key}_empty_dict"] = True
+            else:
+                complex_structures[full_key] = value
+        else:
+            # Handle other types (e.g., custom objects)
+            primitives[f"{full_key}_other"] = str(value)
+    
+    # If no complex structures, return primitives
+    if not complex_structures:
+        return [primitives]
+    
+    # Handle complex structures using Cartesian product approach
+    # This ensures ALL combinations are captured
+    structure_combinations = []
+    
+    for struct_key, struct_value in complex_structures.items():
+        struct_records = ultra_deep_flatten_json(struct_value, struct_key, sep, max_depth - 1)
+        structure_combinations.append(struct_records)
+    
+    # Generate Cartesian product of all structure combinations
+    if structure_combinations:
+        # Use itertools.product for Cartesian product
+        import itertools
+        for combination in itertools.product(*structure_combinations):
+            # Merge all records in this combination
+            merged_record = primitives.copy()
+            for record in combination:
+                merged_record.update(record)
+            flattened_records.append(merged_record)
+    else:
+        flattened_records.append(primitives)
+    
+    return flattened_records
+
+
+def json_to_csv(
+    json_data: Union[Dict, List], output_path: str, doc_type_code: str = "data"
+) -> str:
+    """
+    將 JSON 資料轉換為完全扁平化的 CSV 檔案。
+    
+    Args:
+        json_data: 輸入的 JSON 資料
+        output_path: CSV 檔案的儲存路徑
+        doc_type_code: 用於日誌的文件類型代碼
+        
+    Returns:
+        輸出檔案的路徑
+    """
+    logger.info("開始將 JSON 轉換為深度扁平化 CSV...")
+    
+    # 使用新的通用深度扁平化函式
+    flattened_data = deep_flatten_json_universal(json_data)
+    
+    if not flattened_data:
+        logger.warning("在 JSON 中找不到可處理的資料，將建立一個空的 CSV 檔案。")
+        df = pd.DataFrame({"Message": ["No data found in the JSON input."]})
+    else:
+        # 將扁平化的記錄列表轉換為 pandas DataFrame
+        df = pd.DataFrame(flattened_data)
+        logger.info(f"資料轉換完成，共產生 {len(df)} 筆記錄，{len(df.columns)} 個欄位。")
+        logger.info(f"欄位名稱: {list(df.columns)}")
+    
+    try:
+        # 將 DataFrame 寫入 CSV 檔案
+        df.to_csv(output_path, index=False, encoding='utf-8-sig')
+        logger.info(f"成功建立 CSV 檔案: {output_path}")
+        
+    except Exception as e:
+        logger.error(f"建立 CSV 檔案時發生錯誤: {str(e)}")
+        raise
+    
+    return output_path
+
+
+def json_to_csv_ultra_flat(
+    json_data: Union[Dict, List], output_path: str, doc_type_code: str = "data"
+) -> str:
+    """
+    將 JSON 資料轉換為極度扁平化的 CSV 檔案，使用 ultra_deep_flatten_json 函式。
+    提供完整的路徑追蹤和最大化的資料展開。
+    
+    Args:
+        json_data: 輸入的 JSON 資料
+        output_path: CSV 檔案的儲存路徑
+        doc_type_code: 用於日誌的文件類型代碼
+        
+    Returns:
+        輸出檔案的路徑
+    """
+    logger.info("開始將 JSON 轉換為極度扁平化 CSV (Ultra-flat mode)...")
+    
+    # 使用極度扁平化函式
+    flattened_data = ultra_deep_flatten_json(json_data)
+    
+    if not flattened_data:
+        logger.warning("在 JSON 中找不到可處理的資料，將建立一個空的 CSV 檔案。")
+        df = pd.DataFrame({"Message": ["No data found in the JSON input."]})
+    else:
+        # 將扁平化的記錄列表轉換為 pandas DataFrame
+        df = pd.DataFrame(flattened_data)
+        logger.info(f"極度扁平化完成，共產生 {len(df)} 筆記錄，{len(df.columns)} 個欄位。")
+        logger.info(f"前15個欄位名稱: {list(df.columns)[:15]}")
+        
+        # 檢查是否有未展開的巢狀資料
+        nested_columns = []
+        for col in df.columns:
+            sample_val = df[col].iloc[0] if len(df) > 0 else None
+            if isinstance(sample_val, (dict, list)):
+                nested_columns.append(col)
+        
+        if nested_columns:
+            logger.warning(f"警告：仍有 {len(nested_columns)} 個欄位包含巢狀資料: {nested_columns[:5]}")
+        else:
+            logger.info("✅ 所有資料已完全扁平化")
+    
+    try:
+        # 將 DataFrame 寫入 CSV 檔案
+        df.to_csv(output_path, index=False, encoding='utf-8-sig')
+        logger.info(f"成功建立極度扁平化 CSV 檔案: {output_path}")
+        
+    except Exception as e:
+        logger.error(f"建立 CSV 檔案時發生錯誤: {str(e)}")
+        raise
+    
     return output_path
 
 

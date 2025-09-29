@@ -72,6 +72,11 @@ export interface BatchJob {
   error_message?: string;
   json_output_path?: string;
   excel_output_path?: string;
+  // Cost allocation output files
+  netsuite_csv_path?: string;
+  matching_report_path?: string;
+  summary_report_path?: string;
+  unmatched_count?: number;
   created_at: string;
   updated_at: string;
   uploader_user_id?: number;
@@ -81,7 +86,14 @@ export interface BatchJob {
 // Base API URL - use Next.js proxy path to avoid CORS issues
 const API_BASE_URL = '/api';
 
-// Generic fetch function with error handling
+// Enhanced error type for better error handling
+export interface ApiError extends Error {
+  status?: number;
+  isDependencyError?: boolean;
+  dependencyMessage?: string;
+}
+
+// Generic fetch function with enhanced error handling
 export async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
   const fullUrl = `${API_BASE_URL}${url.startsWith('/') ? url : `/${url}`}`;
   
@@ -97,11 +109,30 @@ export async function fetchApi<T>(url: string, options?: RequestInit): Promise<T
   if (!response.ok) {
     const errorText = await response.text();
     console.error('API error:', errorText);
+    
     try {
       const errorJson = JSON.parse(errorText);
-      throw new Error(errorJson.detail || 'API request failed');
-    } catch {
-      throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+      const errorMessage = errorJson.detail || 'API request failed';
+      
+      // Create enhanced error object
+      const error = new Error(errorMessage) as ApiError;
+      error.status = response.status;
+      
+      // Check if this is a dependency constraint error
+      if (response.status === 400 && errorMessage.includes('Cannot delete')) {
+        error.isDependencyError = true;
+        error.dependencyMessage = errorMessage;
+      }
+      
+      throw error;
+    } catch (parseError) {
+      if (parseError instanceof Error && 'isDependencyError' in parseError) {
+        throw parseError; // Re-throw if it's already our enhanced error
+      }
+      
+      const error = new Error(`API request failed: ${response.status} ${response.statusText}`) as ApiError;
+      error.status = response.status;
+      throw error;
     }
   }
 
@@ -202,7 +233,12 @@ export async function uploadFile(file: globalThis.File, path: string): Promise<{
 
 // WebSocket connection
 export function connectWebSocket(jobId: number, onMessage: (data: unknown) => void) {
-  const socket = new WebSocket(`ws://${process.env.API_BASE_URL || 'localhost'}:${process.env.PORT || 8000}/ws/${jobId}`);
+  // Derive WS base from configured HTTP API URL to avoid using the Next.js PORT (3000)
+  const httpBase = (process.env.NEXT_PUBLIC_API_URL || process.env.API_BASE_URL || 'http://localhost:8000');
+  const apiUrl = new URL(httpBase);
+  const wsProtocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsBase = `${wsProtocol}//${apiUrl.host}`;
+  const socket = new WebSocket(`${wsBase}/ws/${jobId}`);
   socket.onopen = () => {
     console.log(`WebSocket connection established for job ${jobId}`);
   };
@@ -240,6 +276,78 @@ export async function downloadFile(fileId: number): Promise<Blob> {
   return response.blob();
 }
 
+// Fetch file content for preview
+export async function fetchFilePreview(fileId: number): Promise<unknown> {
+  const response = await fetch(`${API_BASE_URL}/download/${fileId}`);
+
+  if (!response.ok) {
+    throw new Error(`Preview failed: ${response.status}`);
+  }
+
+  // Get the content type to determine how to parse the file
+  const contentType = response.headers.get('content-type') || '';
+  
+  if (contentType.includes('application/json') || contentType.includes('text/plain')) {
+    const text = await response.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  } else if (contentType.includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') || 
+             contentType.includes('application/vnd.ms-excel')) {
+    // For Excel files, we'll need to parse them differently
+    // For now, return an indication that it's an Excel file
+    const blob = await response.blob();
+    return { type: 'excel', blob };
+  } else {
+    // For other file types, return as text
+    return await response.text();
+  }
+}
+
+// Dependency Management Interfaces
+export interface DependencyInfo {
+  exists: boolean;
+  entity_name?: string;
+  can_delete: boolean;
+  total_dependencies: number;
+  dependencies: {
+    processing_jobs: number;
+    batch_jobs: number;
+    company_configs: number;
+    department_access?: number;
+  };
+  blocking_message?: string;
+  detailed_dependencies?: {
+    processing_jobs?: Array<{
+      job_id: number;
+      filename: string;
+      status: string;
+      company_id?: number;
+      created_at: string;
+    }>;
+    batch_jobs?: Array<{
+      batch_id: number;
+      status: string;
+      created_at: string;
+    }>;
+  };
+  migration_targets?: MigrationTarget[];
+}
+
+export interface MigrationTarget {
+  id: number;
+  name: string;
+  code: string;
+}
+
+export interface MigrationResult {
+  message: string;
+  processing_jobs_migrated?: number;
+  batch_jobs_migrated?: number;
+}
+
 // Add this function to your api.ts file
 export async function fetchCompaniesForDocType(docTypeId: number): Promise<Company[]> {
   // This endpoint will need to be implemented on the backend
@@ -252,6 +360,7 @@ export async function fetchDocumentTypes(): Promise<DocumentType[]> {
 }
 
 // And this one for processing documents
+// DEPRECATED - use processBatch instead
 export async function processDocument(formData: FormData): Promise<{ job_id: number; status: string; message: string }> {
   console.log('Processing document:', formData);
   
@@ -281,7 +390,7 @@ export async function fetchJobs(
   return fetchApi<Job[]>(endpoint);
 }
 
-// Add function to process ZIP files
+// Add function to process ZIP files (DEPRECATED - use processBatch instead)
 export async function processZipFile(formData: FormData): Promise<{ batch_id: number; status: string; message: string }> {
   console.log('Processing ZIP file:', formData);
   
@@ -296,14 +405,56 @@ export async function processZipFile(formData: FormData): Promise<{ batch_id: nu
   });
 }
 
+// Unified batch processing function (replaces processDocument and processZipFile)
+export async function processBatch(formData: FormData): Promise<{ 
+  batch_id: number; 
+  status: string; 
+  message: string; 
+  upload_type: string;
+  file_count: number;
+}> {
+  console.log('Processing unified batch:', formData);
+  
+  // Log the form data contents for debugging
+  for (const [key, value] of formData.entries()) {
+    console.log(`${key}: ${value instanceof File ? `${value.name} (${value.size} bytes)` : value}`);
+  }
+  
+  return fetchApi<{ 
+    batch_id: number; 
+    status: string; 
+    message: string; 
+    upload_type: string;
+    file_count: number;
+  }>('/process-batch', {
+    method: 'POST',
+    body: formData,
+  });
+}
+
 // Add functions for batch job management
 export async function fetchBatchJobStatus(batchId: number): Promise<BatchJob> {
   return fetchApi<BatchJob>(`/batch-jobs/${batchId}`);
 }
 
+export interface PaginationInfo {
+  total_count: number;
+  total_pages: number;
+  current_page: number;
+  limit: number;
+  offset: number;
+  has_next: boolean;
+  has_previous: boolean;
+}
+
+export interface BatchJobsResponse {
+  data: BatchJob[];
+  pagination: PaginationInfo;
+}
+
 export async function fetchBatchJobs(
   params: { company_id?: number; doc_type_id?: number; status?: string; limit?: number; offset?: number } = {}
-): Promise<BatchJob[]> {
+): Promise<BatchJobsResponse> {
   const queryParams = new URLSearchParams();
   
   if (params.company_id) queryParams.append('company_id', params.company_id.toString());
@@ -315,5 +466,62 @@ export async function fetchBatchJobs(
   const queryString = queryParams.toString();
   const endpoint = `/batch-jobs${queryString ? `?${queryString}` : ''}`;
   
-  return fetchApi<BatchJob[]>(endpoint);
-} 
+  return fetchApi<BatchJobsResponse>(endpoint);
+}
+
+export interface BatchJobDeleteResult {
+  success: boolean;
+  message: string;
+  batch_id: number;
+  deleted_entity: string;
+  statistics: {
+    processing_jobs: number;
+    document_files: number;
+    file_records: number;
+    api_usages: number;
+    s3_files: number;
+    batch_job: number;
+  };
+}
+
+export async function deleteBatchJob(batchId: number): Promise<BatchJobDeleteResult> {
+  return fetchApi<BatchJobDeleteResult>(`/batch-jobs/${batchId}`, {
+    method: 'DELETE',
+  });
+}
+
+// Dependency Management API
+export const dependencyApi = {
+  // Get company dependencies
+  getCompanyDependencies: (companyId: number): Promise<DependencyInfo> =>
+    fetchApi<DependencyInfo>(`/companies/${companyId}/dependencies`),
+  
+  // Get document type dependencies
+  getDocumentTypeDependencies: (docTypeId: number): Promise<DependencyInfo> =>
+    fetchApi<DependencyInfo>(`/document-types/${docTypeId}/dependencies`),
+  
+  // Get configuration dependencies
+  getConfigDependencies: (configId: number): Promise<DependencyInfo> =>
+    fetchApi<DependencyInfo>(`/configs/${configId}/dependencies`),
+};
+
+// Force Delete API - Deletes entities and all their dependencies
+export const forceDeleteApi = {
+  // Force delete company and all its dependencies
+  deleteCompanyWithDependencies: (companyId: number): Promise<any> =>
+    fetchApi(`/companies/${companyId}/force-delete`, {
+      method: 'DELETE',
+    }),
+  
+  // Force delete document type and all its dependencies  
+  deleteDocumentTypeWithDependencies: (docTypeId: number): Promise<any> =>
+    fetchApi(`/document-types/${docTypeId}/force-delete`, {
+      method: 'DELETE',
+    }),
+  
+  // Force delete configuration and its related files
+  deleteConfigWithDependencies: (configId: number): Promise<any> =>
+    fetchApi(`/configs/${configId}/force-delete`, {
+      method: 'DELETE',
+    }),
+};

@@ -2,45 +2,41 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { fetchJobs, fetchBatchJobs, Job, BatchJob } from '@/lib/api';
+import { fetchBatchJobs, BatchJob } from '@/lib/api';
 
-interface PendingUpload {
-  jobId?: number;
+interface PendingBatchUpload {
   batchId?: number;
-  fileName?: string;
-  [key: string]: unknown;
+  uploadType?: string;
+  fileCount?: number;
+  fileNames?: string[];
+  documentType?: string;
+  timestamp?: string;
 }
 
 export default function Jobs() {
-  const [jobs, setJobs] = useState<Job[]>([]);
   const [batchJobs, setBatchJobs] = useState<BatchJob[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-  const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(null);
-  const [viewBatchJobs, setViewBatchJobs] = useState(false);
+  const [pendingUpload, setPendingUpload] = useState<PendingBatchUpload | null>(null);
 
   useEffect(() => {
-    // Check for pending uploads from sessionStorage
-    const uploadInfo = sessionStorage.getItem('pendingUpload');
-    if (uploadInfo) {
-      setPendingUpload(JSON.parse(uploadInfo));
+    // Check for pending batch uploads from sessionStorage
+    const batchUploadInfo = sessionStorage.getItem('pendingBatchUpload');
+    if (batchUploadInfo) {
+      setPendingUpload(JSON.parse(batchUploadInfo));
       // Clear it after displaying
-      sessionStorage.removeItem('pendingUpload');
+      sessionStorage.removeItem('pendingBatchUpload');
     }
 
-    // Load jobs with a timeout to avoid infinite loading
+    // Load batch jobs
     const loadData = async () => {
       setIsLoading(true);
       try {
-        const [jobsData, batchJobsData] = await Promise.all([
-          fetchJobs(),
-          fetchBatchJobs()
-        ]);
-        setJobs(jobsData);
-        setBatchJobs(batchJobsData);
+        const response = await fetchBatchJobs();
+        setBatchJobs(response.data); // Use response.data instead of direct response
       } catch (error) {
-        console.error('Error fetching jobs:', error);
-        setError('Failed to load jobs');
+        console.error('Error fetching batch jobs:', error);
+        setError('Failed to load batch jobs');
       } finally {
         setIsLoading(false);
       }
@@ -48,12 +44,12 @@ export default function Jobs() {
 
     loadData();
 
-    // Set up an interval to refresh job data every 300 seconds
+    // Set up an interval to refresh batch job data every 30 seconds
     const refreshInterval = setInterval(() => {
-      fetchJobs()
-        .then(updatedJobs => setJobs(updatedJobs))
-        .catch(err => console.error('Error refreshing jobs:', err));
-    }, 300000);
+      fetchBatchJobs()
+        .then(response => setBatchJobs(response.data)) // Use response.data instead of direct response
+        .catch(err => console.error('Error refreshing batch jobs:', err));
+    }, 30000);
 
     return () => {
       clearInterval(refreshInterval);
@@ -61,19 +57,39 @@ export default function Jobs() {
   }, []);
 
 
+  const formatUploadDescription = (batchJob: BatchJob) => {
+    // Show original file names if available, otherwise fall back to upload_description
+    if (batchJob.zip_filename) {
+      return batchJob.zip_filename;
+    }
+    return 'Batch processing';
+  };
+
+  const formatUploadType = (uploadType: string | undefined) => {
+    if (!uploadType) return '';
+    
+    switch (uploadType) {
+      case 'single_file': return 'Single file';
+      case 'multiple_files': return 'Multiple files';
+      case 'zip_file': return 'ZIP archive';
+      case 'mixed': return 'Mixed files';
+      default: return uploadType;
+    }
+  };
+
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="flex items-center justify-between mb-8">
-        <h1 className="text-2xl font-bold">Processing Jobs</h1>
+        <h1 className="text-2xl font-bold">Processing Batches</h1>
         <Link
           href="/upload"
           className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-6 rounded"
         >
-          Upload New Document
+          Upload New Documents
         </Link>
       </div>
 
-      {/* Show pending upload notification */}
+      {/* Show pending batch upload notification */}
       {pendingUpload && (
         <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-4">
           <div className="flex">
@@ -84,8 +100,11 @@ export default function Jobs() {
             </div>
             <div className="ml-3">
               <p className="text-sm text-blue-700">
-                Your document <span className="font-medium">{pendingUpload.fileName}</span> is being processed. 
-                It will appear in the list once processing is complete.
+                Your batch upload with <span className="font-medium">{pendingUpload.fileCount} file(s)</span> is being processed.
+                {pendingUpload.uploadType && (
+                  <span> Upload type: <span className="font-medium">{formatUploadType(pendingUpload.uploadType)}</span>.</span>
+                )}
+                It will appear in the list once processing starts.
               </p>
             </div>
           </div>
@@ -98,142 +117,110 @@ export default function Jobs() {
         </div>
       )}
 
-      <div className="flex justify-end mb-4">
-        <button 
-          onClick={() => setViewBatchJobs(!viewBatchJobs)}
-          className="px-4 py-2 bg-blue-500 text-white rounded"
-        >
-          Show {viewBatchJobs ? 'Individual Jobs' : 'Batch Jobs'}
-        </button>
-      </div>
-
-      {viewBatchJobs ? (
-        <table className="w-full">
-          <thead>
-            <tr>
-              <th>Batch ID</th>
-              <th>File Name</th>
-              <th>Document Type</th>
-              <th>Company</th>
-              <th>Status</th>
-              <th>Progress</th>
-              <th>Date</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {batchJobs.map((batchJob) => (
-              <tr key={batchJob.batch_id}>
-                <td>{batchJob.batch_id}</td>
-                <td>{batchJob.zip_filename}</td>
-                <td>{batchJob.type_name}</td>
-                <td>{batchJob.company_name}</td>
-                <td>
-                  <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full 
-                    ${batchJob.status === 'success' || batchJob.status === 'complete'
-                        ? 'bg-green-100 text-green-800'
-                        : batchJob.status === 'processing'
-                          ? 'bg-blue-100 text-blue-800'
-                          : 'bg-red-100 text-red-800'
-                      }`}>
-                    {batchJob.status}
-                  </span>
-                </td>
-                <td>
-                  {batchJob.processed_files}/{batchJob.total_files}
-                  {batchJob.status === 'processing' && (
-                    <div className="w-full bg-gray-200 rounded-full h-2.5">
-                      <div 
-                        className="bg-blue-600 h-2.5 rounded-full" 
-                        style={{ width: `${(batchJob.processed_files / Math.max(1, batchJob.total_files)) * 100}%` }}
-                      ></div>
-                    </div>
-                  )}
-                </td>
-                <td>{new Date(batchJob.created_at).toLocaleString()}</td>
-                <td>
-                  <Link href={`/batch-jobs/${batchJob.batch_id}`}>
-                    <span className="text-blue-500 cursor-pointer">View Details</span>
-                  </Link>
-                </td>
+      <div className="bg-white rounded-lg shadow overflow-hidden">
+        {isLoading && batchJobs.length === 0 ? (
+          <div className="text-center py-10">Loading batch jobs...</div>
+        ) : (
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  BATCH ID
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  DESCRIPTION
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  DOCUMENT TYPE
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  COMPANY
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  STATUS
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  PROGRESS
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  DATE
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  ACTIONS
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <div className="bg-white rounded-lg shadow overflow-hidden">
-          {isLoading && jobs.length === 0 ? (
-            <div className="text-center py-10">Loading jobs...</div>
-          ) : (
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    JOB ID
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    FILENAME
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    STATUS
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    DATE
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    ACTIONS
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {jobs.map((job) => (
-                  <tr key={job.job_id}>
-                    <td className="px-6 py-4 whitespace-nowrap text-gray-500">
-                      {job.job_id}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-gray-500">
-                      {job.original_filename}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full 
-                        ${job.status === 'success' || job.status === 'complete'
-                            ? 'bg-green-100 text-green-800'
-                            : job.status === 'processing'
-                              ? 'bg-blue-100 text-blue-800'
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {batchJobs.map((batchJob) => (
+                <tr key={batchJob.batch_id} className="hover:bg-gray-50">
+                  <td className="px-6 py-4 whitespace-nowrap text-gray-900 font-medium">
+                    {batchJob.batch_id}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                    {formatUploadDescription(batchJob)}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                    {batchJob.type_name}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                    {batchJob.company_name}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full 
+                      ${batchJob.status === 'success' || batchJob.status === 'completed'
+                          ? 'bg-green-100 text-green-800'
+                          : batchJob.status === 'processing'
+                            ? 'bg-blue-100 text-blue-800'
+                            : batchJob.status === 'pending'
+                              ? 'bg-yellow-100 text-yellow-800'
                               : 'bg-red-100 text-red-800'
-                          }`}>
-                        {job.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-gray-500">
-                      {new Date(job.created_at).toLocaleString()}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-blue-600 hover:text-blue-800">
-                      <Link href={`/jobs/${job.job_id}`}>
-                        View
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-                {isLoading && (
-                  <tr>
-                    <td colSpan={5} className="px-6 py-4 text-center text-sm text-gray-500">
-                      Loading additional jobs...
-                    </td>
-                  </tr>
-                )}
-                {!isLoading && jobs.length === 0 && (
-                  <tr>
-                    <td colSpan={5} className="px-6 py-4 text-center text-sm text-gray-500">
-                      No jobs found.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
+                        }`}>
+                      {batchJob.status}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="flex items-center">
+                      <div className="text-sm text-gray-900">
+                        {batchJob.processed_files}/{batchJob.total_files}
+                      </div>
+                      {batchJob.status === 'processing' && batchJob.total_files > 0 && (
+                        <div className="ml-2 w-16 bg-gray-200 rounded-full h-2">
+                          <div 
+                            className="bg-blue-600 h-2 rounded-full transition-all duration-300" 
+                            style={{ width: `${(batchJob.processed_files / Math.max(1, batchJob.total_files)) * 100}%` }}
+                          ></div>
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                    {new Date(batchJob.created_at).toLocaleString()}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-blue-600 hover:text-blue-800">
+                    <Link href={`/batch-jobs/${batchJob.batch_id}`}>
+                      View Details
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+              {isLoading && (
+                <tr>
+                  <td colSpan={8} className="px-6 py-4 text-center text-sm text-gray-500">
+                    Loading additional batches...
+                  </td>
+                </tr>
+              )}
+              {!isLoading && batchJobs.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="px-6 py-4 text-center text-sm text-gray-500">
+                    No batch jobs found. Upload some documents to get started!
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   );
 }

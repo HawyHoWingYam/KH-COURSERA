@@ -12,7 +12,7 @@ from functools import wraps
 
 # 導入配置管理器
 try:
-    from config_loader import config_loader, api_key_manager
+    from config_loader import config_loader, get_api_key_manager
 
     CONFIG_AVAILABLE = True
 except ImportError:
@@ -26,7 +26,7 @@ def get_api_key_and_model() -> tuple[str, str]:
     """獲取 API key 和模型名稱"""
     if CONFIG_AVAILABLE:
         try:
-            api_key = api_key_manager.get_least_used_key()
+            api_key = get_api_key_manager().get_least_used_key()
             app_config = config_loader.get_app_config()
             model_name = app_config.get("model_name", "gemini-2.5-flash-preview-05-20")
             return api_key, model_name
@@ -81,7 +81,15 @@ def api_error_handler(func):
                 # 如果有API key manager，嘗試獲取不同的key
                 if CONFIG_AVAILABLE and attempt > 0:
                     try:
+                        api_key_manager = get_api_key_manager()
+                        old_index = api_key_manager.current_index
+                        old_key = api_key_manager.get_current_key()
+
                         new_api_key = api_key_manager.get_next_key()
+                        new_index = api_key_manager.current_index
+
+                        logger.info(f"🔄 API Key 切換: 從索引 {old_index} ({old_key[:20]}...) 切換到索引 {new_index} ({new_api_key[:20]}...)")
+
                         configure_gemini_with_retry(new_api_key)
                         # 更新函數參數中的api_key
                         if "api_key" in kwargs:
@@ -90,8 +98,10 @@ def api_error_handler(func):
                             args = list(args)
                             args[3] = new_api_key
                             args = tuple(args)
+
+                        logger.info(f"✅ API Key 切換成功，重試中...")
                     except Exception as e:
-                        logger.warning(f"Could not rotate API key: {e}")
+                        logger.warning(f"❌ API Key 切換失敗: {e}")
 
                 return await func(*args, **kwargs)
 
@@ -106,23 +116,33 @@ def api_error_handler(func):
                     "timeout",
                     "connection",
                     "service unavailable",
+                    "429",  # HTTP 429 狀態碼
+                    "exceeded",  # "exceeded your current quota" 錯誤
                 ]
                 if any(err in error_msg for err in retryable_errors):
+                    matched_error = [err for err in retryable_errors if err in error_msg][0]
                     logger.warning(
-                        f"API error (attempt {attempt + 1}/{max_retries}): {e}"
+                        f"⚠️  可重試的 API 錯誤 (匹配: {matched_error}) - 嘗試 {attempt + 1}/{max_retries}: {e}"
                     )
 
                     # 標記當前API key有問題
                     if CONFIG_AVAILABLE:
                         try:
+                            api_key_manager = get_api_key_manager()
                             current_api_key = api_key_manager.get_current_key()
+                            current_index = api_key_manager.current_index
+
+                            logger.info(f"🔴 標記 API Key 索引 {current_index} ({current_api_key[:20]}...) 有問題")
                             api_key_manager.mark_key_error(current_api_key)
-                        except Exception:
-                            pass  # 如果無法獲取當前key，忽略標記
+
+                            usage_stats = api_key_manager.get_usage_stats()
+                            logger.info(f"📊 API Key 使用統計: {usage_stats}")
+                        except Exception as key_error:
+                            logger.warning(f"⚠️  無法標記 API Key 錯誤: {key_error}")
 
                     if attempt < max_retries - 1:
                         wait_time = (2**attempt) + 1  # 指數退避
-                        logger.info(f"Waiting {wait_time}s before retry...")
+                        logger.info(f"⏳ 等待 {wait_time}s 後進行重試...")
                         await asyncio.sleep(wait_time)
                         continue
                 else:
@@ -243,16 +263,51 @@ def load_config():
         return None
 
 
+def clean_schema_for_gemini(schema):
+    """
+    Clean JSON schema for Gemini API compatibility by removing unsupported fields.
+    
+    Args:
+        schema: The JSON schema dictionary
+        
+    Returns:
+        Cleaned schema dictionary safe for Gemini API
+    """
+    if not isinstance(schema, dict):
+        return schema
+    
+    # Fields that cause Gemini API errors
+    problematic_fields = ["$schema", "$id", "$ref", "definitions", "patternProperties"]
+    
+    cleaned_schema = {}
+    for key, value in schema.items():
+        if key in problematic_fields:
+            print(f"Removing problematic schema field: {key}")
+            continue
+            
+        if isinstance(value, dict):
+            cleaned_schema[key] = clean_schema_for_gemini(value)
+        elif isinstance(value, list):
+            cleaned_schema[key] = [
+                clean_schema_for_gemini(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            cleaned_schema[key] = value
+    
+    return cleaned_schema
+
+
 def get_response_schema(doc_type, provider_name):
     """
-    Read and parse a JSON schema file.
+    Read and parse a JSON schema file, cleaning it for Gemini API compatibility.
 
     Args:
         doc_type: The type of document (e.g., invoice, receipt)
         provider_name: The provider/company name
 
     Returns:
-        A dictionary containing the parsed JSON schema
+        A dictionary containing the parsed and cleaned JSON schema
     """
     try:
         # Look for provider-specific schema
@@ -267,7 +322,7 @@ def get_response_schema(doc_type, provider_name):
         if os.path.exists(schema_file):
             with open(schema_file, "r", encoding="utf-8") as file:
                 schema = json.load(file)
-            return schema
+            return clean_schema_for_gemini(schema)
 
         # Fallback to generic document type schema
         generic_schema = os.path.join(
@@ -276,7 +331,7 @@ def get_response_schema(doc_type, provider_name):
         if os.path.exists(generic_schema):
             with open(generic_schema, "r", encoding="utf-8") as file:
                 schema = json.load(file)
-            return schema
+            return clean_schema_for_gemini(schema)
 
         print(f"Schema file not found for {doc_type}/{provider_name}")
         return None

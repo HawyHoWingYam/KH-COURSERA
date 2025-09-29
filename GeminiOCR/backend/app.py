@@ -10,12 +10,14 @@ from fastapi import (
     Query,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
 import shutil
 import tempfile
+import zipfile
 from datetime import datetime, timedelta
 import json
 import logging
@@ -24,7 +26,7 @@ from sqlalchemy import func
 import time
 
 # 導入配置管理器
-from config_loader import config_loader, api_key_manager, validate_and_log_config
+from config_loader import config_loader, get_api_key_manager, validate_and_log_config
 
 from db.database import get_db, engine, get_database_info
 from db.models import (
@@ -37,11 +39,27 @@ from db.models import (
     DocumentFile,
     ApiUsage,
     BatchJob,
+    UploadType,
+    OcrOrder,
+    OcrOrderItem,
+    OrderItemFile,
+    OrderStatus,
+    OrderItemStatus,
 )
 from main import extract_text_from_image, extract_text_from_pdf
-from utils.excel_converter import json_to_excel
+from utils.excel_converter import json_to_excel, json_to_csv
 from utils.s3_storage import get_s3_manager, is_s3_enabled
 from utils.file_storage import get_file_storage
+from utils.prompt_schema_manager import get_prompt_schema_manager, load_prompt_and_schema
+from utils.company_file_manager import FileType
+from utils.force_delete_manager import ForceDeleteManager
+from utils.order_processor import start_order_processing, start_order_ocr_only_processing, start_order_mapping_only_processing
+
+# Cost allocation imports
+from cost_allocation.dynamic_mapping_processor import process_dynamic_mapping_file
+from cost_allocation.matcher import enrich_ocr_data
+from cost_allocation.netsuite_formatter import generate_netsuite_csv
+from cost_allocation.report_generator import generate_matching_report, generate_summary_report
 
 # 獲取應用配置
 try:
@@ -55,17 +73,28 @@ except Exception as e:
     logging.error(f"Failed to load configuration: {e}")
     raise
 
-# Create all tables (with error handling)
+# Create tables only in development/test environments; rely on Alembic elsewhere
 try:
-    if engine:
-        Base.metadata.create_all(bind=engine)
-        logger.info("✅ Database tables created/verified successfully")
+    env = app_config.get("environment", "development") if 'app_config' in globals() else os.getenv("ENVIRONMENT", "development")
+    if env in {"development", "test"}:
+        if engine:
+            Base.metadata.create_all(bind=engine)
+            logger.info("✅ Database tables created/verified (dev/test mode)")
+        else:
+            logger.warning("⚠️  Database engine not initialized, tables not created")
     else:
-        logger.warning("⚠️  Database engine not initialized, tables not created")
+        logger.info("ℹ️ Skipping Base.metadata.create_all outside dev/test (use Alembic)")
 except Exception as e:
-    logger.error(f"❌ Failed to create database tables: {e}")
+    logger.error(f"❌ Failed during table initialization: {e}")
 
 app = FastAPI(title="Document Processing API")
+
+# Request models for migration
+class MigrateJobsRequest(BaseModel):
+    target_company_id: int
+
+class MigrateDocTypeJobsRequest(BaseModel):
+    target_doc_type_id: int
 
 # CORS configuration
 app.add_middleware(
@@ -296,14 +325,31 @@ def update_company(company_id: int, company_data: dict, db: Session = Depends(ge
 
 @app.delete("/companies/{company_id}")
 def delete_company(company_id: int, db: Session = Depends(get_db)):
+    from utils.dependency_checker import check_can_delete_company
+    
+    # 使用統一的依賴檢查服務
+    can_delete, error_message = check_can_delete_company(db, company_id)
+    
+    if not can_delete:
+        if "not found" in error_message:
+            raise HTTPException(status_code=404, detail=error_message)
+        else:
+            raise HTTPException(status_code=400, detail=error_message)
+    
+    # 獲取公司信息
     company = db.query(Company).filter(Company.company_id == company_id).first()
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-
-    db.delete(company)
-    db.commit()
-
-    return {"message": "Company deleted successfully"}
+    
+    try:
+        db.delete(company)
+        db.commit()
+        return {"message": f"Company '{company.company_name}' deleted successfully"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting company {company_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete company: {str(e)}"
+        )
 
 
 # Document Types API endpoints
@@ -392,16 +438,170 @@ def update_document_type(
 
 @app.delete("/document-types/{doc_type_id}")
 def delete_document_type(doc_type_id: int, db: Session = Depends(get_db)):
-    doc_type = (
-        db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
-    )
-    if not doc_type:
-        raise HTTPException(status_code=404, detail="Document type not found")
+    from utils.dependency_checker import check_can_delete_document_type
+    
+    # 使用統一的依賴檢查服務
+    can_delete, error_message = check_can_delete_document_type(db, doc_type_id)
+    
+    if not can_delete:
+        if "not found" in error_message:
+            raise HTTPException(status_code=404, detail=error_message)
+        else:
+            raise HTTPException(status_code=400, detail=error_message)
+    
+    # 獲取文檔類型信息
+    doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+    
+    try:
+        db.delete(doc_type)
+        db.commit()
+        return {"message": f"Document type '{doc_type.type_name}' deleted successfully"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting document type {doc_type_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete document type: {str(e)}"
+        )
 
-    db.delete(doc_type)
-    db.commit()
 
-    return {"message": "Document type deleted successfully"}
+# Dependency Management API endpoints
+@app.get("/companies/{company_id}/dependencies")
+def get_company_dependencies(company_id: int, db: Session = Depends(get_db)):
+    """獲取公司的詳細依賴關係信息"""
+    from utils.dependency_checker import DependencyChecker
+    
+    checker = DependencyChecker(db)
+    dependencies = checker.check_company_dependencies(company_id)
+    
+    if not dependencies["exists"]:
+        raise HTTPException(status_code=404, detail=dependencies["error"])
+    
+    # 如果有依賴，獲取詳細信息和遷移建議
+    if not dependencies["can_delete"]:
+        dependencies["detailed_dependencies"] = checker.get_detailed_dependencies("company", company_id)
+        dependencies["migration_targets"] = checker.suggest_migration_targets("company", company_id)
+    
+    return dependencies
+
+
+@app.get("/document-types/{doc_type_id}/dependencies")
+def get_document_type_dependencies(doc_type_id: int, db: Session = Depends(get_db)):
+    """獲取文檔類型的詳細依賴關係信息"""
+    from utils.dependency_checker import DependencyChecker
+    
+    checker = DependencyChecker(db)
+    dependencies = checker.check_document_type_dependencies(doc_type_id)
+    
+    if not dependencies["exists"]:
+        raise HTTPException(status_code=404, detail=dependencies["error"])
+    
+    # 如果有依賴，獲取詳細信息和遷移建議
+    if not dependencies["can_delete"]:
+        dependencies["detailed_dependencies"] = checker.get_detailed_dependencies("document_type", doc_type_id)
+        dependencies["migration_targets"] = checker.suggest_migration_targets("document_type", doc_type_id)
+    
+    return dependencies
+
+
+@app.post("/companies/{company_id}/migrate-jobs")
+def migrate_company_jobs(
+    company_id: int, 
+    request: MigrateJobsRequest,
+    db: Session = Depends(get_db)
+):
+    """將公司的處理作業遷移到另一個公司"""
+    from utils.dependency_checker import DependencyChecker
+    
+    # 驗證源公司和目標公司存在
+    source_company = db.query(Company).filter(Company.company_id == company_id).first()
+    target_company = db.query(Company).filter(Company.company_id == request.target_company_id).first()
+    
+    if not source_company:
+        raise HTTPException(status_code=404, detail="Source company not found")
+    if not target_company:
+        raise HTTPException(status_code=404, detail="Target company not found")
+    
+    try:
+        # 遷移 processing jobs
+        processing_jobs_updated = (
+            db.query(ProcessingJob)
+            .filter(ProcessingJob.company_id == company_id)
+            .update({"company_id": request.target_company_id})
+        )
+        
+        # 遷移 batch jobs
+        batch_jobs_updated = (
+            db.query(BatchJob)
+            .filter(BatchJob.company_id == company_id)
+            .update({"company_id": request.target_company_id})
+        )
+        
+        db.commit()
+        
+        return {
+            "message": f"Successfully migrated jobs from '{source_company.company_name}' to '{target_company.company_name}'",
+            "processing_jobs_migrated": processing_jobs_updated,
+            "batch_jobs_migrated": batch_jobs_updated
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error migrating company jobs: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to migrate jobs: {str(e)}"
+        )
+
+
+@app.post("/document-types/{doc_type_id}/migrate-jobs")
+def migrate_document_type_jobs(
+    doc_type_id: int, 
+    request: MigrateDocTypeJobsRequest,
+    db: Session = Depends(get_db)
+):
+    """將文檔類型的處理作業遷移到另一個文檔類型"""
+    from utils.dependency_checker import DependencyChecker
+    
+    # 驗證源文檔類型和目標文檔類型存在
+    source_doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+    target_doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == request.target_doc_type_id).first()
+    
+    if not source_doc_type:
+        raise HTTPException(status_code=404, detail="Source document type not found")
+    if not target_doc_type:
+        raise HTTPException(status_code=404, detail="Target document type not found")
+    
+    try:
+        # 遷移 processing jobs
+        processing_jobs_updated = (
+            db.query(ProcessingJob)
+            .filter(ProcessingJob.doc_type_id == doc_type_id)
+            .update({"doc_type_id": request.target_doc_type_id})
+        )
+        
+        # 遷移 batch jobs
+        batch_jobs_updated = (
+            db.query(BatchJob)
+            .filter(BatchJob.doc_type_id == doc_type_id)
+            .update({"doc_type_id": request.target_doc_type_id})
+        )
+        
+        db.commit()
+        
+        return {
+            "message": f"Successfully migrated jobs from '{source_doc_type.type_name}' to '{target_doc_type.type_name}'",
+            "processing_jobs_migrated": processing_jobs_updated,
+            "batch_jobs_migrated": batch_jobs_updated
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error migrating document type jobs: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to migrate jobs: {str(e)}"
+        )
 
 
 # Configuration API endpoints
@@ -465,8 +665,10 @@ def create_configuration(config_data: dict, db: Session = Depends(get_db)):
     config = CompanyDocumentConfig(
         company_id=config_data["company_id"],
         doc_type_id=config_data["doc_type_id"],
-        prompt_path=config_data["prompt_path"],
-        schema_path=config_data["schema_path"],
+        prompt_path=config_data.get("prompt_path"),  # Allow None for new configs
+        schema_path=config_data.get("schema_path"),  # Allow None for new configs
+        original_prompt_filename=config_data.get("original_prompt_filename"),
+        original_schema_filename=config_data.get("original_schema_filename"),
         active=config_data.get("active", True),
     )
 
@@ -524,9 +726,17 @@ def update_configuration(
     if not config:
         raise HTTPException(status_code=404, detail="Configuration not found")
 
-    config.prompt_path = config_data["prompt_path"]
-    config.schema_path = config_data["schema_path"]
-    config.active = config_data.get("active", config.active)
+    # Update only provided fields (support partial updates)
+    if "prompt_path" in config_data:
+        config.prompt_path = config_data["prompt_path"]
+    if "schema_path" in config_data:
+        config.schema_path = config_data["schema_path"]
+    if "original_prompt_filename" in config_data:
+        config.original_prompt_filename = config_data["original_prompt_filename"]
+    if "original_schema_filename" in config_data:
+        config.original_schema_filename = config_data["original_schema_filename"]
+    if "active" in config_data:
+        config.active = config_data["active"]
 
     db.commit()
     db.refresh(config)
@@ -561,23 +771,601 @@ def delete_configuration(config_id: int, db: Session = Depends(get_db)):
     return {"message": "Configuration deleted successfully"}
 
 
+# Configuration file download endpoint (S3-only)
+@app.get("/configs/{config_id}/download/{file_type}")
+def download_config_file(config_id: int, file_type: str, db: Session = Depends(get_db)):
+    """
+    Download prompt or schema file for a configuration (S3-only)
+    
+    Args:
+        config_id: Configuration ID
+        file_type: "prompt" or "schema"
+    """
+    # Validate file_type parameter
+    if file_type not in ["prompt", "schema"]:
+        raise HTTPException(status_code=400, detail="file_type must be 'prompt' or 'schema'")
+    
+    # Get configuration from database
+    config = (
+        db.query(CompanyDocumentConfig)
+        .filter(CompanyDocumentConfig.config_id == config_id)
+        .first()
+    )
+    if not config:
+        raise HTTPException(status_code=404, detail="Configuration not found")
+    
+    # Get company and document type for S3 path construction
+    company = config.company
+    doc_type = config.document_type
+    if not company or not doc_type:
+        raise HTTPException(status_code=500, detail="Configuration missing company or document type")
+    
+    logger.info(f"📥 S3-only download request - Config ID: {config_id}, Type: {file_type}, Company: {company.company_code}, DocType: {doc_type.type_code}")
+    
+    try:
+        # Always try S3 download first
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available - S3 is required for downloads")
+        
+        # Extract filename from stored path or use default
+        stored_path = config.prompt_path if file_type == "prompt" else config.schema_path
+        if stored_path and "/" in stored_path:
+            filename = stored_path.split("/")[-1]
+        else:
+            # Default filename based on type
+            filename = f"{file_type}.{'txt' if file_type == 'prompt' else 'json'}"
+        
+        # 🚀 SMART DYNAMIC FILE DISCOVERY - Multiple strategies for resilient file finding
+        file_content = None
+        successful_path = None
+        
+        # === PRIORITY STRATEGY: STORED DATABASE PATH (highest priority) ===
+        logger.info("🎯 Trying STORED database path first")
+        try:
+            if stored_path:
+                logger.info(f"📍 Found stored path in database: {stored_path}")
+                
+                # Use the new S3 manager method for direct path download
+                file_content = s3_manager.download_file_by_stored_path(stored_path)
+                
+                if file_content is not None:
+                    successful_path = stored_path
+                    
+                    # Get filename from path
+                    if "/" in stored_path:
+                        filename = stored_path.split("/")[-1]
+                    
+                    logger.info(f"✅ Downloaded using STORED database path: {stored_path}")
+                    logger.info(f"📂 Download filename: {filename}")
+                else:
+                    logger.info(f"⚠️ Could not download from stored path: {stored_path}")
+            else:
+                logger.info("⚠️ No stored path in database, trying other strategies...")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ STORED path download failed: {e}")
+        
+        # === STRATEGY 0: CLEAN PATH STRUCTURE (highest priority fallback) ===
+        if file_content is None:
+            logger.info("🎯 Trying CLEAN path structure with database-stored filename first")
+            try:
+                # Get original filename from database first
+                original_filename = None
+                if file_type == "prompt" and config.original_prompt_filename:
+                    original_filename = config.original_prompt_filename
+                elif file_type == "schema" and config.original_schema_filename:
+                    original_filename = config.original_schema_filename
+                
+                # Try with original filename from database
+                if original_filename:
+                    logger.info(f"📁 Using original filename from database: {original_filename}")
+                    
+                    # Construct clean S3 path: companies/{company_id}/{type}/{doc_type_id}/{config_id}/filename
+                    clean_s3_path = f"companies/{company.company_id}/{'prompts' if file_type == 'prompt' else 'schemas'}/{doc_type.doc_type_id}/{config_id}/{original_filename}"
+                    
+                    # Try to download directly using clean path
+                    if file_type == "prompt":
+                        file_content = s3_manager.download_prompt_by_id(
+                            company_id=company.company_id,
+                            doc_type_id=doc_type.doc_type_id,
+                            config_id=config_id,
+                            filename=original_filename
+                        )
+                    else:
+                        schema_data = s3_manager.download_schema_by_id(
+                            company_id=company.company_id,
+                            doc_type_id=doc_type.doc_type_id,
+                            config_id=config_id,
+                            filename=original_filename
+                        )
+                        if schema_data:
+                            import json
+                            file_content = json.dumps(schema_data, indent=2, ensure_ascii=False).encode('utf-8')
+                    
+                    if file_content is not None:
+                        successful_path = clean_s3_path
+                        filename = original_filename  # Use original filename for download
+                        logger.info(f"✅ Found using CLEAN path structure: {successful_path}")
+                        logger.info(f"📂 Download filename: {filename}")
+                    else:
+                        logger.info("⚠️ CLEAN path not found, trying fallback strategies...")
+                else:
+                    logger.info("⚠️ No original filename in database, trying fallback strategies...")
+                    
+            except Exception as e:
+                logger.info(f"⚠️ CLEAN path download failed: {e}")
+        
+        # === STRATEGY 1: CONFIG-SPECIFIC paths (most unique) ===
+        config_specific_paths = [
+            f"config_{config_id}",  # config_6, config_5 (unique per config)
+            f"company_{company.company_id}/doctype_{doc_type.doc_type_id}/config_{config_id}",  # company_1/doctype_11/config_6
+            f"c{company.company_id}/d{doc_type.doc_type_id}/cfg{config_id}",  # c1/d11/cfg6
+        ]
+        
+        # === STRATEGY 2: ID-based paths (stable) ===
+        id_based_paths = [
+            f"company_{company.company_id}/doctype_{doc_type.doc_type_id}",  # company_1/doctype_11
+            f"c{company.company_id}/d{doc_type.doc_type_id}",  # c1/d11 (shorter)
+            f"{company.company_id}_{doc_type.doc_type_id}",    # 1_11 (minimal)
+        ]
+        
+        # === STRATEGY 3: Current name-based paths ===
+        name_based_paths = []
+        
+        # Company variants
+        company_variants = [
+            company.company_code if company.company_code else "unknown",
+            company.company_code.lower() if company.company_code else "unknown",
+            company.company_code.upper() if company.company_code else "unknown",
+            company.company_name.lower().replace(" ", "_") if company.company_name else "unknown",
+            "hana",  # Common fallback
+        ]
+        
+        # Document type variants  
+        doc_type_variants = [
+            doc_type.type_code if doc_type.type_code else "unknown",
+            doc_type.type_name if doc_type.type_name else "unknown", 
+            # Handle common transformations
+            doc_type.type_code.replace("[Admin]", "[Finance]") if doc_type.type_code and "[Admin]" in doc_type.type_code else None,
+            doc_type.type_code.replace("[Finance]", "[Admin]") if doc_type.type_code and "[Finance]" in doc_type.type_code else None,
+            doc_type.type_code.replace("[Production]", "[Admin]") if doc_type.type_code and "[Production]" in doc_type.type_code else None,
+            # Remove prefixes and clean up
+            doc_type.type_code.replace("[Admin]_", "").replace("[Finance]_", "").replace("[Production]_", "") if doc_type.type_code else None,
+            # Common patterns
+            "[Finance]_hkbn_billing",  # Known working pattern
+            "hkbn_billing", "admin_hkbn_billing", "finance_hkbn_billing",
+        ]
+        
+        # Remove None and duplicates
+        doc_type_variants = list(set([v for v in doc_type_variants if v]))
+        
+        # Build all name-based combinations
+        for company_variant in set(company_variants):
+            for doc_type_variant in doc_type_variants:
+                name_based_paths.append(f"{company_variant}/{doc_type_variant}")
+        
+        # === STRATEGY 4: Enhanced wildcard search in S3 with disambiguation ===
+        def try_wildcard_search():
+            logger.info(f"🔍 Attempting enhanced wildcard search for config_id={config_id}")
+            # List all files and find matches by filename pattern
+            all_prompts = s3_manager.list_prompts() if file_type == "prompt" else []
+            all_schemas = s3_manager.list_schemas() if file_type == "schema" else []
+            all_files = all_prompts if file_type == "prompt" else all_schemas
+            
+            # Enhanced search terms with priority scoring
+            high_priority_terms = [
+                f"config_{config_id}",  # Highest priority: exact config match
+                f"cfg{config_id}",
+                str(config_id),
+            ]
+            
+            medium_priority_terms = [
+                f"{company.company_id}_{doc_type.doc_type_id}",
+                company.company_code.lower() if company.company_code else "",
+                doc_type.type_code.lower() if doc_type.type_code else "",
+            ]
+            
+            low_priority_terms = [
+                filename.replace('.txt', '').replace('.json', ''),
+                "hkbn", "billing",
+                company.company_name.lower() if company.company_name else "",
+                doc_type.type_name.lower().replace("[", "").replace("]", "") if doc_type.type_name else ""
+            ]
+            
+            # Find files with scoring system
+            scored_matches = []
+            
+            for file_info in all_files:
+                file_key = file_info['key'].lower()
+                score = 0
+                
+                # High priority matches (config-specific)
+                for term in high_priority_terms:
+                    if term and term.lower() in file_key:
+                        score += 100
+                        logger.info(f"🎯 HIGH PRIORITY match: {term} in {file_info['key']}")
+                
+                # Medium priority matches 
+                for term in medium_priority_terms:
+                    if term and term.lower() in file_key:
+                        score += 10
+                        logger.info(f"🔍 MEDIUM PRIORITY match: {term} in {file_info['key']}")
+                
+                # Low priority matches
+                for term in low_priority_terms:
+                    if term and term.lower() in file_key:
+                        score += 1
+                        logger.info(f"🔍 LOW PRIORITY match: {term} in {file_info['key']}")
+                
+                if score > 0:
+                    scored_matches.append((score, file_info))
+            
+            # Sort by score (highest first) and return best match
+            if scored_matches:
+                scored_matches.sort(key=lambda x: x[0], reverse=True)
+                best_score, best_file = scored_matches[0]
+                logger.info(f"🏆 Best match with score {best_score}: {best_file['key']}")
+                
+                # Extract company and doctype from the found path
+                path_parts = best_file['key'].split('/')
+                if len(path_parts) >= 2:
+                    found_company, found_doctype = path_parts[0], path_parts[1]
+                    found_filename = path_parts[-1]
+                    
+                    if file_type == "prompt":
+                        return s3_manager.download_prompt_raw(found_company, found_doctype, found_filename), f"{found_company}/{found_doctype}/{found_filename}"
+                    else:
+                        return s3_manager.download_schema_raw(found_company, found_doctype, found_filename), f"{found_company}/{found_doctype}/{found_filename}"
+            
+            logger.warning(f"❌ No matches found via wildcard search for config_id={config_id}")
+            return None, None
+        
+        # === EXECUTE SEARCH STRATEGIES ===
+        all_paths_to_try = config_specific_paths + id_based_paths + name_based_paths
+        
+        # Try all path combinations
+        for path in all_paths_to_try:
+            if file_content is not None:
+                break
+                
+            if '/' in path:
+                company_part, doc_type_part = path.split('/', 1)
+                logger.info(f"🔍 Trying path: {path}/{filename}")
+                
+                if file_type == "prompt":
+                    file_content = s3_manager.download_prompt_raw(company_part, doc_type_part, filename)
+                else:
+                    file_content = s3_manager.download_schema_raw(company_part, doc_type_part, filename)
+                
+                if file_content is not None:
+                    successful_path = f"{path}/{filename}"
+                    logger.info(f"✅ Found file at: {successful_path}")
+                    break
+        
+        # Try alternative filenames if primary filename fails - with unique identifiers
+        if file_content is None:
+            alternative_filenames = [
+                # Config-specific filenames (most unique)
+                f"config_{config_id}_{file_type}.{'txt' if file_type == 'prompt' else 'json'}",  # config_6_prompt.txt
+                f"cfg{config_id}_{file_type}.{'txt' if file_type == 'prompt' else 'json'}",      # cfg6_prompt.txt
+                f"{config_id}_{file_type}.{'txt' if file_type == 'prompt' else 'json'}",        # 6_prompt.txt
+                
+                # Company+DocType+Config combinations
+                f"{company.company_id}_{doc_type.doc_type_id}_{config_id}_{file_type}.{'txt' if file_type == 'prompt' else 'json'}",  # 2_3_6_prompt.txt
+                f"c{company.company_id}_d{doc_type.doc_type_id}_cfg{config_id}_{file_type}.{'txt' if file_type == 'prompt' else 'json'}",  # c2_d3_cfg6_prompt.txt
+                
+                # Timestamp-based alternatives
+                f"{filename.split('.')[0]}_config_{config_id}.{'txt' if file_type == 'prompt' else 'json'}",  # invoice_prompt_config_6.txt
+                f"{config_id}_{filename}",  # 6_invoice_prompt.txt
+                
+                # Original alternatives
+                "prompt.txt" if file_type == "prompt" else "schema.json",
+                f"{company.company_id}_{doc_type.doc_type_id}_{file_type}.{'txt' if file_type == 'prompt' else 'json'}",
+                filename.replace(" ", "_").replace(".", "_").replace("_txt", ".txt").replace("_json", ".json"),
+            ]
+            
+            for alt_filename in alternative_filenames:
+                if file_content is not None:
+                    break
+                    
+                for path in all_paths_to_try:
+                    if file_content is not None:
+                        break
+                    
+                    if '/' in path:
+                        company_part, doc_type_part = path.split('/', 1)
+                        logger.info(f"🔍 Trying alternative: {path}/{alt_filename}")
+                        
+                        if file_type == "prompt":
+                            file_content = s3_manager.download_prompt_raw(company_part, doc_type_part, alt_filename)
+                        else:
+                            file_content = s3_manager.download_schema_raw(company_part, doc_type_part, alt_filename)
+                        
+                        if file_content is not None:
+                            filename = alt_filename
+                            successful_path = f"{path}/{alt_filename}"
+                            logger.info(f"✅ Found file with alternative name: {successful_path}")
+                            break
+        
+        # Last resort: wildcard search
+        if file_content is None:
+            logger.info("🔍 Attempting wildcard search as last resort")
+            file_content, successful_path = try_wildcard_search()
+            if successful_path:
+                filename = successful_path.split('/')[-1]
+        
+        if file_content is None:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"{file_type.title()} file not found in S3 for {company.company_code}/{doc_type.type_code}"
+            )
+        
+        # PRIORITY 1: Try to get original filename from database (most reliable)
+        original_filename = filename  # fallback to current filename
+        try:
+            if file_type == "prompt" and config.original_prompt_filename:
+                original_filename = config.original_prompt_filename
+                logger.info(f"📁 Using original filename from database: {original_filename}")
+            elif file_type == "schema" and config.original_schema_filename:
+                original_filename = config.original_schema_filename
+                logger.info(f"📁 Using original filename from database: {original_filename}")
+            else:
+                logger.info(f"⚠️ No original filename in database for {file_type}, trying S3 metadata")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to get original filename from database: {e}")
+        
+        # PRIORITY 2: Try to get original filename from S3 metadata (backup method)
+        # Only try S3 metadata if database didn't provide original filename
+        if (original_filename == filename and successful_path):
+            try:
+                # Extract the S3 key from successful_path and get file info
+                s3_key = successful_path
+                if s3_key.startswith('companies/'):
+                    # For ID-based paths, use company file manager to get proper folder
+                    folder_type = "prompts" if file_type == "prompt" else "schemas"
+                    file_info = s3_manager.get_file_info(s3_key.replace("companies/", ""), folder_type)
+                else:
+                    # For legacy paths, use the path directly
+                    folder_type = "prompts" if file_type == "prompt" else "schemas"
+                    file_info = s3_manager.get_file_info(s3_key, folder_type)
+                
+                if file_info and "metadata" in file_info:
+                    metadata = file_info["metadata"]
+                    if "original_filename" in metadata:
+                        original_filename = metadata["original_filename"]
+                        logger.info(f"📁 Retrieved original filename from S3 metadata: {original_filename}")
+                    else:
+                        logger.info("⚠️ No original_filename in S3 metadata, using stored filename")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to retrieve original filename from S3 metadata: {e}")
+        
+        # Create temporary file for FileResponse
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{original_filename}") as temp_file:
+            # Ensure file_content is bytes for writing
+            if isinstance(file_content, str):
+                temp_file.write(file_content.encode('utf-8'))
+            else:
+                temp_file.write(file_content)
+            temp_file_path = temp_file.name
+        
+        # Determine content type
+        content_type = "text/plain" if file_type == "prompt" else "application/json"
+        
+        logger.info(f"✅ S3 file download successful: {company.company_code}/{doc_type.type_code}/{original_filename}")
+        return FileResponse(
+            path=temp_file_path,
+            filename=original_filename,
+            media_type=content_type
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ S3-only config file download failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to download {file_type} file from S3: {str(e)}")
+
+
 # File upload endpoint
 @app.post("/upload", response_model=dict)
 async def upload_file(file: UploadFile = File(...), path: str = Form(...)):
+    import json  # Import here to ensure availability for exception handling
+    
     try:
-        # Create directories if they don't exist
-        directory = os.path.join("uploads", os.path.dirname(path))
-        os.makedirs(directory, exist_ok=True)
+        # Check if this is a prompt or schema file for S3 upload
+        path_parts = path.split('/')
+        
+        # NEW ID-BASED FORMAT: document_type/{doc_type_id}/{company_id}/prompt|schema/{filename}
+        if (len(path_parts) >= 5 and 
+            path_parts[0] == "document_type" and 
+            path_parts[3] in ["prompt", "schema"]):
+            
+            # Parse IDs from path
+            try:
+                doc_type_id = int(path_parts[1])  # Now expecting ID, not code
+                company_id = int(path_parts[2])   # Now expecting ID, not code  
+            except ValueError:
+                # Fallback to legacy name-based format for compatibility
+                doc_type_code = path_parts[1]
+                company_code = path_parts[2]
+                
+                # Convert codes to IDs by querying database
+                db = next(get_db())
+                try:
+                    company = db.query(Company).filter(Company.company_code == company_code).first()
+                    doc_type = db.query(DocumentType).filter(DocumentType.type_code == doc_type_code).first()
+                    
+                    if not company or not doc_type:
+                        raise HTTPException(status_code=404, detail="Company or document type not found")
+                    
+                    company_id = company.company_id
+                    doc_type_id = doc_type.doc_type_id
+                finally:
+                    db.close()
+            
+            file_type = path_parts[3]  # "prompt" or "schema"
+            filename = path_parts[4]
+            
+            logger.info(f"Uploading {file_type} file using ID-based path: company_id={company_id}, doc_type_id={doc_type_id}, filename={filename}")
+            
+            # Parse config_id from filename if it follows the new format
+            config_id = None
+            if filename.startswith('config_'):
+                try:
+                    config_id = int(filename.split('_')[1])
+                except (IndexError, ValueError):
+                    logger.warning(f"Could not parse config_id from filename: {filename}")
+            
+            # Get S3 manager for direct ID-based upload
+            s3_manager = get_s3_manager()
+            if not s3_manager:
+                raise HTTPException(status_code=500, detail="S3 storage not available")
+            
+            # Read file content
+            file_content = await file.read()
+            
+            # Use new ID-based upload methods
+            if file_type == "prompt":
+                # For prompt files, decode to text
+                content_text = file_content.decode('utf-8')
+                
+                # Use original filename from the upload, not the path filename
+                original_filename = file.filename if hasattr(file, 'filename') else filename
+                
+                # Prepare metadata with original filename
+                upload_metadata = {
+                    "original_filename": original_filename,
+                    "upload_source": "admin_config"
+                }
+                
+                if config_id:
+                    # Use ID-based method with config_id and original filename
+                    s3_path = s3_manager.upload_prompt_by_id(
+                        company_id=company_id,
+                        doc_type_id=doc_type_id,
+                        config_id=config_id,
+                        prompt_content=content_text,
+                        filename=original_filename,  # Use original filename instead
+                        metadata=upload_metadata
+                    )
+                else:
+                    # Use generic company file method with original filename
+                    s3_path = s3_manager.upload_company_file(
+                        company_id=company_id,
+                        file_type=FileType.PROMPT,
+                        content=content_text,
+                        filename=original_filename,  # Use original filename instead
+                        doc_type_id=doc_type_id,
+                        metadata=upload_metadata
+                    )
+                    
+                if s3_path:
+                    full_s3_path = f"s3://{s3_manager.bucket_name}/{s3_path}"
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to upload prompt to S3")
+                
+            else:  # schema
+                # For schema files, parse JSON
+                content_text = file_content.decode('utf-8')
+                try:
+                    schema_data = json.loads(content_text)
+                except json.JSONDecodeError as e:
+                    raise HTTPException(status_code=400, detail=f"Invalid JSON format: {str(e)}")
+                
+                # Use original filename from the upload, not the path filename
+                original_filename = file.filename if hasattr(file, 'filename') else filename
+                
+                # Prepare metadata with original filename
+                upload_metadata = {
+                    "original_filename": original_filename,
+                    "upload_source": "admin_config"
+                }
+                
+                if config_id:
+                    # Use ID-based method with config_id and original filename
+                    s3_path = s3_manager.upload_schema_by_id(
+                        company_id=company_id,
+                        doc_type_id=doc_type_id,
+                        config_id=config_id,
+                        schema_data=schema_data,
+                        filename=original_filename,  # Use original filename instead
+                        metadata=upload_metadata
+                    )
+                else:
+                    # Use generic company file method with original filename
+                    s3_path = s3_manager.upload_company_file(
+                        company_id=company_id,
+                        file_type=FileType.SCHEMA,
+                        content=content_text,
+                        filename=original_filename,  # Use original filename instead
+                        doc_type_id=doc_type_id,
+                        metadata=upload_metadata
+                    )
+                
+                if s3_path:
+                    full_s3_path = f"s3://{s3_manager.bucket_name}/{s3_path}"
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to upload schema to S3")
+            
+            logger.info(f"✅ Successfully uploaded {file_type} using clean path structure: {full_s3_path}")
+            logger.info(f"🎯 Clean S3 path format: companies/{company_id}/{file_type}s/{doc_type_id}/{config_id if config_id else 'temp'}/{original_filename}")
+            
+            # Auto-update configuration with file path if config_id exists
+            if config_id:
+                try:
+                    db = next(get_db())
+                    try:
+                        config = db.query(CompanyDocumentConfig).filter(
+                            CompanyDocumentConfig.config_id == config_id
+                        ).first()
+                        
+                        if config:
+                            # Store clean S3 path and original filename
+                            original_filename = file.filename if hasattr(file, 'filename') else filename
+                            
+                            if file_type == "prompt":
+                                config.prompt_path = full_s3_path
+                                config.original_prompt_filename = original_filename
+                                logger.info(f"📝 Updated config {config_id} with clean prompt_path: {full_s3_path} and original_filename: {original_filename}")
+                            else:  # schema
+                                config.schema_path = full_s3_path
+                                config.original_schema_filename = original_filename
+                                logger.info(f"📝 Updated config {config_id} with clean schema_path: {full_s3_path} and original_filename: {original_filename}")
+                            
+                            db.commit()
+                        else:
+                            logger.warning(f"⚠️ Config {config_id} not found for path update")
+                    finally:
+                        db.close()
+                except Exception as e:
+                    logger.error(f"❌ Failed to update config {config_id} with file path: {e}")
+                    # Don't fail the upload if config update fails
+            
+            return {"file_path": full_s3_path}
+        
+        else:
+            # For other file types, use local storage (backward compatibility)
+            logger.info(f"Uploading non-prompt/schema file to local storage: {path}")
+            
+            # Create directories if they don't exist
+            directory = os.path.join("uploads", os.path.dirname(path))
+            os.makedirs(directory, exist_ok=True)
 
-        # Generate full file path
-        file_path = os.path.join("uploads", path)
+            # Generate full file path
+            file_path = os.path.join("uploads", path)
 
-        # Save file
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            # Save file
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
 
-        return {"file_path": file_path}
+            return {"file_path": file_path}
 
+    except json.JSONDecodeError as e:
+        logger.error(f"Error parsing schema JSON: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Invalid JSON format in schema file: {str(e)}")
+    except UnicodeDecodeError as e:
+        logger.error(f"Error decoding file content: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"File encoding error - ensure UTF-8 encoding: {str(e)}")
     except Exception as e:
         logger.error(f"Error uploading file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
@@ -671,16 +1459,23 @@ async def process_document(
                 detail=f"No active configuration found for company ID {company_id} and document type ID {doc_type_id}",
             )
 
-        # Verify prompt_path and schema_path exist
-        if not config.prompt_path or not os.path.exists(config.prompt_path):
+        # Verify prompt and schema are accessible (supports both local and S3)
+        prompt_schema_manager = get_prompt_schema_manager()
+        
+        # Check if prompt exists
+        prompt_test = await prompt_schema_manager.get_prompt(company.company_code, doc_type.type_code)
+        if not prompt_test:
             raise HTTPException(
                 status_code=500,
-                detail=f"Prompt template not found: {config.prompt_path}",
+                detail=f"Prompt template not found for {company.company_code}/{doc_type.type_code}",
             )
-
-        if not config.schema_path or not os.path.exists(config.schema_path):
+        
+        # Check if schema exists
+        schema_test = await prompt_schema_manager.get_schema(company.company_code, doc_type.type_code)
+        if not schema_test:
             raise HTTPException(
-                status_code=500, detail=f"Schema file not found: {config.schema_path}"
+                status_code=500, 
+                detail=f"Schema file not found for {company.company_code}/{doc_type.type_code}"
             )
 
         # 使用文件存储服务保存上传的文件
@@ -714,8 +1509,6 @@ async def process_document(
             process_document_task,
             job_id,
             file_path,
-            config.prompt_path,
-            config.schema_path,
             company.company_code,
             doc_type.type_code,
         )
@@ -741,8 +1534,6 @@ async def process_document(
 async def process_document_task(
     job_id: int,
     file_path: str,
-    prompt_path: str,
-    schema_path: str,
     company_code: str,
     doc_type_code: str,
 ):
@@ -769,16 +1560,18 @@ async def process_document_task(
             job_id, {"status": "processing", "message": "Document processing started"}
         )
 
-        # Load prompt and schema
-        with open(prompt_path, "r") as f:
-            prompt_template = f.read()
-
-        with open(schema_path, "r") as f:
-            schema_json = json.load(f)
+        # Load prompt and schema using the new manager (supports both S3 and local)
+        prompt_template, schema_json = await load_prompt_and_schema(company_code, doc_type_code)
+        
+        if not prompt_template:
+            raise ValueError(f"Prompt not found for {company_code}/{doc_type_code}")
+        
+        if not schema_json:
+            raise ValueError(f"Schema not found for {company_code}/{doc_type_code}")
 
         # Get API key and model from config loader
         try:
-            api_key = api_key_manager.get_least_used_key()
+            api_key = get_api_key_manager().get_least_used_key()
             model_name = app_config.get("model_name", "gemini-2.5-flash-preview-05-20")
         except ValueError as e:
             raise ValueError(f"API key configuration error: {e}")
@@ -967,6 +1760,64 @@ async def process_document_task(
         )
 
         db.add(excel_doc_file)
+
+        # Generate CSV file
+        csv_key = f"{company_code}/{doc_type_code}/{job_id}/results.csv"
+        csv_saved = False
+
+        if s3_manager:
+            # Create temporary CSV file
+            with tempfile.NamedTemporaryFile(
+                suffix=".csv", delete=False
+            ) as temp_csv:
+                temp_csv_path = temp_csv.name
+
+            try:
+                # Generate CSV file to temporary location
+                json_to_csv(result_obj, temp_csv_path, doc_type_code)
+                csv_file_size = os.path.getsize(temp_csv_path)
+
+                # Upload to S3 exports folder
+                with open(temp_csv_path, "rb") as csv_file_obj:
+                    csv_saved = s3_manager.save_excel_export(
+                        csv_key, csv_file_obj
+                    )  # Using save_excel_export as it works for any file type
+            finally:
+                # Clean up temporary file
+                if os.path.exists(temp_csv_path):
+                    os.unlink(temp_csv_path)
+
+        if not csv_saved:
+            # Fallback to local storage
+            output_dir = os.path.join(
+                "uploads", company_code, doc_type_code, str(job_id)
+            )
+            os.makedirs(output_dir, exist_ok=True)
+            csv_output_path = os.path.join(output_dir, "results.csv")
+
+            json_to_csv(result_obj, csv_output_path, doc_type_code)
+            csv_file_size = os.path.getsize(csv_output_path)
+            csv_s3_path = csv_output_path
+        else:
+            csv_s3_path = f"s3://{s3_manager.bucket_name}/exports/{csv_key}"
+
+        csv_file = DBFile(
+            file_path=csv_s3_path,
+            file_name="results.csv",
+            file_type="text/csv",
+            file_size=csv_file_size,
+        )
+
+        db.add(csv_file)
+        db.commit()
+        db.refresh(csv_file)
+
+        # Create document file relationship
+        csv_doc_file = DocumentFile(
+            job_id=job_id, file_id=csv_file.file_id, file_category="csv_output"
+        )
+
+        db.add(csv_doc_file)
 
         # Update job completion info
         job.status = "success"
@@ -1293,6 +2144,234 @@ def download_file(file_id: int, db: Session = Depends(get_db)):
         )
 
 
+# Prompt and Schema Management API endpoints
+@app.get("/health/prompts-schemas", response_model=dict)
+async def get_prompt_schema_health():
+    """Get prompt and schema management system health status"""
+    try:
+        prompt_schema_manager = get_prompt_schema_manager()
+        health = prompt_schema_manager.get_health_status()
+        return health
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.get("/prompts-schemas/templates", response_model=dict)
+async def list_templates(company_code: Optional[str] = None):
+    """List available prompt and schema templates"""
+    try:
+        prompt_schema_manager = get_prompt_schema_manager()
+        templates = await prompt_schema_manager.list_available_templates(company_code)
+        return {
+            "status": "success",
+            "data": templates,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list templates: {e}")
+
+
+@app.get("/prompts-schemas/{company_code}/{doc_type_code}/prompt", response_model=dict)
+async def get_prompt(company_code: str, doc_type_code: str, filename: str = "prompt.txt"):
+    """Get prompt content for a specific company and document type"""
+    try:
+        prompt_schema_manager = get_prompt_schema_manager()
+        prompt_content = await prompt_schema_manager.get_prompt(company_code, doc_type_code, filename)
+        
+        if not prompt_content:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Prompt not found for {company_code}/{doc_type_code}/{filename}"
+            )
+        
+        return {
+            "status": "success",
+            "data": {
+                "company_code": company_code,
+                "doc_type_code": doc_type_code,
+                "filename": filename,
+                "content": prompt_content,
+                "content_length": len(prompt_content)
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get prompt: {e}")
+
+
+@app.get("/prompts-schemas/{company_code}/{doc_type_code}/schema", response_model=dict)
+async def get_schema(company_code: str, doc_type_code: str, filename: str = "schema.json"):
+    """Get schema data for a specific company and document type"""
+    try:
+        prompt_schema_manager = get_prompt_schema_manager()
+        schema_data = await prompt_schema_manager.get_schema(company_code, doc_type_code, filename)
+        
+        if not schema_data:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Schema not found for {company_code}/{doc_type_code}/{filename}"
+            )
+        
+        return {
+            "status": "success",
+            "data": {
+                "company_code": company_code,
+                "doc_type_code": doc_type_code,
+                "filename": filename,
+                "schema": schema_data
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get schema: {e}")
+
+
+@app.post("/prompts-schemas/{company_code}/{doc_type_code}/prompt", response_model=dict)
+async def upload_prompt(
+    company_code: str, 
+    doc_type_code: str, 
+    prompt_data: dict,
+    filename: str = "prompt.txt"
+):
+    """Upload a new prompt for a specific company and document type"""
+    try:
+        if "content" not in prompt_data:
+            raise HTTPException(status_code=400, detail="Missing 'content' field in request body")
+        
+        content = prompt_data["content"]
+        metadata = prompt_data.get("metadata", {})
+        
+        prompt_schema_manager = get_prompt_schema_manager()
+        success = await prompt_schema_manager.upload_prompt(
+            company_code, doc_type_code, content, filename, metadata
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to upload prompt")
+        
+        return {
+            "status": "success",
+            "message": f"Prompt uploaded successfully for {company_code}/{doc_type_code}/{filename}",
+            "data": {
+                "company_code": company_code,
+                "doc_type_code": doc_type_code,
+                "filename": filename,
+                "content_length": len(content)
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload prompt: {e}")
+
+
+@app.post("/prompts-schemas/{company_code}/{doc_type_code}/schema", response_model=dict)
+async def upload_schema(
+    company_code: str, 
+    doc_type_code: str, 
+    schema_request: dict,
+    filename: str = "schema.json"
+):
+    """Upload a new schema for a specific company and document type"""
+    try:
+        if "schema" not in schema_request:
+            raise HTTPException(status_code=400, detail="Missing 'schema' field in request body")
+        
+        schema_data = schema_request["schema"]
+        metadata = schema_request.get("metadata", {})
+        
+        prompt_schema_manager = get_prompt_schema_manager()
+        success = await prompt_schema_manager.upload_schema(
+            company_code, doc_type_code, schema_data, filename, metadata
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to upload schema")
+        
+        return {
+            "status": "success",
+            "message": f"Schema uploaded successfully for {company_code}/{doc_type_code}/{filename}",
+            "data": {
+                "company_code": company_code,
+                "doc_type_code": doc_type_code,
+                "filename": filename,
+                "schema_properties": len(schema_data.get("properties", {}))
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload schema: {e}")
+
+
+@app.post("/prompts-schemas/{company_code}/{doc_type_code}/validate", response_model=dict)
+async def validate_prompt_schema(company_code: str, doc_type_code: str):
+    """Validate that both prompt and schema exist and are valid for a company/doc_type combination"""
+    try:
+        # Load both prompt and schema
+        prompt_content, schema_data = await load_prompt_and_schema(company_code, doc_type_code)
+        
+        validation_results = {
+            "company_code": company_code,
+            "doc_type_code": doc_type_code,
+            "prompt": {
+                "exists": prompt_content is not None,
+                "valid": False,
+                "message": ""
+            },
+            "schema": {
+                "exists": schema_data is not None,
+                "valid": False,
+                "message": ""
+            }
+        }
+        
+        # Validate prompt
+        if prompt_content:
+            from utils.prompt_schema_manager import PromptSchemaValidator
+            validator = PromptSchemaValidator()
+            is_valid, message = validator.validate_prompt(prompt_content)
+            validation_results["prompt"]["valid"] = is_valid
+            validation_results["prompt"]["message"] = message
+            validation_results["prompt"]["length"] = len(prompt_content)
+        else:
+            validation_results["prompt"]["message"] = "Prompt not found"
+        
+        # Validate schema
+        if schema_data:
+            from utils.prompt_schema_manager import PromptSchemaValidator
+            validator = PromptSchemaValidator()
+            is_valid, message = validator.validate_schema(schema_data)
+            validation_results["schema"]["valid"] = is_valid
+            validation_results["schema"]["message"] = message
+            validation_results["schema"]["properties_count"] = len(schema_data.get("properties", {}))
+        else:
+            validation_results["schema"]["message"] = "Schema not found"
+        
+        overall_valid = (validation_results["prompt"]["valid"] and 
+                        validation_results["schema"]["valid"])
+        
+        return {
+            "status": "success",
+            "data": validation_results,
+            "overall_valid": overall_valid,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to validate prompt/schema: {e}")
+
+
 # Initialize database function
 @app.on_event("startup")
 async def startup_db_client():
@@ -1409,6 +2488,107 @@ async def get_monthly_usage(db: Session = Depends(get_db)):
         for result in results
     ]
 
+@app.get("/api/admin/usage/by-job")
+async def get_api_usage_by_job(
+    job_id: int = None, 
+    batch_id: int = None, 
+    limit: int = 50, 
+    db: Session = Depends(get_db)
+):
+    """Get API usage statistics by individual job or batch"""
+    try:
+        query = db.query(
+            ApiUsage.job_id,
+            ProcessingJob.original_filename,
+            ProcessingJob.batch_id,
+            ApiUsage.input_token_count,
+            ApiUsage.output_token_count,
+            ApiUsage.processing_time_seconds,
+            ApiUsage.api_call_timestamp,
+            ApiUsage.model,
+            ApiUsage.status
+        ).join(ProcessingJob, ApiUsage.job_id == ProcessingJob.job_id)
+        
+        if job_id:
+            query = query.filter(ApiUsage.job_id == job_id)
+        elif batch_id:
+            query = query.filter(ProcessingJob.batch_id == batch_id)
+        else:
+            # Return latest records if no filter
+            query = query.order_by(ApiUsage.api_call_timestamp.desc()).limit(limit)
+        
+        results = query.all()
+        
+        return [
+            {
+                "job_id": result.job_id,
+                "filename": result.original_filename,
+                "batch_id": result.batch_id,
+                "input_tokens": result.input_token_count,
+                "output_tokens": result.output_token_count,
+                "total_tokens": result.input_token_count + result.output_token_count,
+                "processing_time": result.processing_time_seconds,
+                "timestamp": result.api_call_timestamp,
+                "model": result.model,
+                "status": result.status
+            }
+            for result in results
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch API usage by job: {str(e)}")
+
+@app.get("/api/admin/usage/summary")
+async def get_api_usage_summary(db: Session = Depends(get_db)):
+    """Get overall API usage summary"""
+    try:
+        summary = db.query(
+            func.count(ApiUsage.usage_id).label("total_calls"),
+            func.sum(ApiUsage.input_token_count).label("total_input_tokens"),
+            func.sum(ApiUsage.output_token_count).label("total_output_tokens"),
+            func.avg(ApiUsage.processing_time_seconds).label("avg_processing_time"),
+            func.min(ApiUsage.api_call_timestamp).label("first_call"),
+            func.max(ApiUsage.api_call_timestamp).label("last_call")
+        ).first()
+        
+        # Get status breakdown
+        status_breakdown = db.query(
+            ApiUsage.status,
+            func.count(ApiUsage.usage_id).label("count")
+        ).group_by(ApiUsage.status).all()
+        
+        # Get model usage breakdown
+        model_breakdown = db.query(
+            ApiUsage.model,
+            func.count(ApiUsage.usage_id).label("count"),
+            func.sum(ApiUsage.input_token_count + ApiUsage.output_token_count).label("total_tokens")
+        ).group_by(ApiUsage.model).all()
+        
+        return {
+            "summary": {
+                "total_api_calls": summary.total_calls or 0,
+                "total_input_tokens": summary.total_input_tokens or 0,
+                "total_output_tokens": summary.total_output_tokens or 0,
+                "total_tokens": (summary.total_input_tokens or 0) + (summary.total_output_tokens or 0),
+                "average_processing_time": float(summary.avg_processing_time or 0),
+                "first_call": summary.first_call,
+                "last_call": summary.last_call
+            },
+            "status_breakdown": [
+                {"status": status.status, "count": status.count}
+                for status in status_breakdown
+            ],
+            "model_breakdown": [
+                {
+                    "model": model.model, 
+                    "calls": model.count,
+                    "total_tokens": model.total_tokens or 0
+                }
+                for model in model_breakdown
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch API usage summary: {str(e)}")
+
 
 @app.post("/process-zip", response_model=dict)
 async def process_zip_file(
@@ -1455,16 +2635,23 @@ async def process_zip_file(
                 detail=f"No active configuration found for company ID {company_id} and document type ID {doc_type_id}",
             )
 
-        # Verify prompt_path and schema_path exist
-        if not config.prompt_path or not os.path.exists(config.prompt_path):
+        # Verify prompt and schema are accessible (supports both local and S3)
+        prompt_schema_manager = get_prompt_schema_manager()
+        
+        # Check if prompt exists
+        prompt_test = await prompt_schema_manager.get_prompt(company.company_code, doc_type.type_code)
+        if not prompt_test:
             raise HTTPException(
                 status_code=500,
-                detail=f"Prompt template not found: {config.prompt_path}",
+                detail=f"Prompt template not found for {company.company_code}/{doc_type.type_code}",
             )
-
-        if not config.schema_path or not os.path.exists(config.schema_path):
+        
+        # Check if schema exists
+        schema_test = await prompt_schema_manager.get_schema(company.company_code, doc_type.type_code)
+        if not schema_test:
             raise HTTPException(
-                status_code=500, detail=f"Schema file not found: {config.schema_path}"
+                status_code=500, 
+                detail=f"Schema file not found for {company.company_code}/{doc_type.type_code}"
             )
 
         # Save the uploaded zip file
@@ -1487,8 +2674,8 @@ async def process_zip_file(
             # uploader_user_id=3,
             company_id=company_id,
             doc_type_id=doc_type_id,
-            zip_filename=zip_file.filename,
-            s3_zipfile_path=zip_path,
+            upload_description=zip_file.filename,
+            s3_upload_path=zip_path,
             original_zipfile=zip_path,
             status="pending",
         )
@@ -1505,8 +2692,6 @@ async def process_zip_file(
             process_zip_task,
             batch_id,
             zip_path,
-            config.prompt_path,
-            config.schema_path,
             company.company_code,
             doc_type.type_code,
         )
@@ -1531,8 +2716,6 @@ async def process_zip_file(
 async def process_zip_task(
     batch_id: int,
     zip_path: str,
-    prompt_path: str,
-    schema_path: str,
     company_code: str,
     doc_type_code: str,
 ):
@@ -1580,16 +2763,18 @@ async def process_zip_task(
             with tempfile.TemporaryDirectory() as temp_dir:
                 zip_ref.extractall(temp_dir)
 
-                # Load prompt and schema
-                with open(prompt_path, "r") as f:
-                    prompt_template = f.read()
-
-                with open(schema_path, "r") as f:
-                    schema_json = json.load(f)
+                # Load prompt and schema using the new manager (supports both S3 and local)
+                prompt_template, schema_json = await load_prompt_and_schema(company_code, doc_type_code)
+                
+                if not prompt_template:
+                    raise ValueError(f"Prompt not found for {company_code}/{doc_type_code}")
+                
+                if not schema_json:
+                    raise ValueError(f"Schema not found for {company_code}/{doc_type_code}")
 
                 # Get API key from config loader
                 try:
-                    api_key = api_key_manager.get_least_used_key()
+                    api_key = get_api_key_manager().get_least_used_key()
                     model_name = app_config.get(
                         "model_name", "gemini-2.5-flash-preview-05-20"
                     )
@@ -1696,13 +2881,11 @@ async def process_zip_task(
                                     f"Raw text content: {str(result['text'])[:500]}"
                                 )
 
-                            # Create a simple JSON with error info instead
+                            # Create a simple JSON with error info instead - only business data
                             json_data = {
                                 "__filename": os.path.basename(image_path),
-                                "__error": f"Failed to parse result: {str(json_err)}",
-                                "__raw_text": str(result)[
-                                    :500
-                                ],  # Include first 500 chars of raw result
+                                "__error": f"Failed to parse result: {str(json_err)}"
+                                # Remove __raw_text to keep results.json clean
                             }
                             all_results.append(json_data)
 
@@ -1747,12 +2930,14 @@ async def process_zip_task(
                 # Save all results using S3 storage
                 s3_manager = get_s3_manager()
 
-                # Generate S3 keys for batch results
-                batch_json_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_results.json"
-                batch_excel_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_results.xlsx"
+                # Generate S3 keys for batch results with batch ID in filename
+                batch_json_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_{batch_job.batch_job_id}_results.json"
+                batch_excel_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_{batch_job.batch_job_id}_results.xlsx"
+                batch_csv_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_{batch_job.batch_job_id}_results.csv"
 
                 json_saved = False
                 excel_saved = False
+                csv_saved = False
 
                 if s3_manager:
                     # Save JSON results to S3 results folder
@@ -1790,11 +2975,36 @@ async def process_zip_task(
                         if os.path.exists(temp_excel_path):
                             os.unlink(temp_excel_path)
 
+                    # Create temporary CSV file and upload to S3
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".csv", delete=False
+                    ) as temp_csv:
+                        temp_csv_path = temp_csv.name
+
+                    try:
+                        # Convert to CSV
+                        await asyncio.to_thread(
+                            json_to_csv, all_results, temp_csv_path
+                        )
+
+                        # Upload to S3 exports folder
+                        with open(temp_csv_path, "rb") as csv_file_obj:
+                            csv_saved = s3_manager.save_excel_export(
+                                batch_csv_key, csv_file_obj
+                            )  # Using save_excel_export as it works for any file type
+
+                        if csv_saved:
+                            csv_s3_path = f"s3://{s3_manager.bucket_name}/exports/{batch_csv_key}"
+                    finally:
+                        # Clean up temporary file
+                        if os.path.exists(temp_csv_path):
+                            os.unlink(temp_csv_path)
+
                 # Fallback to local storage if S3 fails
-                if not json_saved or not excel_saved:
+                if not json_saved or not excel_saved or not csv_saved:
                     if not json_saved:
                         json_output_path = os.path.join(
-                            output_dir, "batch_results.json"
+                            output_dir, f"batch_{batch_job.batch_job_id}_results.json"
                         )
                         with open(json_output_path, "w", encoding="utf-8") as f:
                             json.dump(all_results, f, indent=2, ensure_ascii=False)
@@ -1802,16 +3012,26 @@ async def process_zip_task(
 
                     if not excel_saved:
                         excel_output_path = os.path.join(
-                            output_dir, "batch_results.xlsx"
+                            output_dir, f"batch_{batch_job.batch_job_id}_results.xlsx"
                         )
                         await asyncio.to_thread(
                             json_to_excel, all_results, excel_output_path
                         )
                         excel_s3_path = excel_output_path
 
+                    if not csv_saved:
+                        csv_output_path = os.path.join(
+                            output_dir, f"batch_{batch_job.batch_job_id}_results.csv"
+                        )
+                        await asyncio.to_thread(
+                            json_to_csv, all_results, csv_output_path
+                        )
+                        csv_s3_path = csv_output_path
+
                 # Update batch job with output paths and complete status
                 batch_job.json_output_path = json_s3_path
                 batch_job.excel_output_path = excel_s3_path
+                batch_job.csv_output_path = csv_s3_path
                 batch_job.status = "success"
                 db.commit()
 
@@ -1823,6 +3043,582 @@ async def process_zip_task(
             db.commit()
         except Exception:
             pass
+
+
+# Unified batch processing endpoint (replaces both /process and /process-zip)
+@app.post("/process-batch", response_model=dict)
+async def process_batch(
+    background_tasks: BackgroundTasks,
+    company_id: int = Form(...),
+    doc_type_id: int = Form(...),
+    files: List[UploadFile] = File(...),
+    mapping_file: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Unified batch processing endpoint that handles all file types:
+    - Single images -> batch of 1 image
+    - Single PDFs -> batch of 1 PDF (split into pages)
+    - Multiple files -> batch of all files
+    - ZIP files -> batch of extracted contents
+    - Mixed uploads -> batch of all processed content
+    """
+    try:
+        # Validate company and document type
+        company = db.query(Company).filter(Company.company_id == company_id).first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Company not found")
+
+        doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+        if not doc_type:
+            raise HTTPException(status_code=404, detail="Document type not found")
+
+        # Verify configuration exists
+        config = (
+            db.query(CompanyDocumentConfig)
+            .filter(
+                CompanyDocumentConfig.company_id == company_id,
+                CompanyDocumentConfig.doc_type_id == doc_type_id,
+                CompanyDocumentConfig.active,
+            )
+            .first()
+        )
+
+        if not config:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No active configuration found for company ID {company_id} and document type ID {doc_type_id}",
+            )
+
+        # Verify prompt and schema are accessible
+        prompt_schema_manager = get_prompt_schema_manager()
+        
+        prompt_test = await prompt_schema_manager.get_prompt(company.company_code, doc_type.type_code)
+        if not prompt_test:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Prompt template not found for {company.company_code}/{doc_type.type_code}",
+            )
+        
+        schema_test = await prompt_schema_manager.get_schema(company.company_code, doc_type.type_code)
+        if not schema_test:
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Schema file not found for {company.company_code}/{doc_type.type_code}"
+            )
+
+        # Validate mapping file if provided
+        mapping_file_path = None
+        if mapping_file:
+            # Check file extension
+            if not mapping_file.filename.lower().endswith('.xlsx'):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Mapping file must be an Excel (.xlsx) file"
+                )
+            
+            # Check file size (max 10MB)
+            content = await mapping_file.read()
+            if len(content) > 10 * 1024 * 1024:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Mapping file size must be less than 10MB"
+                )
+            await mapping_file.seek(0)  # Reset file pointer
+            
+            # Save mapping file to S3 for processing
+            s3_manager = get_s3_manager()
+            if s3_manager:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                mapping_s3_key = f"mapping_files/{company.company_code}/mapping_{timestamp}_{mapping_file.filename}"
+                upload_success = s3_manager.upload_file(content, mapping_s3_key)
+                
+                if upload_success:
+                    mapping_file_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{mapping_s3_key}"
+                    logger.info(f"Mapping file uploaded to: {mapping_file_path}")
+                else:
+                    logger.warning("Failed to upload mapping file to S3, proceeding without cost allocation")
+            else:
+                logger.warning("S3 not available, proceeding without cost allocation")
+
+        # Analyze uploaded files and determine batch type
+        file_names = [f.filename for f in files]
+        file_types = []
+        total_size = 0
+        
+        for file in files:
+            total_size += len(await file.read())
+            await file.seek(0)  # Reset file pointer
+            
+            # Determine file type
+            if file.content_type:
+                if file.content_type.startswith('image/'):
+                    file_types.append('image')
+                elif file.content_type == 'application/pdf':
+                    file_types.append('pdf')
+                elif file.content_type == 'application/zip':
+                    file_types.append('zip')
+                else:
+                    file_types.append('other')
+            else:
+                # Fallback to extension checking
+                ext = file.filename.lower().split('.')[-1] if '.' in file.filename else ''
+                if ext in ['jpg', 'jpeg', 'png', 'gif', 'bmp']:
+                    file_types.append('image')
+                elif ext == 'pdf':
+                    file_types.append('pdf')
+                elif ext == 'zip':
+                    file_types.append('zip')
+                else:
+                    file_types.append('other')
+
+        # Determine upload type
+        unique_types = set(file_types)
+        if len(files) == 1:
+            if 'zip' in unique_types:
+                upload_type = UploadType.zip_file
+            else:
+                upload_type = UploadType.single_file
+        elif len(unique_types) > 1:
+            upload_type = UploadType.mixed
+        else:
+            upload_type = UploadType.multiple_files
+
+        # Create upload description
+        if len(files) == 1:
+            upload_description = files[0].filename
+        else:
+            upload_description = f"{len(files)} files uploaded"
+
+        # Save uploaded files to S3
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+            
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        saved_file_paths = []
+        s3_upload_base = f"batch_uploads/{company.company_code}/{doc_type.type_code}/batch_{timestamp}"
+
+        for i, file in enumerate(files):
+            # Generate unique filename
+            safe_filename = f"{timestamp}_{i}_{file.filename}"
+            s3_key = f"{s3_upload_base}/{safe_filename}"
+            
+            # Upload file to S3
+            file_content = file.file.read()
+            upload_success = s3_manager.upload_file(file_content, s3_key)
+            
+            if not upload_success:
+                raise HTTPException(status_code=500, detail=f"Failed to upload {file.filename} to S3")
+            
+            # Construct S3 path (S3 manager adds 'upload/' prefix automatically)
+            s3_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{s3_key}"
+            saved_file_paths.append(s3_path)
+            
+            # Reset file pointer for potential reuse
+            file.file.seek(0)
+
+        # Create BatchJob record
+        batch_job = BatchJob(
+            company_id=company_id,
+            doc_type_id=doc_type_id,
+            upload_description=upload_description,
+            s3_upload_path=f"s3://{s3_manager.bucket_name}/{s3_upload_base}",  # Store the S3 base path
+            upload_type=upload_type,
+            original_file_names=file_names,
+            file_count=len(files),
+            status="pending",
+        )
+
+        db.add(batch_job)
+        db.commit()
+        db.refresh(batch_job)
+
+        logger.info(f"Created unified batch job {batch_job.batch_id} with {len(files)} files")
+
+        # Start background processing
+        background_tasks.add_task(
+            process_unified_batch, 
+            batch_job.batch_id, 
+            saved_file_paths,
+            company.company_code,
+            doc_type.type_code,
+            mapping_file_path
+        )
+
+        return {
+            "batch_id": batch_job.batch_id,
+            "status": "success",
+            "message": f"Batch upload started with {len(files)} files",
+            "upload_type": upload_type.value,
+            "file_count": len(files)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in unified batch processing: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+
+
+async def process_unified_batch(batch_id: int, file_paths: List[str], company_code: str, doc_type_code: str, mapping_file_path: Optional[str] = None):
+    """Background task to process unified batch of any file types"""
+    
+    with Session(engine) as db:
+        try:
+            # Get batch job
+            batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
+            if not batch_job:
+                logger.error(f"Batch job {batch_id} not found")
+                return
+
+            batch_job.status = "processing"
+            db.commit()
+
+            # Load prompt and schema
+            prompt_schema_manager = get_prompt_schema_manager()
+            prompt = await prompt_schema_manager.get_prompt(company_code, doc_type_code)
+            schema = await prompt_schema_manager.get_schema(company_code, doc_type_code)
+
+            if not prompt or not schema:
+                batch_job.status = "failed"
+                batch_job.error_message = "Prompt or schema not found"
+                db.commit()
+                return
+
+            # Process all files and collect processable units
+            processable_files = []
+            s3_manager = get_s3_manager()
+            temp_files_to_cleanup = []
+            
+            for file_path in file_paths:
+                # Check if this is an S3 path
+                if file_path.startswith('s3://'):
+                    # Download S3 file to temporary location
+                    file_content = s3_manager.download_file_by_stored_path(file_path)
+                    if not file_content:
+                        logger.error(f"Failed to download S3 file: {file_path}")
+                        continue
+                    
+                    # Create temporary file
+                    import tempfile
+                    original_filename = file_path.split('/')[-1]
+                    file_ext = os.path.splitext(original_filename)[1].lower()
+                    
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
+                        temp_file.write(file_content)
+                        local_file_path = temp_file.name
+                        temp_files_to_cleanup.append(local_file_path)
+                else:
+                    # Use local file path as-is
+                    local_file_path = file_path
+                    original_filename = os.path.basename(file_path)
+                    file_ext = os.path.splitext(original_filename)[1].lower()
+                
+                if file_ext == '.zip':
+                    # Extract ZIP and add images
+                    with zipfile.ZipFile(local_file_path, 'r') as zip_ref:
+                        extract_dir = local_file_path + "_extracted"
+                        os.makedirs(extract_dir, exist_ok=True)
+                        zip_ref.extractall(extract_dir)
+                        temp_files_to_cleanup.append(extract_dir)
+                        
+                        # Find images in extracted files
+                        for root, dirs, files in os.walk(extract_dir):
+                            for file in files:
+                                if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                                    processable_files.append(os.path.join(root, file))
+                
+                elif file_ext == '.pdf':
+                    # For PDF files, add both the local path and original filename
+                    processable_files.append((local_file_path, original_filename))
+                
+                elif file_ext in ['.jpg', '.jpeg', '.png']:
+                    # Direct image processing
+                    processable_files.append((local_file_path, original_filename))
+
+            # Update total files count based on what we actually found
+            batch_job.total_files = len(processable_files)
+            batch_job.processed_files = 0
+            db.commit()
+
+            if len(processable_files) == 0:
+                batch_job.status = "failed"
+                batch_job.error_message = "No processable files found"
+                db.commit()
+                return
+
+            # Process each file
+            all_results = []
+            
+            for i, file_info in enumerate(processable_files):
+                try:
+                    # Handle both tuple (local_path, original_filename) and string formats
+                    if isinstance(file_info, tuple):
+                        local_file_path, original_filename = file_info
+                    else:
+                        local_file_path = file_info
+                        original_filename = os.path.basename(file_info)
+                    
+                    # Create individual ProcessingJob for tracking
+                    job = ProcessingJob(
+                        company_id=batch_job.company_id,
+                        doc_type_id=batch_job.doc_type_id,
+                        batch_id=batch_id,
+                        original_filename=original_filename,
+                        status="processing"
+                    )
+                    db.add(job)
+                    db.commit()
+
+                    # Process the file
+                    if local_file_path.lower().endswith('.pdf'):
+                        result = await extract_text_from_pdf(local_file_path, prompt, schema)
+                    else:
+                        result = await extract_text_from_image(local_file_path, prompt, schema)
+                    
+                    # Record API usage data to database
+                    if isinstance(result, dict) and "text" in result:
+                        api_usage = ApiUsage(
+                            job_id=job.job_id,
+                            input_token_count=result.get("input_tokens", 0),
+                            output_token_count=result.get("output_tokens", 0),
+                            api_call_timestamp=datetime.now(),
+                            model=app_config.get("model_name", "gemini-2.5-flash-preview-05-20"),
+                            processing_time_seconds=result.get("processing_time", 0),
+                            status="success"
+                        )
+                        db.add(api_usage)
+                    
+                    # Clean result data - only keep business data for results.json
+                    if isinstance(result, dict):
+                        # Extract only the text content for results
+                        text_content = result.get("text", "")
+                        if text_content:
+                            try:
+                                # Parse the text content as JSON
+                                business_data = json.loads(text_content)
+                                business_data["__filename"] = original_filename
+                                all_results.append(business_data)
+                            except json.JSONDecodeError:
+                                # If text is not JSON, wrap it
+                                all_results.append({
+                                    "text": text_content,
+                                    "__filename": original_filename
+                                })
+                        else:
+                            # Fallback for missing text
+                            all_results.append({
+                                "__filename": original_filename,
+                                "__error": "No text content in result"
+                            })
+                    
+                    # Update job status
+                    job.status = "success"
+                    db.commit()
+
+                except Exception as e:
+                    logger.error(f"Error processing {local_file_path}: {str(e)}")
+                    job.status = "failed"
+                    job.error_message = str(e)
+                    
+                    # If we have a result with API usage data, still record it
+                    if 'result' in locals() and isinstance(result, dict):
+                        if "input_tokens" in result or "output_tokens" in result:
+                            api_usage = ApiUsage(
+                                job_id=job.job_id,
+                                input_token_count=result.get("input_tokens", 0),
+                                output_token_count=result.get("output_tokens", 0),
+                                api_call_timestamp=datetime.now(),
+                                model=app_config.get("model_name", "gemini-2.5-flash-preview-05-20"),
+                                processing_time_seconds=result.get("processing_time", 0),
+                                status="failed"
+                            )
+                            db.add(api_usage)
+                    
+                    db.commit()
+                    
+                    # Add error result to batch results
+                    all_results.append({
+                        "__filename": original_filename,
+                        "__error": f"Processing failed: {str(e)}"
+                    })
+
+                # Update batch progress
+                batch_job.processed_files += 1
+                db.commit()
+
+            # Save batch results to S3
+            if all_results:
+                s3_manager = get_s3_manager()
+                s3_results_base = f"batch_results/{company_code}/{doc_type_code}/batch_{batch_id}"
+
+                # Save JSON to S3
+                json_content = json.dumps(all_results, indent=2, ensure_ascii=False)
+                json_s3_key = f"{s3_results_base}/batch_{batch_id}_results.json"
+                json_upload_success = s3_manager.upload_file(json_content.encode('utf-8'), json_s3_key)
+                
+                if json_upload_success:
+                    batch_job.json_output_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{json_s3_key}"
+                else:
+                    logger.error(f"Failed to upload JSON results to S3 for batch {batch_id}")
+
+                # Save Excel to S3
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temp_excel:
+                    temp_excel_path = temp_excel.name
+                
+                # Generate Excel file locally first
+                json_to_excel(all_results, temp_excel_path)
+                
+                # Upload Excel to S3
+                with open(temp_excel_path, 'rb') as excel_file:
+                    excel_content = excel_file.read()
+                    excel_s3_key = f"{s3_results_base}/batch_{batch_id}_results.xlsx"
+                    excel_upload_success = s3_manager.upload_file(excel_content, excel_s3_key)
+                    
+                    if excel_upload_success:
+                        batch_job.excel_output_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{excel_s3_key}"
+                    else:
+                        logger.error(f"Failed to upload Excel results to S3 for batch {batch_id}")
+                
+                # Clean up temporary Excel file
+                os.unlink(temp_excel_path)
+
+                # Save CSV to S3
+                with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as temp_csv:
+                    temp_csv_path = temp_csv.name
+                
+                # Generate CSV file locally first
+                json_to_csv(all_results, temp_csv_path)
+                
+                # Upload CSV to S3
+                with open(temp_csv_path, 'rb') as csv_file:
+                    csv_content = csv_file.read()
+                    csv_s3_key = f"{s3_results_base}/batch_{batch_id}_results.csv"
+                    csv_upload_success = s3_manager.upload_file(csv_content, csv_s3_key)
+                    
+                    if csv_upload_success:
+                        batch_job.csv_output_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{csv_s3_key}"
+                    else:
+                        logger.error(f"Failed to upload CSV results to S3 for batch {batch_id}")
+                
+                # Clean up temporary CSV file
+                os.unlink(temp_csv_path)
+
+            # Process cost allocation if mapping file is provided
+            if mapping_file_path and all_results:
+                logger.info(f"Starting cost allocation process for batch {batch_id}")
+                try:
+                    # Download mapping file from S3
+                    mapping_content = None
+                    if mapping_file_path.startswith('s3://'):
+                        s3_key = mapping_file_path.replace(f"s3://{s3_manager.bucket_name}/", "")
+                        if s3_key.startswith(s3_manager.upload_prefix):
+                            s3_key = s3_key[len(s3_manager.upload_prefix):]
+                        mapping_content = s3_manager.download_file(s3_key)
+                    
+                    if mapping_content:
+                        # Process mapping file
+                        mapping_result = process_dynamic_mapping_file(mapping_content, mapping_file_path)
+                        
+                        if mapping_result.get('success', False):
+                            unified_map = mapping_result['unified_map']
+                            
+                            # Flatten all OCR results for matching
+                            flat_results = []
+                            for result in all_results:
+                                if 'service_details' in result:
+                                    # Handle structured results (like 3HK, CMHK)
+                                    for service in result['service_details']:
+                                        for charge_item in service.get('charge_items', []):
+                                            flat_record = {
+                                                'mobile_number': service.get('service_number', service.get('mobile_number', '')),
+                                                'account_number': result.get('account_number', result.get('customer_number', '')),
+                                                'description': charge_item.get('description', ''),
+                                                'amount': charge_item.get('amount', 0),
+                                                'period': charge_item.get('item_date_or_period', ''),
+                                                'company_name': result.get('company_name', ''),
+                                                'bill_date': result.get('bill_date', result.get('issue_date', ''))
+                                            }
+                                            flat_results.append(flat_record)
+                                else:
+                                    # Handle simple results
+                                    flat_results.append(result)
+                            
+                            # Enrich OCR data with mapping information
+                            enrichment_result = enrich_ocr_data(flat_results, unified_map)
+                            
+                            if enrichment_result.get('success', False):
+                                enriched_records = enrichment_result['enriched_records']
+                                
+                                # Generate NetSuite CSV
+                                netsuite_csv = generate_netsuite_csv(enriched_records)
+                                if netsuite_csv:
+                                    # Upload NetSuite CSV to S3
+                                    netsuite_s3_key = f"{s3_results_base}/netsuite_import.csv"
+                                    if s3_manager.upload_file(netsuite_csv.encode('utf-8-sig'), netsuite_s3_key):
+                                        batch_job.netsuite_csv_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{netsuite_s3_key}"
+                                        logger.info(f"NetSuite CSV uploaded to: {batch_job.netsuite_csv_path}")
+                                
+                                # Generate matching details report
+                                matching_report = generate_matching_report(enriched_records, mapping_result)
+                                if matching_report:
+                                    # Upload matching report to S3
+                                    matching_s3_key = f"{s3_results_base}/matching_details.xlsx"
+                                    if s3_manager.upload_file(matching_report, matching_s3_key):
+                                        batch_job.matching_report_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{matching_s3_key}"
+                                        logger.info(f"Matching report uploaded to: {batch_job.matching_report_path}")
+                                
+                                # Generate cost summary report
+                                summary_report = generate_summary_report(enriched_records)
+                                if summary_report:
+                                    # Upload summary report to S3
+                                    summary_s3_key = f"{s3_results_base}/cost_summary.xlsx"
+                                    if s3_manager.upload_file(summary_report, summary_s3_key):
+                                        batch_job.summary_report_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{summary_s3_key}"
+                                        logger.info(f"Summary report uploaded to: {batch_job.summary_report_path}")
+                                
+                                # Update unmatched count
+                                batch_job.unmatched_count = enrichment_result.get('unmatched_records', 0)
+                                
+                                logger.info(f"Cost allocation completed for batch {batch_id}: {enrichment_result.get('matched_records', 0)}/{enrichment_result.get('total_records', 0)} records matched")
+                            else:
+                                logger.error(f"Failed to enrich OCR data: {enrichment_result.get('error', 'Unknown error')}")
+                        else:
+                            logger.error(f"Failed to process mapping file: {mapping_result.get('error', 'Unknown error')}")
+                    else:
+                        logger.error(f"Failed to download mapping file from: {mapping_file_path}")
+                
+                except Exception as e:
+                    logger.error(f"Error in cost allocation process: {str(e)}")
+                    # Don't fail the entire batch if cost allocation fails
+
+            batch_job.status = "completed"
+            db.commit()
+
+            logger.info(f"Unified batch {batch_id} completed successfully")
+
+        except Exception as e:
+            logger.error(f"Error in unified batch processing: {str(e)}")
+            try:
+                batch_job.status = "failed"
+                batch_job.error_message = str(e)
+                db.commit()
+            except Exception:
+                pass
+        
+        finally:
+            # Clean up temporary files
+            import shutil
+            for temp_path in temp_files_to_cleanup:
+                try:
+                    if os.path.isfile(temp_path):
+                        os.unlink(temp_path)
+                    elif os.path.isdir(temp_path):
+                        shutil.rmtree(temp_path)
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to cleanup temporary file {temp_path}: {cleanup_error}")
 
 
 # Add new endpoints to get batch job status and list batch jobs
@@ -1850,8 +3646,8 @@ def get_batch_job_status(batch_id: int, db: Session = Depends(get_db)):
             if hasattr(batch_job, "uploader") and batch_job.uploader
             else None
         ),
-        "zip_filename": batch_job.zip_filename,
-        "s3_zipfile_path": batch_job.s3_zipfile_path,
+        "zip_filename": batch_job.upload_description,
+        "s3_zipfile_path": batch_job.s3_upload_path,
         "total_files": batch_job.total_files,
         "processed_files": batch_job.processed_files,
         "status": batch_job.status,
@@ -1863,7 +3659,7 @@ def get_batch_job_status(batch_id: int, db: Session = Depends(get_db)):
     }
 
 
-@app.get("/batch-jobs", response_model=List[dict])
+@app.get("/batch-jobs", response_model=dict)
 def list_batch_jobs(
     company_id: Optional[int] = None,
     doc_type_id: Optional[int] = None,
@@ -1883,35 +3679,96 @@ def list_batch_jobs(
     if status is not None:
         query = query.filter(BatchJob.status == status)
 
+    # Get total count before applying pagination
+    total_count = query.count()
+
     # Order by most recent first
     query = query.order_by(BatchJob.created_at.desc())
 
     # Apply pagination
     batch_jobs = query.offset(offset).limit(limit).all()
 
-    return [
-        {
-            "batch_id": job.batch_id,
-            "company_id": job.company_id,
-            "company_name": job.company.company_name if job.company else None,
-            "doc_type_id": job.doc_type_id,
-            "type_name": job.document_type.type_name if job.document_type else None,
-            "uploader_user_id": (
-                job.uploader_user_id if hasattr(job, "uploader_user_id") else None
-            ),
-            "uploader_name": (
-                job.uploader.name if hasattr(job, "uploader") and job.uploader else None
-            ),
-            "zip_filename": job.zip_filename,
-            "s3_zipfile_path": job.s3_zipfile_path,
-            "total_files": job.total_files,
-            "processed_files": job.processed_files,
-            "status": job.status,
-            "created_at": job.created_at.isoformat(),
-            "updated_at": job.updated_at.isoformat(),
+    # Calculate pagination info
+    total_pages = (total_count + limit - 1) // limit  # Ceiling division
+    current_page = (offset // limit) + 1
+    has_next = offset + limit < total_count
+    has_previous = offset > 0
+
+    return {
+        "data": [
+            {
+                "batch_id": job.batch_id,
+                "company_id": job.company_id,
+                "company_name": job.company.company_name if job.company else None,
+                "doc_type_id": job.doc_type_id,
+                "type_name": job.document_type.type_name if job.document_type else None,
+                "uploader_user_id": (
+                    job.uploader_user_id if hasattr(job, "uploader_user_id") else None
+                ),
+                "uploader_name": (
+                    job.uploader.name if hasattr(job, "uploader") and job.uploader else None
+                ),
+                "zip_filename": job.upload_description,
+                "s3_zipfile_path": job.s3_upload_path,
+                "total_files": job.total_files,
+                "processed_files": job.processed_files,
+                "status": job.status,
+                "created_at": job.created_at.isoformat(),
+                "updated_at": job.updated_at.isoformat(),
+            }
+            for job in batch_jobs
+        ],
+        "pagination": {
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "current_page": current_page,
+            "limit": limit,
+            "offset": offset,
+            "has_next": has_next,
+            "has_previous": has_previous,
         }
-        for job in batch_jobs
-    ]
+    }
+
+
+@app.delete("/batch-jobs/{batch_id}", response_model=dict)
+def delete_batch_job(batch_id: int, db: Session = Depends(get_db)):
+    """
+    Delete a batch job and all its related files and data.
+    
+    This endpoint will:
+    - Delete all related ProcessingJobs and their files
+    - Delete all associated file records and S3 files
+    - Delete the batch job record itself
+    - Clean up any API usage records
+    
+    Returns a summary of what was deleted.
+    """
+    try:
+        # Check if batch job exists
+        batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
+        if not batch_job:
+            raise HTTPException(status_code=404, detail="Batch job not found")
+        
+        # Use ForceDeleteManager to handle the deletion
+        delete_manager = ForceDeleteManager(db)
+        result = delete_manager.force_delete_batch_job(batch_id)
+        
+        logger.info(f"Successfully deleted batch job {batch_id}: {result['message']}")
+        
+        return {
+            "success": True,
+            "message": result["message"],
+            "batch_id": batch_id,
+            "deleted_entity": result["deleted_entity"],
+            "statistics": result["statistics"]
+        }
+        
+    except ValueError as e:
+        # Batch job not found
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to delete batch job {batch_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete batch job: {str(e)}")
 
 
 @app.get("/download-by-path")
@@ -1947,6 +3804,87 @@ def download_file_by_path(path: str):
     )
 
 
+@app.get("/download-s3-url")
+def get_s3_download_url(s3_path: str, expires_in: int = 3600):
+    """Generate a presigned URL for direct S3 download."""
+    try:
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+        
+        # Generate presigned URL
+        download_url = s3_manager.generate_presigned_url_for_path(s3_path, expires_in)
+        if not download_url:
+            raise HTTPException(status_code=404, detail=f"Cannot generate download URL for: {s3_path}")
+        
+        return {"download_url": download_url, "expires_in": expires_in}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate S3 download URL: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate download URL: {str(e)}")
+
+@app.get("/download-s3")
+def download_s3_file(s3_path: str):
+    """Download a file from S3 by its S3 path or URI."""
+    try:
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+        
+        # Download file content from S3
+        file_content = s3_manager.download_file_by_stored_path(s3_path)
+        if not file_content:
+            raise HTTPException(status_code=404, detail=f"File not found in S3: {s3_path}")
+        
+        # Extract filename from S3 path
+        if s3_path.startswith('s3://'):
+            # Handle s3://bucket/path format
+            path_parts = s3_path.replace('s3://', '').split('/')
+            filename = path_parts[-1] if path_parts else "download"
+        else:
+            # Handle direct S3 key format
+            filename = s3_path.split('/')[-1] if '/' in s3_path else s3_path
+        
+        # Determine content type based on file extension
+        file_extension = os.path.splitext(filename)[1].lower()
+        content_type = "application/octet-stream"  # Default
+        
+        if file_extension == ".json":
+            content_type = "application/json"
+        elif file_extension == ".xlsx":
+            content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        elif file_extension == ".pdf":
+            content_type = "application/pdf"
+        elif file_extension in [".jpg", ".jpeg"]:
+            content_type = "image/jpeg"
+        elif file_extension == ".png":
+            content_type = "image/png"
+        
+        # Create temporary file to serve
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+        
+        # Return file response and schedule cleanup
+        response = FileResponse(
+            path=temp_file_path,
+            filename=filename,
+            media_type=content_type,
+        )
+        
+        # Add header to indicate this is from S3
+        response.headers["X-File-Source"] = "S3"
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error downloading S3 file {s3_path}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download file: {str(e)}")
+
+
 @app.get("/files")
 def get_file_by_path(path: str, db: Session = Depends(get_db)):
     """Get file information by path."""
@@ -1960,6 +3898,2597 @@ def get_file_by_path(path: str, db: Session = Depends(get_db)):
         "file_path": file.file_path,
         "file_type": file.file_type,
     }
+
+
+# Force Delete API Endpoints
+@app.delete("/document-types/{doc_type_id}/force-delete")
+def force_delete_document_type(
+    doc_type_id: int,
+    db: Session = Depends(get_db)
+):
+    """強制刪除文檔類型及其所有依賴"""
+    try:
+        force_delete_manager = ForceDeleteManager(db)
+        result = force_delete_manager.force_delete_document_type(doc_type_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Force delete document type failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Force delete failed: {str(e)}"
+        )
+
+
+@app.delete("/companies/{company_id}/force-delete")
+def force_delete_company(
+    company_id: int,
+    db: Session = Depends(get_db)
+):
+    """強制刪除公司及其所有依賴"""
+    try:
+        force_delete_manager = ForceDeleteManager(db)
+        result = force_delete_manager.force_delete_company(company_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Force delete company failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Force delete failed: {str(e)}"
+        )
+
+
+@app.delete("/configs/{config_id}/force-delete")
+def force_delete_config(
+    config_id: int,
+    db: Session = Depends(get_db)
+):
+    """強制刪除配置及其相關文件"""
+    try:
+        force_delete_manager = ForceDeleteManager(db)
+        result = force_delete_manager.force_delete_config(config_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Force delete config failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Force delete failed: {str(e)}"
+        )
+
+
+# 為 Configurations 添加依賴檢查端點
+@app.get("/configs/{config_id}/dependencies")
+def get_config_dependencies(config_id: int, db: Session = Depends(get_db)):
+    """獲取配置的依賴信息"""
+    try:
+        from utils.dependency_checker import DependencyChecker
+        
+        # 獲取配置信息
+        config = db.query(CompanyDocumentConfig).filter(
+            CompanyDocumentConfig.config_id == config_id
+        ).first()
+        
+        if not config:
+            raise HTTPException(status_code=404, detail="Configuration not found")
+        
+        # 檢查是否有相關的處理任務（通過 company_id 和 doc_type_id）
+        processing_jobs_count = db.query(ProcessingJob).filter(
+            ProcessingJob.company_id == config.company_id,
+            ProcessingJob.doc_type_id == config.doc_type_id
+        ).count()
+        
+        batch_jobs_count = db.query(BatchJob).filter(
+            BatchJob.company_id == config.company_id,
+            BatchJob.doc_type_id == config.doc_type_id
+        ).count()
+        
+        s3_files_count = 0
+        if config.prompt_path and config.prompt_path.startswith('s3://'):
+            s3_files_count += 1
+        if config.schema_path and config.schema_path.startswith('s3://'):
+            s3_files_count += 1
+        
+        total_dependencies = processing_jobs_count + batch_jobs_count + s3_files_count
+        can_delete = total_dependencies == 0
+        
+        config_name = f"{config.company.company_name} - {config.document_type.type_name}"
+        
+        dependencies = {
+            "exists": True,
+            "config_name": config_name,
+            "can_delete": can_delete,
+            "total_dependencies": total_dependencies,
+            "dependencies": {
+                "processing_jobs": processing_jobs_count,
+                "batch_jobs": batch_jobs_count,
+                "s3_files": s3_files_count
+            },
+            "blocking_message": None if can_delete else f"Cannot delete configuration '{config_name}': {processing_jobs_count} processing job(s), {batch_jobs_count} batch job(s), {s3_files_count} S3 file(s) exist."
+        }
+        
+        return dependencies
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking config dependencies: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check dependencies: {str(e)}"
+        )
+
+
+# ============================================================================
+# OCR ORDER SYSTEM ENDPOINTS
+# ============================================================================
+
+# Pydantic models for OCR Order requests/responses
+class CreateOrderRequest(BaseModel):
+    order_name: Optional[str] = None
+
+class UpdateOrderRequest(BaseModel):
+    order_name: Optional[str] = None
+    mapping_keys: Optional[List[str]] = None
+
+class CreateOrderItemRequest(BaseModel):
+    company_id: int
+    doc_type_id: int
+    item_name: Optional[str] = None
+
+class OrderResponse(BaseModel):
+    order_id: int
+    order_name: Optional[str]
+    status: str
+    total_items: int
+    completed_items: int
+    failed_items: int
+    mapping_file_path: Optional[str]
+    mapping_keys: Optional[List[str]]
+    final_report_paths: Optional[dict]
+    created_at: str
+    updated_at: str
+
+class OrderItemFileResponse(BaseModel):
+    file_id: int
+    filename: str
+    file_size: int
+    file_type: str
+    upload_order: Optional[int]
+    uploaded_at: str
+
+class OrderItemResponse(BaseModel):
+    item_id: int
+    order_id: int
+    company_id: int
+    doc_type_id: int
+    item_name: Optional[str]
+    status: str
+    file_count: int
+    files: List[OrderItemFileResponse]
+    company_name: Optional[str]
+    doc_type_name: Optional[str]
+    ocr_result_json_path: Optional[str]
+    ocr_result_csv_path: Optional[str]
+    created_at: str
+    updated_at: str
+
+@app.post("/orders", response_model=dict)
+def create_order(request: CreateOrderRequest, db: Session = Depends(get_db)):
+    """Create a new OCR order"""
+    try:
+        order = OcrOrder(
+            order_name=request.order_name,
+            status=OrderStatus.DRAFT
+        )
+        db.add(order)
+        db.commit()
+        db.refresh(order)
+
+        return {
+            "order_id": order.order_id,
+            "order_name": order.order_name,
+            "status": order.status.value,
+            "message": "Order created successfully"
+        }
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to create order: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
+
+@app.get("/orders", response_model=dict)
+def list_orders(
+    status: Optional[str] = None,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db)
+):
+    """List OCR orders with pagination"""
+    try:
+        query = db.query(OcrOrder)
+
+        if status:
+            query = query.filter(OcrOrder.status == status)
+
+        # Get total count
+        total_count = query.count()
+
+        # Apply pagination and ordering
+        orders = query.order_by(OcrOrder.created_at.desc()).offset(offset).limit(limit).all()
+
+        order_data = []
+        for order in orders:
+            order_data.append({
+                "order_id": order.order_id,
+                "order_name": order.order_name,
+                "status": order.status.value,
+                "total_items": order.total_items,
+                "completed_items": order.completed_items,
+                "failed_items": order.failed_items,
+                "mapping_file_path": order.mapping_file_path,
+                "mapping_keys": order.mapping_keys,
+                "final_report_paths": order.final_report_paths,
+                "created_at": order.created_at.isoformat(),
+                "updated_at": order.updated_at.isoformat()
+            })
+
+        # Calculate pagination info
+        total_pages = (total_count + limit - 1) // limit
+
+        return {
+            "data": order_data,
+            "pagination": {
+                "total_count": total_count,
+                "total_pages": total_pages,
+                "current_page": (offset // limit) + 1,
+                "page_size": limit,
+                "has_next": offset + limit < total_count,
+                "has_prev": offset > 0
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to list orders: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to list orders: {str(e)}")
+
+@app.get("/orders/{order_id}", response_model=dict)
+def get_order(order_id: int, db: Session = Depends(get_db)):
+    """Get order details including items"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # Get order items with company and document type info
+        items_query = db.query(OcrOrderItem).filter(OcrOrderItem.order_id == order_id)
+        items = items_query.all()
+
+        items_data = []
+        for item in items:
+            # Get files for this item
+            file_links = db.query(OrderItemFile).filter(OrderItemFile.item_id == item.item_id).all()
+            files_list = []
+            for link in file_links:
+                file_info = link.file
+                files_list.append({
+                    "file_id": file_info.file_id,
+                    "filename": file_info.file_name,
+                    "file_size": file_info.file_size,
+                    "file_type": file_info.file_type,
+                    "upload_order": link.upload_order,
+                    "uploaded_at": link.created_at.isoformat()
+                })
+
+            items_data.append({
+                "item_id": item.item_id,
+                "order_id": item.order_id,
+                "company_id": item.company_id,
+                "doc_type_id": item.doc_type_id,
+                "item_name": item.item_name,
+                "status": item.status.value,
+                "file_count": item.file_count,
+                "files": files_list,
+                "company_name": item.company.company_name if item.company else None,
+                "doc_type_name": item.document_type.type_name if item.document_type else None,
+                "ocr_result_json_path": item.ocr_result_json_path,
+                "ocr_result_csv_path": item.ocr_result_csv_path,
+                "processing_started_at": item.processing_started_at.isoformat() if item.processing_started_at else None,
+                "processing_completed_at": item.processing_completed_at.isoformat() if item.processing_completed_at else None,
+                "processing_time_seconds": item.processing_time_seconds,
+                "error_message": item.error_message,
+                "created_at": item.created_at.isoformat(),
+                "updated_at": item.updated_at.isoformat()
+            })
+
+        return {
+            "order_id": order.order_id,
+            "order_name": order.order_name,
+            "status": order.status.value,
+            "total_items": order.total_items,
+            "completed_items": order.completed_items,
+            "failed_items": order.failed_items,
+            "mapping_file_path": order.mapping_file_path,
+            "mapping_keys": order.mapping_keys,
+            "final_report_paths": order.final_report_paths,
+            "error_message": order.error_message,
+            "items": items_data,
+            "created_at": order.created_at.isoformat(),
+            "updated_at": order.updated_at.isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get order: {str(e)}")
+
+@app.put("/orders/{order_id}", response_model=dict)
+def update_order(order_id: int, request: UpdateOrderRequest, db: Session = Depends(get_db)):
+    """Update order details"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # Allow mapping keys updates for DRAFT, COMPLETED, and MAPPING orders
+        # But only allow other fields for DRAFT orders
+        if request.order_name is not None:
+            if order.status != OrderStatus.DRAFT:
+                raise HTTPException(status_code=400, detail="Can only update order name for orders in DRAFT status")
+            order.order_name = request.order_name
+
+        if request.mapping_keys is not None:
+            if order.status not in [OrderStatus.DRAFT, OrderStatus.OCR_COMPLETED, OrderStatus.COMPLETED, OrderStatus.MAPPING]:
+                raise HTTPException(status_code=400, detail="Can only update mapping keys for orders in DRAFT, OCR_COMPLETED, COMPLETED, or MAPPING status")
+
+            # 保存旧的mapping_keys用于比较
+            old_mapping_keys = order.mapping_keys or []
+            new_mapping_keys = request.mapping_keys or []
+
+            # 更新mapping_keys
+            order.mapping_keys = request.mapping_keys
+
+            # 创建映射历史记录（如果映射键发生了变化）
+            if old_mapping_keys != new_mapping_keys:
+                create_mapping_history_on_update(
+                    db=db,
+                    order_id=order_id,
+                    new_mapping_keys=new_mapping_keys,
+                    operation_type="UPDATE",
+                    operation_reason="Manual update via API"
+                )
+
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(order)
+
+        return {
+            "order_id": order.order_id,
+            "order_name": order.order_name,
+            "status": order.status.value,
+            "mapping_keys": order.mapping_keys,
+            "message": "Order updated successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to update order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update order: {str(e)}")
+
+@app.delete("/orders/{order_id}", response_model=dict)
+def delete_order(order_id: int, db: Session = Depends(get_db)):
+    """Delete order and all its items"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # Only allow deletion of DRAFT or FAILED orders
+        if order.status not in [OrderStatus.DRAFT, OrderStatus.FAILED]:
+            raise HTTPException(status_code=400, detail="Can only delete orders in DRAFT or FAILED status")
+
+        # Delete order (cascade will handle items and files)
+        db.delete(order)
+        db.commit()
+
+        return {"message": "Order deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to delete order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete order: {str(e)}")
+
+@app.post("/orders/{order_id}/items", response_model=dict)
+def create_order_item(order_id: int, request: CreateOrderItemRequest, db: Session = Depends(get_db)):
+    """Add an item to an order"""
+    try:
+        # Check if order exists and is in DRAFT status
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only add items to orders in DRAFT status")
+
+        # Verify company and document type exist
+        company = db.query(Company).filter(Company.company_id == request.company_id).first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Company not found")
+
+        doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == request.doc_type_id).first()
+        if not doc_type:
+            raise HTTPException(status_code=404, detail="Document type not found")
+
+        # Create order item
+        item = OcrOrderItem(
+            order_id=order_id,
+            company_id=request.company_id,
+            doc_type_id=request.doc_type_id,
+            item_name=request.item_name or f"{company.company_name} - {doc_type.type_name}",
+            status=OrderItemStatus.PENDING
+        )
+
+        db.add(item)
+
+        # Update order total_items count
+        order.total_items += 1
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(item)
+
+        return {
+            "item_id": item.item_id,
+            "order_id": item.order_id,
+            "company_id": item.company_id,
+            "doc_type_id": item.doc_type_id,
+            "item_name": item.item_name,
+            "status": item.status.value,
+            "message": "Order item created successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to create order item: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create order item: {str(e)}")
+
+@app.delete("/orders/{order_id}/items/{item_id}", response_model=dict)
+def delete_order_item(
+    order_id: int,
+    item_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete an order item and all its associated files"""
+    try:
+        # Verify order exists and is in DRAFT status
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only delete items from orders in DRAFT status")
+
+        # Verify item exists and belongs to the order
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Get all files linked to this item for cleanup
+        file_links = db.query(OrderItemFile).filter(OrderItemFile.item_id == item_id).all()
+        file_storage = get_file_storage()
+
+        # Delete files from storage and cleanup file records
+        for file_link in file_links:
+            file_info = file_link.file
+
+            # Delete from storage using order file system
+            try:
+                file_storage.delete_order_file(file_info.file_path)
+            except Exception as storage_error:
+                logger.warning(f"Failed to delete order file {file_info.file_id} from storage: {str(storage_error)}")
+
+            # Remove the file link
+            db.delete(file_link)
+
+            # Delete the file record if no other items reference it
+            other_links = db.query(OrderItemFile).filter(OrderItemFile.file_id == file_info.file_id).count()
+            if other_links == 0:
+                db.delete(file_info)
+
+        # Delete the order item (this will cascade delete file links due to DB constraints)
+        db.delete(item)
+
+        # Update order totals
+        order.total_items = db.query(OcrOrderItem).filter(OcrOrderItem.order_id == order_id).count()
+        order.completed_items = db.query(OcrOrderItem).filter(
+            OcrOrderItem.order_id == order_id,
+            OcrOrderItem.status == OrderItemStatus.COMPLETED
+        ).count()
+        order.failed_items = db.query(OcrOrderItem).filter(
+            OcrOrderItem.order_id == order_id,
+            OcrOrderItem.status == OrderItemStatus.FAILED
+        ).count()
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "message": "Order item deleted successfully",
+            "item_id": item_id,
+            "files_deleted": len(file_links),
+            "order_totals": {
+                "total_items": order.total_items,
+                "completed_items": order.completed_items,
+                "failed_items": order.failed_items
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to delete order item: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete order item: {str(e)}")
+
+@app.post("/orders/{order_id}/submit", response_model=dict)
+def submit_order(order_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Submit order for processing"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only submit orders in DRAFT status")
+
+        if order.total_items == 0:
+            raise HTTPException(status_code=400, detail="Cannot submit order with no items")
+
+        # Check if all items have files
+        items_without_files = db.query(OcrOrderItem).filter(
+            OcrOrderItem.order_id == order_id,
+            OcrOrderItem.file_count == 0
+        ).count()
+
+        if items_without_files > 0:
+            raise HTTPException(status_code=400, detail=f"{items_without_files} items have no files uploaded")
+
+        # Update order status
+        order.status = OrderStatus.PROCESSING
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        # Start background processing
+        background_tasks.add_task(start_order_processing, order_id)
+
+        return {
+            "order_id": order.order_id,
+            "status": order.status.value,
+            "message": "Order submitted for processing successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to submit order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to submit order: {str(e)}")
+
+@app.post("/orders/{order_id}/process-ocr-only", response_model=dict)
+def process_order_ocr_only(order_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Submit order for OCR-only processing (no mapping)"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only process orders in DRAFT status")
+
+        if order.total_items == 0:
+            raise HTTPException(status_code=400, detail="Cannot process order with no items")
+
+        # Check if all items have files
+        items_without_files = db.query(OcrOrderItem).filter(
+            OcrOrderItem.order_id == order_id,
+            OcrOrderItem.file_count == 0
+        ).count()
+
+        if items_without_files > 0:
+            raise HTTPException(status_code=400, detail=f"{items_without_files} items have no files uploaded")
+
+        # Update order status to PROCESSING
+        order.status = OrderStatus.PROCESSING
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        # Start background OCR-only processing
+        background_tasks.add_task(start_order_ocr_only_processing, order_id)
+
+        return {
+            "order_id": order.order_id,
+            "status": order.status.value,
+            "message": "Order submitted for OCR-only processing successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to process order OCR-only {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process order: {str(e)}")
+
+
+@app.post("/orders/{order_id}/process-mapping", response_model=dict)
+def process_order_mapping_only(order_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Submit order for mapping-only processing (OCR already completed)"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status not in [OrderStatus.OCR_COMPLETED, OrderStatus.MAPPING, OrderStatus.COMPLETED]:
+            raise HTTPException(status_code=400, detail="Can only process mapping for orders in OCR_COMPLETED, MAPPING, or COMPLETED status")
+
+        # Check if mapping configuration is complete
+        if not order.mapping_file_path:
+            raise HTTPException(status_code=400, detail="Mapping file is required for mapping processing")
+
+        if not order.mapping_keys or len(order.mapping_keys) == 0:
+            raise HTTPException(status_code=400, detail="Mapping keys are required for mapping processing")
+
+        # Validate that all items have OCR results
+        items_without_ocr = db.query(OcrOrderItem).filter(
+            OcrOrderItem.order_id == order_id,
+            OcrOrderItem.status != OrderItemStatus.COMPLETED
+        ).count()
+
+        if items_without_ocr > 0:
+            raise HTTPException(status_code=400, detail=f"{items_without_ocr} items don't have completed OCR results")
+
+        # Update order status to MAPPING
+        order.status = OrderStatus.MAPPING
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        # Start background mapping processing
+        background_tasks.add_task(start_order_mapping_only_processing, order_id)
+
+        return {
+            "order_id": order.order_id,
+            "status": order.status.value,
+            "message": "Order submitted for mapping processing successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to process order mapping {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process mapping: {str(e)}")
+
+
+@app.post("/orders/{order_id}/items/{item_id}/files", response_model=dict)
+def upload_files_to_order_item(
+    order_id: int,
+    item_id: int,
+    files: List[UploadFile] = File(...),
+    db: Session = Depends(get_db)
+):
+    """Upload files to a specific order item"""
+    try:
+        # Verify order and item exist
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only upload files to orders in DRAFT status")
+
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Get company and document type information for file storage
+        company = db.query(Company).filter(Company.company_id == item.company_id).first()
+        doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == item.doc_type_id).first()
+
+        if not company or not doc_type:
+            raise HTTPException(status_code=500, detail="Company or document type not found")
+
+        # Get file storage manager
+        file_storage = get_file_storage()
+        uploaded_files = []
+
+        for file in files:
+            # Validate file type
+            valid_types = ['image/jpeg', 'image/png', 'application/pdf']
+            valid_extensions = ['.jpg', '.jpeg', '.png', '.pdf']
+            file_extension = '.' + file.filename.split('.')[-1].lower() if '.' in file.filename else ''
+
+            if file.content_type not in valid_types and file_extension not in valid_extensions:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File {file.filename} type not supported. Please upload images or PDFs."
+                )
+
+            # Get file size before upload (to avoid I/O operation on closed file)
+            file.file.seek(0, 2)  # Move to end of file
+            file_size = file.file.tell()  # Get file size
+            file.file.seek(0)  # Reset to beginning
+
+            # Save file to storage using dedicated order file system
+            try:
+                file_path, original_filename = file_storage.save_order_file(
+                    file, order_id, item_id
+                )
+
+                # Create file record
+                db_file = DBFile(
+                    file_path=file_path,
+                    file_name=file.filename,
+                    file_size=file_size,
+                    file_type=file.content_type
+                )
+                db.add(db_file)
+                db.flush()  # Get file_id
+
+                # Link file to order item
+                order_item_file = OrderItemFile(
+                    item_id=item_id,
+                    file_id=db_file.file_id,
+                    upload_order=item.file_count + len(uploaded_files) + 1
+                )
+                db.add(order_item_file)
+
+                uploaded_files.append({
+                    "file_id": db_file.file_id,
+                    "filename": file.filename,
+                    "file_size": file_size,
+                    "file_path": file_path
+                })
+
+            except Exception as e:
+                logger.error(f"Failed to save file {file.filename}: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to save file {file.filename}")
+
+        # Update item file count
+        item.file_count += len(uploaded_files)
+        item.updated_at = datetime.utcnow()
+
+        # Update order timestamp
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "message": f"Successfully uploaded {len(uploaded_files)} files",
+            "uploaded_files": uploaded_files,
+            "item_file_count": item.file_count
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to upload files to order item: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload files: {str(e)}")
+
+@app.get("/orders/{order_id}/items/{item_id}/files", response_model=dict)
+def list_order_item_files(order_id: int, item_id: int, db: Session = Depends(get_db)):
+    """List files for a specific order item"""
+    try:
+        # Verify order and item exist
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Get files linked to this item
+        file_links = db.query(OrderItemFile).filter(OrderItemFile.item_id == item_id).all()
+
+        files_data = []
+        for link in file_links:
+            file_info = link.file
+            files_data.append({
+                "file_id": file_info.file_id,
+                "filename": file_info.file_name,
+                "file_size": file_info.file_size,
+                "file_type": file_info.file_type,
+                "upload_order": link.upload_order,
+                "uploaded_at": link.created_at.isoformat()
+            })
+
+        return {
+            "item_id": item_id,
+            "file_count": len(files_data),
+            "files": files_data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to list order item files: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to list files: {str(e)}")
+
+@app.delete("/orders/{order_id}/items/{item_id}/files/{file_id}", response_model=dict)
+def delete_order_item_file(
+    order_id: int,
+    item_id: int,
+    file_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete a specific file from an order item"""
+    try:
+        # Verify order exists and is in DRAFT status
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only delete files from orders in DRAFT status")
+
+        # Verify item exists and belongs to the order
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Verify file exists and is linked to the item
+        file_link = db.query(OrderItemFile).filter(
+            OrderItemFile.item_id == item_id,
+            OrderItemFile.file_id == file_id
+        ).first()
+        if not file_link:
+            raise HTTPException(status_code=404, detail="File not linked to this item")
+
+        # Get file info for deletion from storage
+        file_info = db.query(DBFile).filter(DBFile.file_id == file_id).first()
+        if not file_info:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Delete file from storage using order file system
+        try:
+            file_storage = get_file_storage()
+            file_storage.delete_order_file(file_info.file_path)
+        except Exception as storage_error:
+            logger.warning(f"Failed to delete order file from storage: {str(storage_error)}")
+            # Continue with database deletion even if storage deletion fails
+
+        # Remove file link from order item
+        db.delete(file_link)
+
+        # Delete the file record if no other items reference it
+        other_links = db.query(OrderItemFile).filter(OrderItemFile.file_id == file_id).count()
+        if other_links == 0:
+            db.delete(file_info)
+
+        # Update item file count
+        remaining_files = db.query(OrderItemFile).filter(OrderItemFile.item_id == item_id).count()
+        item.file_count = remaining_files
+        item.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "message": "File deleted successfully",
+            "item_id": item_id,
+            "file_id": file_id,
+            "remaining_files": remaining_files
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to delete order item file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete file: {str(e)}")
+
+@app.post("/orders/{order_id}/mapping-file", response_model=dict)
+def upload_mapping_file(
+    order_id: int,
+    mapping_file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """Upload mapping file to order"""
+    try:
+        # Verify order exists and is in DRAFT status
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status not in [OrderStatus.DRAFT, OrderStatus.OCR_COMPLETED]:
+            raise HTTPException(status_code=400, detail="Can only upload mapping file to orders in DRAFT or OCR_COMPLETED status")
+
+        # Validate file type (Excel and CSV supported)
+        if not (mapping_file.filename.lower().endswith('.xlsx') or mapping_file.filename.lower().endswith('.csv')):
+            raise HTTPException(status_code=400, detail="Mapping file must be an Excel (.xlsx) or CSV (.csv) file")
+
+        # Get file storage manager
+        file_storage = get_file_storage()
+
+        try:
+            # Save mapping file to storage using dedicated order mapping system
+            file_path, original_filename = file_storage.save_order_mapping_file(
+                mapping_file, order_id
+            )
+
+            # Update order with mapping file path
+            order.mapping_file_path = file_path
+            order.updated_at = datetime.utcnow()
+
+            db.commit()
+
+            return {
+                "message": "Mapping file uploaded successfully",
+                "mapping_file_path": file_path,
+                "filename": mapping_file.filename
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to save mapping file: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to save mapping file")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to upload mapping file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload mapping file: {str(e)}")
+
+@app.get("/orders/{order_id}/mapping-headers", response_model=dict)
+def get_mapping_file_headers(order_id: int, db: Session = Depends(get_db)):
+    """Get headers from uploaded mapping file"""
+    try:
+        # Verify order exists and has mapping file
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if not order.mapping_file_path:
+            raise HTTPException(status_code=404, detail="No mapping file uploaded for this order")
+
+        # Get file storage manager and read Excel headers
+        file_storage = get_file_storage()
+
+        try:
+            import pandas as pd
+            import tempfile
+            import os
+
+            # Determine file type and create temporary file with correct extension
+            file_content = file_storage.download_file(order.mapping_file_path)
+            file_extension = '.csv' if order.mapping_file_path.lower().endswith('.csv') else '.xlsx'
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
+                temp_file.write(file_content)
+                temp_file_path = temp_file.name
+
+            try:
+                sheet_headers = {}
+
+                if file_extension == '.csv':
+                    # Read CSV file and get headers
+                    df = pd.read_csv(temp_file_path, nrows=0)
+                    sheet_headers['Sheet1'] = list(df.columns)
+                else:
+                    # Read Excel file and get sheet names and headers
+                    excel_file = pd.ExcelFile(temp_file_path)
+
+                    for sheet_name in excel_file.sheet_names:
+                        df = pd.read_excel(temp_file_path, sheet_name=sheet_name, nrows=0)
+                        sheet_headers[sheet_name] = list(df.columns)
+
+                return {
+                    "order_id": order_id,
+                    "mapping_file_path": order.mapping_file_path,
+                    "sheet_headers": sheet_headers,
+                    "available_keys": list(set().union(*sheet_headers.values())) if sheet_headers else []
+                }
+
+            finally:
+                # Clean up temp file
+                os.unlink(temp_file_path)
+
+        except Exception as e:
+            logger.error(f"Failed to parse mapping file: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to parse mapping file: {str(e)}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get mapping file headers: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get mapping file headers: {str(e)}")
+
+@app.delete("/orders/{order_id}/mapping-file", response_model=dict)
+def delete_mapping_file(order_id: int, db: Session = Depends(get_db)):
+    """Delete mapping file from order"""
+    try:
+        # Verify order exists and is in DRAFT status
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only delete mapping file from orders in DRAFT status")
+
+        if not order.mapping_file_path:
+            raise HTTPException(status_code=404, detail="No mapping file to delete")
+
+        # Delete file from storage using order file system
+        try:
+            file_storage = get_file_storage()
+            file_storage.delete_order_file(order.mapping_file_path)
+        except Exception as storage_error:
+            logger.warning(f"Failed to delete order mapping file from storage: {str(storage_error)}")
+            # Continue with database update even if storage deletion fails
+
+        # Clear mapping file info from order
+        order.mapping_file_path = None
+        order.mapping_keys = None
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "message": "Mapping file deleted successfully",
+            "order_id": order_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to delete mapping file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete mapping file: {str(e)}")
+
+
+@app.get("/orders/{order_id}/items/{item_id}/download/json")
+def download_order_item_json(order_id: int, item_id: int, db: Session = Depends(get_db)):
+    """Download OCR result JSON file for a specific order item"""
+    try:
+        # Verify order and item exist
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Check if item is completed and has JSON result
+        if item.status != OrderItemStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Order item is not completed yet")
+
+        if not item.ocr_result_json_path:
+            raise HTTPException(status_code=404, detail="JSON result file not found for this item")
+
+        # Use existing S3 download infrastructure
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+
+        # Download file content from S3
+        file_content = s3_manager.download_file_by_stored_path(item.ocr_result_json_path)
+        if not file_content:
+            raise HTTPException(status_code=404, detail=f"File not found in S3: {item.ocr_result_json_path}")
+
+        # Generate filename for download
+        filename = f"order_{order_id}_item_{item_id}_{item.item_name or 'result'}.json"
+
+        # Create temporary file to serve
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+
+        # Return file response
+        response = FileResponse(
+            path=temp_file_path,
+            filename=filename,
+            media_type="application/json",
+        )
+
+        response.headers["X-File-Source"] = "S3"
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download order item JSON {item_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download JSON file: {str(e)}")
+
+
+@app.get("/orders/{order_id}/items/{item_id}/download/csv")
+def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(get_db)):
+    """Download OCR result CSV file for a specific order item"""
+    try:
+        # Verify order and item exist
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Check if item is completed and has CSV result
+        if item.status != OrderItemStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Order item is not completed yet")
+
+        if not item.ocr_result_csv_path:
+            raise HTTPException(status_code=404, detail="CSV result file not found for this item")
+
+        # Use existing S3 download infrastructure
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+
+        # Download file content from S3
+        file_content = s3_manager.download_file_by_stored_path(item.ocr_result_csv_path)
+        if not file_content:
+            raise HTTPException(status_code=404, detail=f"File not found in S3: {item.ocr_result_csv_path}")
+
+        # Generate filename for download
+        filename = f"order_{order_id}_item_{item_id}_{item.item_name or 'result'}.csv"
+
+        # Create temporary file to serve
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+
+        # Return file response
+        response = FileResponse(
+            path=temp_file_path,
+            filename=filename,
+            media_type="text/csv",
+        )
+
+        response.headers["X-File-Source"] = "S3"
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download order item CSV {item_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download CSV file: {str(e)}")
+
+@app.get("/orders/{order_id}/items/{item_id}/csv-headers", response_model=dict)
+def get_order_item_csv_headers(order_id: int, item_id: int, db: Session = Depends(get_db)):
+    """Get CSV headers from a completed order item for mapping key selection"""
+    try:
+        # Verify order exists
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # Verify item exists and belongs to the order
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Check if item is completed and has CSV results
+        if item.status != OrderItemStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Order item must be completed to get CSV headers")
+
+        if not item.ocr_result_csv_path:
+            raise HTTPException(status_code=404, detail="No CSV results found for this item")
+
+        # Download CSV file and parse headers
+        file_storage = get_file_storage()
+
+        try:
+            import pandas as pd
+            import tempfile
+            import os
+
+            # Download CSV content
+            csv_content = file_storage.download_file(item.ocr_result_csv_path)
+            if not csv_content:
+                raise HTTPException(status_code=500, detail="Failed to download CSV file from storage")
+
+            # Create temporary CSV file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.csv', mode='wb') as temp_file:
+                temp_file.write(csv_content)
+                temp_file_path = temp_file.name
+
+            try:
+                # Read CSV headers (first row only)
+                df = pd.read_csv(temp_file_path, nrows=0)
+                headers = list(df.columns)
+
+                return {
+                    "item_id": item_id,
+                    "order_id": order_id,
+                    "item_name": item.item_name,
+                    "csv_headers": headers,
+                    "current_mapping_keys": item.mapping_keys or [],
+                    "header_count": len(headers)
+                }
+
+            finally:
+                # Clean up temp file
+                os.unlink(temp_file_path)
+
+        except Exception as e:
+            logger.error(f"Failed to parse CSV headers for item {item_id}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to parse CSV headers: {str(e)}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get CSV headers for item {item_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get CSV headers: {str(e)}")
+
+@app.put("/orders/{order_id}/items/{item_id}/mapping-keys", response_model=dict)
+def update_order_item_mapping_keys(
+    order_id: int,
+    item_id: int,
+    request: dict,
+    db: Session = Depends(get_db)
+):
+    """Update mapping keys for a specific order item"""
+    try:
+        # Verify order exists and is in DRAFT status
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status not in [OrderStatus.DRAFT, OrderStatus.OCR_COMPLETED, OrderStatus.COMPLETED, OrderStatus.MAPPING]:
+            raise HTTPException(status_code=400, detail="Can only update mapping keys for orders in DRAFT, OCR_COMPLETED, COMPLETED, or MAPPING status")
+
+        # Verify item exists and belongs to the order
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Extract mapping keys from request
+        mapping_keys = request.get('mapping_keys', [])
+        if not isinstance(mapping_keys, list):
+            raise HTTPException(status_code=400, detail="mapping_keys must be an array")
+
+        # Limit to maximum 3 keys
+        if len(mapping_keys) > 3:
+            raise HTTPException(status_code=400, detail="Maximum 3 mapping keys allowed per item")
+
+        # Filter out empty strings
+        mapping_keys = [key.strip() for key in mapping_keys if key and key.strip()]
+
+        # Update item mapping keys
+        item.mapping_keys = mapping_keys if mapping_keys else None
+        item.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        return {
+            "item_id": item_id,
+            "order_id": order_id,
+            "mapping_keys": mapping_keys,
+            "message": "Order item mapping keys updated successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to update mapping keys for item {item_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update mapping keys: {str(e)}")
+
+
+@app.get("/companies/{company_id}/document-types/{doc_type_id}/suggested-mapping-keys", response_model=dict)
+def get_suggested_mapping_keys(
+    company_id: int,
+    doc_type_id: int,
+    csv_headers: Optional[str] = None,
+    limit: int = 3,
+    db: Session = Depends(get_db)
+):
+    """Get suggested mapping keys for a company and document type"""
+    try:
+        from utils.mapping_key_recommender import MappingKeyRecommender
+
+        recommender = MappingKeyRecommender(db)
+
+        # Parse CSV headers if provided
+        headers_list = None
+        if csv_headers:
+            headers_list = [h.strip() for h in csv_headers.split(',') if h.strip()]
+
+        # Get recommendations
+        suggestions = recommender.suggest_mapping_keys(
+            company_id=company_id,
+            doc_type_id=doc_type_id,
+            csv_headers=headers_list,
+            limit=limit
+        )
+
+        return {
+            "company_id": company_id,
+            "doc_type_id": doc_type_id,
+            "suggestions": suggestions,
+            "total_suggestions": len(suggestions)
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get suggested mapping keys: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get suggestions: {str(e)}")
+
+
+@app.put("/companies/{company_id}/document-types/{doc_type_id}/default-mapping-keys", response_model=dict)
+def update_default_mapping_keys(
+    company_id: int,
+    doc_type_id: int,
+    request: dict,
+    db: Session = Depends(get_db)
+):
+    """Update default mapping keys for a company and document type"""
+    try:
+        mapping_keys = request.get('mapping_keys', [])
+
+        if not isinstance(mapping_keys, list):
+            raise HTTPException(status_code=400, detail="mapping_keys must be a list")
+
+        if len(mapping_keys) > 5:
+            raise HTTPException(status_code=400, detail="Maximum 5 mapping keys allowed")
+
+        from utils.mapping_key_recommender import MappingKeyRecommender
+
+        recommender = MappingKeyRecommender(db)
+        success = recommender.update_default_mapping_keys(
+            company_id=company_id,
+            doc_type_id=doc_type_id,
+            mapping_keys=mapping_keys
+        )
+
+        if not success:
+            raise HTTPException(status_code=404, detail="Company document config not found")
+
+        return {
+            "company_id": company_id,
+            "doc_type_id": doc_type_id,
+            "default_mapping_keys": mapping_keys,
+            "message": "Default mapping keys updated successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update default mapping keys: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update default keys: {str(e)}")
+
+
+# =============================================================================
+# Auto-Mapping Configuration APIs
+# =============================================================================
+
+@app.get("/companies/{company_id}/document-types/{doc_type_id}/auto-mapping-config", response_model=dict)
+def get_auto_mapping_config(
+    company_id: int,
+    doc_type_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get auto-mapping configuration for a company and document type"""
+    try:
+        config = db.query(CompanyDocumentConfig).filter(
+            CompanyDocumentConfig.company_id == company_id,
+            CompanyDocumentConfig.doc_type_id == doc_type_id,
+            CompanyDocumentConfig.active == True
+        ).first()
+
+        if not config:
+            raise HTTPException(status_code=404, detail="Company document configuration not found")
+
+        return {
+            "company_id": company_id,
+            "doc_type_id": doc_type_id,
+            "auto_mapping_enabled": config.auto_mapping_enabled or False,
+            "default_mapping_keys": config.default_mapping_keys or [],
+            "cross_field_mappings": config.cross_field_mappings or {},
+            "updated_at": config.updated_at.isoformat() if config.updated_at else None
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get auto-mapping config: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get auto-mapping config: {str(e)}")
+
+
+@app.put("/companies/{company_id}/document-types/{doc_type_id}/auto-mapping-config", response_model=dict)
+def update_auto_mapping_config(
+    company_id: int,
+    doc_type_id: int,
+    request: dict,
+    db: Session = Depends(get_db)
+):
+    """Update auto-mapping configuration for a company and document type"""
+    try:
+        config = db.query(CompanyDocumentConfig).filter(
+            CompanyDocumentConfig.company_id == company_id,
+            CompanyDocumentConfig.doc_type_id == doc_type_id,
+            CompanyDocumentConfig.active == True
+        ).first()
+
+        if not config:
+            raise HTTPException(status_code=404, detail="Company document configuration not found")
+
+        # Validate input
+        auto_mapping_enabled = request.get('auto_mapping_enabled', False)
+        default_mapping_keys = request.get('default_mapping_keys', [])
+        cross_field_mappings = request.get('cross_field_mappings', {})
+
+        if not isinstance(auto_mapping_enabled, bool):
+            raise HTTPException(status_code=400, detail="auto_mapping_enabled must be a boolean")
+
+        if not isinstance(default_mapping_keys, list):
+            raise HTTPException(status_code=400, detail="default_mapping_keys must be a list")
+
+        if len(default_mapping_keys) > 3:
+            raise HTTPException(status_code=400, detail="Maximum 3 default mapping keys allowed")
+
+        if not isinstance(cross_field_mappings, dict):
+            raise HTTPException(status_code=400, detail="cross_field_mappings must be a dictionary")
+
+        # Update configuration
+        config.auto_mapping_enabled = auto_mapping_enabled
+        config.default_mapping_keys = default_mapping_keys
+        config.cross_field_mappings = cross_field_mappings
+        config.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        logger.info(f"Auto-mapping config updated for company {company_id}, doc_type {doc_type_id}")
+        return {
+            "company_id": company_id,
+            "doc_type_id": doc_type_id,
+            "auto_mapping_enabled": auto_mapping_enabled,
+            "default_mapping_keys": default_mapping_keys,
+            "cross_field_mappings": cross_field_mappings,
+            "message": "Auto-mapping configuration updated successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update auto-mapping config: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update auto-mapping config: {str(e)}")
+
+
+@app.post("/companies/{company_id}/document-types/{doc_type_id}/test-auto-mapping", response_model=dict)
+def test_auto_mapping_config(
+    company_id: int,
+    doc_type_id: int,
+    request: dict,
+    db: Session = Depends(get_db)
+):
+    """Test auto-mapping configuration with sample data"""
+    try:
+        # Get configuration
+        config = db.query(CompanyDocumentConfig).filter(
+            CompanyDocumentConfig.company_id == company_id,
+            CompanyDocumentConfig.doc_type_id == doc_type_id,
+            CompanyDocumentConfig.active == True
+        ).first()
+
+        if not config:
+            raise HTTPException(status_code=404, detail="Company document configuration not found")
+
+        if not config.auto_mapping_enabled:
+            raise HTTPException(status_code=400, detail="Auto-mapping is not enabled for this configuration")
+
+        # Get sample OCR data from request
+        sample_ocr_data = request.get('sample_ocr_data', [])
+        sample_mapping_data = request.get('sample_mapping_data', [])
+
+        if not sample_ocr_data or not sample_mapping_data:
+            raise HTTPException(status_code=400, detail="Both sample_ocr_data and sample_mapping_data are required")
+
+        # Simulate auto-mapping logic
+        from utils.order_processor import OrderProcessor
+        processor = OrderProcessor()
+
+        # Create a mock matching result
+        test_results = {
+            "auto_mapping_enabled": config.auto_mapping_enabled,
+            "default_mapping_keys": config.default_mapping_keys or [],
+            "cross_field_mappings": config.cross_field_mappings or {},
+            "sample_matches": [],
+            "match_statistics": {
+                "total_ocr_records": len(sample_ocr_data),
+                "potential_matches": 0,
+                "cross_field_matches": 0
+            }
+        }
+
+        # Basic matching simulation
+        default_keys = config.default_mapping_keys or []
+        cross_mappings = config.cross_field_mappings or {}
+
+        for ocr_record in sample_ocr_data[:5]:  # Limit to first 5 for testing
+            matches = []
+            for mapping_record in sample_mapping_data:
+                # Test direct key matches
+                for key in default_keys:
+                    if key in mapping_record and key in ocr_record:
+                        if str(ocr_record[key]).strip() == str(mapping_record[key]).strip():
+                            matches.append({
+                                "strategy": "direct_match",
+                                "field": key,
+                                "ocr_value": ocr_record[key],
+                                "mapping_value": mapping_record[key]
+                            })
+
+                # Test cross-field matches
+                for ocr_field, mapping_field in cross_mappings.items():
+                    if ocr_field in ocr_record and mapping_field in mapping_record:
+                        if str(ocr_record[ocr_field]).strip() == str(mapping_record[mapping_field]).strip():
+                            matches.append({
+                                "strategy": "cross_field_match",
+                                "ocr_field": ocr_field,
+                                "mapping_field": mapping_field,
+                                "ocr_value": ocr_record[ocr_field],
+                                "mapping_value": mapping_record[mapping_field]
+                            })
+
+            if matches:
+                test_results["sample_matches"].append({
+                    "ocr_record": ocr_record,
+                    "matches": matches
+                })
+                test_results["match_statistics"]["potential_matches"] += len(matches)
+
+        test_results["match_statistics"]["cross_field_matches"] = len([
+            m for match_set in test_results["sample_matches"]
+            for m in match_set["matches"]
+            if m["strategy"] == "cross_field_match"
+        ])
+
+        return test_results
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to test auto-mapping config: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to test auto-mapping config: {str(e)}")
+
+
+@app.get("/mapping-analytics", response_model=dict)
+def get_mapping_analytics(
+    company_id: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    """Get mapping usage analytics"""
+    try:
+        from utils.mapping_key_recommender import MappingKeyRecommender
+
+        recommender = MappingKeyRecommender(db)
+        analytics = recommender.get_mapping_analytics(company_id)
+
+        return {
+            "company_id": company_id,
+            "analytics": analytics,
+            "generated_at": datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get mapping analytics: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get analytics: {str(e)}")
+
+
+@app.get("/orders/{order_id}/download/mapped-csv")
+def download_order_mapped_csv(order_id: int, db: Session = Depends(get_db)):
+    """Download final mapped CSV results for order"""
+    try:
+        # Verify order exists and is completed
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Order must be completed to download mapped results")
+
+        # Check if mapped CSV exists
+        if not order.final_report_paths or 'mapped_csv' not in order.final_report_paths:
+            raise HTTPException(status_code=404, detail="No mapped CSV results found for this order")
+
+        mapped_csv_path = order.final_report_paths['mapped_csv']
+        if not mapped_csv_path:
+            raise HTTPException(status_code=404, detail="Mapped CSV path is empty")
+
+        # Download file from storage
+        file_storage = get_file_storage()
+        file_content = file_storage.download_file(mapped_csv_path)
+
+        if not file_content:
+            raise HTTPException(status_code=500, detail="Failed to download mapped CSV file from storage")
+
+        # Create response
+        filename = f"order_{order_id}_mapped_results.csv"
+        response = Response(
+            content=file_content,
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+        response.headers["X-File-Source"] = "S3"
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download order mapped CSV {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download mapped CSV file: {str(e)}")
+
+@app.get("/orders/{order_id}/download/mapped-excel")
+def download_order_mapped_excel(order_id: int, db: Session = Depends(get_db)):
+    """Download final mapped Excel results for order"""
+    try:
+        # Verify order exists and is completed
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Order must be completed to download mapped results")
+
+        # Check if mapped Excel exists
+        if not order.final_report_paths or 'mapped_excel' not in order.final_report_paths:
+            raise HTTPException(status_code=404, detail="No mapped Excel results found for this order")
+
+        mapped_excel_path = order.final_report_paths['mapped_excel']
+        if not mapped_excel_path:
+            raise HTTPException(status_code=404, detail="Mapped Excel path is empty")
+
+        # Download file from storage
+        file_storage = get_file_storage()
+        file_content = file_storage.download_file(mapped_excel_path)
+
+        if not file_content:
+            raise HTTPException(status_code=500, detail="Failed to download mapped Excel file from storage")
+
+        # Create response
+        filename = f"order_{order_id}_mapped_results.xlsx"
+        response = Response(
+            content=file_content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+        response.headers["X-File-Source"] = "S3"
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download order mapped Excel {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download mapped Excel file: {str(e)}")
+
+
+# ========================================
+# 映射历史和版本管理 API 端点 (Phase 3.1)
+# ========================================
+
+@app.get("/orders/{order_id}/mapping-history")
+def get_mapping_history(
+    order_id: int,
+    item_id: Optional[int] = Query(None, description="Item ID for item-level history, omit for order-level"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of records to return"),
+    db: Session = Depends(get_db)
+):
+    """获取映射历史记录"""
+    try:
+        from utils.mapping_history_manager import MappingHistoryManager
+
+        # 验证order是否存在
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # 如果指定了item_id，验证item是否存在且属于该order
+        if item_id is not None:
+            item = db.query(OcrOrderItem).filter(
+                OcrOrderItem.item_id == item_id,
+                OcrOrderItem.order_id == order_id
+            ).first()
+            if not item:
+                raise HTTPException(status_code=404, detail="Order item not found")
+
+        history_manager = MappingHistoryManager(db)
+        history_records = history_manager.get_mapping_history(order_id, item_id, limit)
+
+        return {
+            "order_id": order_id,
+            "item_id": item_id,
+            "total_records": len(history_records),
+            "history": history_records
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get mapping history for order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get mapping history: {str(e)}")
+
+
+@app.get("/orders/{order_id}/mapping-history/{version}")
+def get_mapping_version(
+    order_id: int,
+    version: int,
+    item_id: Optional[int] = Query(None, description="Item ID for item-level history, omit for order-level"),
+    db: Session = Depends(get_db)
+):
+    """获取特定版本的映射配置"""
+    try:
+        from utils.mapping_history_manager import MappingHistoryManager
+
+        # 验证order是否存在
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        history_manager = MappingHistoryManager(db)
+        version_data = history_manager.get_mapping_version(order_id, version, item_id)
+
+        if not version_data:
+            raise HTTPException(status_code=404, detail=f"Version {version} not found")
+
+        return version_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get mapping version {version} for order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get mapping version: {str(e)}")
+
+
+@app.get("/orders/{order_id}/mapping-diff/{version1}/{version2}")
+def compare_mapping_versions(
+    order_id: int,
+    version1: int,
+    version2: int,
+    item_id: Optional[int] = Query(None, description="Item ID for item-level comparison, omit for order-level"),
+    db: Session = Depends(get_db)
+):
+    """比较两个版本的映射配置差异"""
+    try:
+        from utils.mapping_history_manager import MappingHistoryManager
+
+        # 验证order是否存在
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        history_manager = MappingHistoryManager(db)
+        diff_result = history_manager.compare_versions(order_id, version1, version2, item_id)
+
+        return diff_result
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to compare versions {version1} and {version2} for order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to compare versions: {str(e)}")
+
+
+class MappingRollbackRequest(BaseModel):
+    target_version: int
+    rollback_reason: Optional[str] = None
+    created_by: Optional[str] = None
+
+
+@app.post("/orders/{order_id}/mapping-rollback")
+def rollback_mapping_to_version(
+    order_id: int,
+    request: MappingRollbackRequest,
+    item_id: Optional[int] = Query(None, description="Item ID for item-level rollback, omit for order-level"),
+    db: Session = Depends(get_db)
+):
+    """回滚映射配置到指定版本"""
+    try:
+        from utils.mapping_history_manager import MappingHistoryManager
+
+        # 验证order是否存在
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # 验证order状态 - 只允许在特定状态下回滚
+        if order.status not in [OrderStatus.DRAFT, OrderStatus.OCR_COMPLETED, OrderStatus.COMPLETED, OrderStatus.MAPPING]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot rollback mapping in current order status: {order.status}"
+            )
+
+        history_manager = MappingHistoryManager(db)
+        success = history_manager.rollback_to_version(
+            order_id=order_id,
+            target_version=request.target_version,
+            item_id=item_id,
+            created_by=request.created_by,
+            rollback_reason=request.rollback_reason
+        )
+
+        if success:
+            # 刷新order数据
+            db.refresh(order)
+            return {
+                "success": True,
+                "message": f"Successfully rolled back to version {request.target_version}",
+                "current_mapping_keys": order.mapping_keys
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Rollback operation failed")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to rollback order {order_id} to version {request.target_version}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to rollback mapping: {str(e)}")
+
+
+# =============================================================================
+# Order Management APIs (Lock/Unlock, Restart OCR/Mapping)
+# =============================================================================
+
+@app.post("/orders/{order_id}/lock")
+def lock_order(order_id: int, db: Session = Depends(get_db)):
+    """Lock an order to prevent further modifications"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status == OrderStatus.LOCKED:
+            return {"message": "Order is already locked", "status": "LOCKED"}
+
+        order.status = OrderStatus.LOCKED
+        order.updated_at = datetime.utcnow()
+        db.commit()
+
+        logger.info(f"Order {order_id} locked successfully")
+        return {"message": "Order locked successfully", "status": "LOCKED"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to lock order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to lock order: {str(e)}")
+
+
+@app.post("/orders/{order_id}/unlock")
+def unlock_order(order_id: int, db: Session = Depends(get_db)):
+    """Unlock an order to allow modifications"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.LOCKED:
+            return {"message": "Order is not locked", "status": order.status.value}
+
+        # Determine appropriate status based on order completion
+        if order.completed_items == order.total_items and order.total_items > 0:
+            new_status = OrderStatus.COMPLETED
+        elif order.completed_items > 0:
+            new_status = OrderStatus.OCR_COMPLETED
+        else:
+            new_status = OrderStatus.DRAFT
+
+        order.status = new_status
+        order.updated_at = datetime.utcnow()
+        db.commit()
+
+        logger.info(f"Order {order_id} unlocked successfully, status set to {new_status.value}")
+        return {"message": "Order unlocked successfully", "status": new_status.value}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to unlock order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to unlock order: {str(e)}")
+
+
+@app.post("/orders/{order_id}/restart-ocr")
+def restart_ocr_processing(order_id: int, db: Session = Depends(get_db)):
+    """Restart OCR processing for an order"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status == OrderStatus.LOCKED:
+            raise HTTPException(status_code=400, detail="Cannot restart OCR for locked order")
+
+        # Reset order status and counters
+        order.status = OrderStatus.PROCESSING
+        order.completed_items = 0
+        order.failed_items = 0
+        order.error_message = None
+        order.updated_at = datetime.utcnow()
+
+        # Reset all order items to PENDING
+        for item in order.items:
+            item.status = OrderItemStatus.PENDING
+            item.ocr_result_json_path = None
+            item.ocr_result_csv_path = None
+            item.error_message = None
+            item.processing_started_at = None
+            item.processing_completed_at = None
+            item.processing_time_seconds = None
+            item.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        # Trigger OCR processing
+        from utils.order_processor import OrderProcessor
+        processor = OrderProcessor()
+
+        # Process asynchronously
+        import asyncio
+        def run_async():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(processor.process_order(order_id))
+            loop.close()
+
+        import threading
+        thread = threading.Thread(target=run_async)
+        thread.start()
+
+        logger.info(f"Order {order_id} OCR processing restarted")
+        return {"message": "OCR processing restarted successfully", "order_id": order_id, "status": "PROCESSING"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to restart OCR for order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to restart OCR: {str(e)}")
+
+
+@app.post("/orders/{order_id}/restart-mapping")
+def restart_mapping_processing(order_id: int, db: Session = Depends(get_db)):
+    """Restart mapping processing for an order"""
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status == OrderStatus.LOCKED:
+            raise HTTPException(status_code=400, detail="Cannot restart mapping for locked order")
+
+        if order.status not in [OrderStatus.OCR_COMPLETED, OrderStatus.MAPPING, OrderStatus.COMPLETED]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot restart mapping for order in {order.status} status"
+            )
+
+        # Reset mapping-related fields
+        order.status = OrderStatus.MAPPING
+        order.final_report_paths = None
+        order.error_message = None
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        # Trigger mapping processing
+        from utils.order_processor import OrderProcessor
+        processor = OrderProcessor()
+
+        # Process asynchronously
+        import asyncio
+        def run_async():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(processor.process_dynamic_mapping(order_id))
+            loop.close()
+
+        import threading
+        thread = threading.Thread(target=run_async)
+        thread.start()
+
+        logger.info(f"Order {order_id} mapping processing restarted")
+        return {"message": "Mapping processing restarted successfully", "order_id": order_id, "status": "MAPPING"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to restart mapping for order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to restart mapping: {str(e)}")
+
+
+@app.get("/orders/{order_id}/mapping-statistics")
+def get_mapping_statistics(
+    order_id: int,
+    item_id: Optional[int] = Query(None, description="Item ID for item-level statistics, omit for order-level"),
+    db: Session = Depends(get_db)
+):
+    """获取映射历史统计信息"""
+    try:
+        from utils.mapping_history_manager import MappingHistoryManager
+
+        # 验证order是否存在
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        history_manager = MappingHistoryManager(db)
+        statistics = history_manager.get_mapping_statistics(order_id, item_id)
+
+        return {
+            "order_id": order_id,
+            "item_id": item_id,
+            "statistics": statistics
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get mapping statistics for order {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get mapping statistics: {str(e)}")
+
+
+# 映射键更新时自动创建历史记录的辅助函数
+def create_mapping_history_on_update(
+    db: Session,
+    order_id: int,
+    new_mapping_keys: List[str],
+    operation_type: str = "UPDATE",
+    item_id: Optional[int] = None,
+    operation_reason: Optional[str] = None,
+    created_by: Optional[str] = None
+):
+    """在映射键更新时自动创建历史记录"""
+    try:
+        from utils.mapping_history_manager import MappingHistoryManager, MappingOperation
+
+        history_manager = MappingHistoryManager(db)
+
+        # 将字符串转换为MappingOperation枚举
+        if operation_type == "UPDATE":
+            op_type = MappingOperation.UPDATE
+        elif operation_type == "CREATE":
+            op_type = MappingOperation.CREATE
+        elif operation_type == "APPLY_RECOMMENDATION":
+            op_type = MappingOperation.APPLY_RECOMMENDATION
+        else:
+            op_type = MappingOperation.UPDATE
+
+        history_manager.create_mapping_version(
+            order_id=order_id,
+            mapping_keys=new_mapping_keys,
+            operation_type=op_type,
+            item_id=item_id,
+            operation_reason=operation_reason,
+            created_by=created_by
+        )
+
+        logger.info(f"Created mapping history record for order {order_id}, operation: {operation_type}")
+
+    except Exception as e:
+        logger.error(f"Failed to create mapping history record: {str(e)}")
+        # 不抛出异常，避免影响主要的映射更新操作
+
+
+# =======================
+# 批量映射管理 API 端点
+# =======================
+
+class BulkMappingPreviewRequest(BaseModel):
+    target_orders: Optional[List[int]] = None
+    new_mapping_keys: Optional[List[str]] = None
+    filter_criteria: Optional[dict] = None
+    operation_type: str = "update"
+
+
+class BulkMappingUpdateRequest(BaseModel):
+    target_orders: Optional[List[int]] = None
+    new_mapping_keys: Optional[List[str]] = None
+    filter_criteria: Optional[dict] = None
+    operation_type: str = "update"
+    operation_reason: Optional[str] = None
+    created_by: Optional[str] = None
+    confirm_changes: bool = False
+
+
+class BulkRollbackRequest(BaseModel):
+    target_orders: List[int]
+    target_version: Optional[int] = None
+    rollback_to_date: Optional[str] = None
+    created_by: Optional[str] = None
+    rollback_reason: Optional[str] = None
+    confirm_rollback: bool = False
+
+
+@app.post("/mapping/bulk/preview")
+async def preview_bulk_mapping_update(request: BulkMappingPreviewRequest, db: Session = Depends(get_db)):
+    """预览批量映射更新"""
+    try:
+        from utils.bulk_mapping_manager import BulkMappingManager
+
+        bulk_manager = BulkMappingManager(db)
+
+        preview_result = bulk_manager.preview_bulk_mapping_update(
+            target_orders=request.target_orders,
+            new_mapping_keys=request.new_mapping_keys,
+            filter_criteria=request.filter_criteria,
+            operation_type=request.operation_type
+        )
+
+        return {
+            "success": True,
+            "preview": {
+                "affected_orders": preview_result.affected_orders,
+                "summary": preview_result.summary,
+                "warnings": preview_result.warnings,
+                "errors": preview_result.errors
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to preview bulk mapping update: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to preview bulk mapping update: {str(e)}")
+
+
+@app.post("/mapping/bulk/execute")
+async def execute_bulk_mapping_update(request: BulkMappingUpdateRequest, db: Session = Depends(get_db)):
+    """执行批量映射更新"""
+    try:
+        from utils.bulk_mapping_manager import BulkMappingManager
+
+        bulk_manager = BulkMappingManager(db)
+
+        result = bulk_manager.execute_bulk_mapping_update(
+            target_orders=request.target_orders,
+            new_mapping_keys=request.new_mapping_keys,
+            filter_criteria=request.filter_criteria,
+            operation_type=request.operation_type,
+            operation_reason=request.operation_reason,
+            created_by=request.created_by,
+            confirm_changes=request.confirm_changes
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Failed to execute bulk mapping update: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to execute bulk mapping update: {str(e)}")
+
+
+@app.post("/mapping/bulk/rollback")
+async def bulk_rollback_orders(request: BulkRollbackRequest, db: Session = Depends(get_db)):
+    """批量回滚订单映射"""
+    try:
+        from utils.bulk_mapping_manager import BulkMappingManager
+
+        bulk_manager = BulkMappingManager(db)
+
+        result = bulk_manager.bulk_rollback_orders(
+            target_orders=request.target_orders,
+            target_version=request.target_version,
+            rollback_to_date=request.rollback_to_date,
+            created_by=request.created_by,
+            rollback_reason=request.rollback_reason,
+            confirm_rollback=request.confirm_rollback
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Failed to execute bulk rollback: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to execute bulk rollback: {str(e)}")
+
+
+@app.get("/mapping/bulk/candidates")
+async def get_bulk_operation_candidates(
+    operation_type: str = Query("all", description="操作类型"),
+    include_completed_only: bool = Query(True, description="只包含已完成的订单"),
+    min_items: int = Query(1, description="最小项目数量"),
+    db: Session = Depends(get_db)
+):
+    """获取适合批量操作的订单候选列表"""
+    try:
+        from utils.bulk_mapping_manager import BulkMappingManager
+
+        bulk_manager = BulkMappingManager(db)
+
+        candidates = bulk_manager.get_bulk_operation_candidates(
+            operation_type=operation_type,
+            include_completed_only=include_completed_only,
+            min_items=min_items
+        )
+
+        return {
+            "success": True,
+            "total_candidates": len(candidates),
+            "candidates": candidates
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get bulk operation candidates: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get bulk operation candidates: {str(e)}")
+
+
+# =======================
+# 智能路径管理 API 端点
+# =======================
+
+class PathGenerationRequest(BaseModel):
+    category: str
+    company_id: int
+    doc_type_id: Optional[int] = None
+    identifier: Optional[str] = None
+    filename: Optional[str] = None
+    template: Optional[str] = "BASIC"
+    conflict_strategy: Optional[str] = "AUTO_RENAME"
+    custom_vars: Optional[dict] = None
+
+
+class PathValidationRequest(BaseModel):
+    path: str
+
+
+class PathMigrationRequest(BaseModel):
+    source_pattern: str
+    target_template: str
+    dry_run: bool = True
+
+
+@app.post("/paths/generate")
+async def generate_smart_path(request: PathGenerationRequest, db: Session = Depends(get_db)):
+    """生成智能路径"""
+    try:
+        from utils.smart_path_manager import SmartPathManager, PathContext, PathTemplate, PathConflictStrategy
+
+        path_manager = SmartPathManager(db)
+
+        # 获取公司和文档类型信息
+        from sqlalchemy import text as sql_text
+        company_query = sql_text("SELECT company_code FROM companies WHERE company_id = :company_id")
+        company_result = db.execute(company_query, {"company_id": request.company_id})
+        company_row = company_result.fetchone()
+        if not company_row:
+            raise HTTPException(status_code=404, detail="Company not found")
+        company_code = company_row[0]
+
+        doc_type_code = None
+        if request.doc_type_id:
+            doc_type_query = sql_text("SELECT type_code FROM document_types WHERE doc_type_id = :doc_type_id")
+            doc_type_result = db.execute(doc_type_query, {"doc_type_id": request.doc_type_id})
+            doc_type_row = doc_type_result.fetchone()
+            if doc_type_row:
+                doc_type_code = doc_type_row[0]
+
+        # 创建路径上下文
+        context = PathContext(
+            category=request.category,
+            company_id=request.company_id,
+            company_code=company_code,
+            doc_type_id=request.doc_type_id,
+            doc_type_code=doc_type_code,
+            identifier=request.identifier,
+            filename=request.filename,
+            custom_vars=request.custom_vars
+        )
+
+        # 解析模板和冲突策略
+        template = getattr(PathTemplate, request.template, PathTemplate.BASIC)
+        conflict_strategy = getattr(PathConflictStrategy, request.conflict_strategy, PathConflictStrategy.AUTO_RENAME)
+
+        # 生成路径
+        generated_path = path_manager.generate_smart_path(context, template, conflict_strategy)
+
+        return {
+            "success": True,
+            "generated_path": generated_path,
+            "context": {
+                "category": context.category,
+                "company_code": context.company_code,
+                "doc_type_code": context.doc_type_code,
+                "template": request.template,
+                "conflict_strategy": request.conflict_strategy
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate smart path: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate smart path: {str(e)}")
+
+
+@app.post("/paths/validate")
+async def validate_path_structure(request: PathValidationRequest, db: Session = Depends(get_db)):
+    """验证路径结构"""
+    try:
+        from utils.smart_path_manager import SmartPathManager
+
+        path_manager = SmartPathManager(db)
+        validation_result = path_manager.validate_path_structure(request.path)
+
+        return {
+            "success": True,
+            "validation": {
+                "is_valid": validation_result.is_valid,
+                "path": validation_result.path,
+                "conflicts": validation_result.conflicts,
+                "suggestions": validation_result.suggestions,
+                "metadata": validation_result.metadata
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to validate path: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to validate path: {str(e)}")
+
+
+@app.post("/paths/migrate")
+async def migrate_legacy_paths(request: PathMigrationRequest, db: Session = Depends(get_db)):
+    """迁移历史路径"""
+    try:
+        from utils.smart_path_manager import SmartPathManager, PathTemplate
+
+        path_manager = SmartPathManager(db)
+
+        # 解析目标模板
+        target_template = getattr(PathTemplate, request.target_template, PathTemplate.BASIC)
+
+        # 执行迁移
+        migration_result = path_manager.migrate_legacy_paths(
+            source_pattern=request.source_pattern,
+            target_template=target_template,
+            dry_run=request.dry_run
+        )
+
+        return {
+            "success": True,
+            "migration": migration_result
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to migrate paths: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to migrate paths: {str(e)}")
+
+
+@app.get("/paths/analytics")
+async def get_path_analytics(
+    category: Optional[str] = Query(None, description="路径类别过滤"),
+    db: Session = Depends(get_db)
+):
+    """获取路径分析统计"""
+    try:
+        from utils.smart_path_manager import SmartPathManager
+
+        path_manager = SmartPathManager(db)
+        analytics = path_manager.get_path_analytics(category)
+
+        return {
+            "success": True,
+            "analytics": analytics
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get path analytics: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get path analytics: {str(e)}")
+
+
+@app.get("/paths/templates")
+async def get_available_templates():
+    """获取可用的路径模板"""
+    try:
+        from utils.smart_path_manager import PathTemplate, PathConflictStrategy
+
+        templates = []
+        for template in PathTemplate:
+            templates.append({
+                "name": template.name,
+                "value": template.value,
+                "description": f"Template: {template.value}"
+            })
+
+        strategies = []
+        for strategy in PathConflictStrategy:
+            strategies.append({
+                "name": strategy.name,
+                "value": strategy.value,
+                "description": f"Strategy: {strategy.value}"
+            })
+
+        return {
+            "success": True,
+            "templates": templates,
+            "conflict_strategies": strategies
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get templates: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get templates: {str(e)}")
+
+
+# =======================
+# 高级映射分析工具 API 端点
+# =======================
+
+class AnalysisRequest(BaseModel):
+    analysis_period_days: int = 30
+    include_historical: bool = True
+    focus_areas: Optional[List[str]] = None
+
+
+@app.post("/analysis/comprehensive")
+async def generate_comprehensive_analysis(request: AnalysisRequest, db: Session = Depends(get_db)):
+    """生成综合映射分析报告"""
+    try:
+        from utils.advanced_mapping_analyzer import AdvancedMappingAnalyzer
+
+        analyzer = AdvancedMappingAnalyzer(db)
+
+        report = analyzer.generate_comprehensive_analysis(
+            analysis_period_days=request.analysis_period_days,
+            include_historical=request.include_historical,
+            focus_areas=request.focus_areas
+        )
+
+        return {
+            "success": True,
+            "report": {
+                "report_id": report.report_id,
+                "generated_at": report.generated_at.isoformat(),
+                "analysis_period": {
+                    "start": report.analysis_period[0].isoformat(),
+                    "end": report.analysis_period[1].isoformat()
+                },
+                "summary": report.summary,
+                "insights": [
+                    {
+                        "type": insight.insight_type,
+                        "title": insight.title,
+                        "description": insight.description,
+                        "impact_score": insight.impact_score,
+                        "recommendations": insight.recommendations,
+                        "affected_items": insight.affected_items,
+                        "data_points": insight.data_points
+                    }
+                    for insight in report.insights
+                ],
+                "patterns": [
+                    {
+                        "mapping_key": pattern.mapping_key,
+                        "frequency": pattern.frequency,
+                        "companies": list(pattern.companies),
+                        "doc_types": list(pattern.doc_types),
+                        "success_rate": pattern.success_rate,
+                        "avg_processing_time": pattern.avg_processing_time,
+                        "last_used": pattern.last_used.isoformat() if pattern.last_used else None
+                    }
+                    for pattern in report.patterns
+                ],
+                "recommendations": report.recommendations,
+                "metrics": report.metrics
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate comprehensive analysis: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate comprehensive analysis: {str(e)}")
+
+
+@app.get("/analysis/trends")
+async def analyze_mapping_trends(
+    days_back: int = Query(90, description="分析天数"),
+    db: Session = Depends(get_db)
+):
+    """分析映射使用趋势"""
+    try:
+        from utils.advanced_mapping_analyzer import AdvancedMappingAnalyzer
+
+        analyzer = AdvancedMappingAnalyzer(db)
+        trends = analyzer.analyze_mapping_trends(days_back=days_back)
+
+        return {
+            "success": True,
+            "trends": trends
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to analyze mapping trends: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to analyze mapping trends: {str(e)}")
+
+
+@app.get("/analysis/optimization")
+async def get_optimization_suggestions(db: Session = Depends(get_db)):
+    """获取优化建议"""
+    try:
+        from utils.advanced_mapping_analyzer import AdvancedMappingAnalyzer
+
+        analyzer = AdvancedMappingAnalyzer(db)
+        suggestions = analyzer.generate_optimization_suggestions()
+
+        return {
+            "success": True,
+            "suggestions": suggestions
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get optimization suggestions: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get optimization suggestions: {str(e)}")
+
+
+@app.get("/analysis/dashboard")
+async def get_analysis_dashboard(db: Session = Depends(get_db)):
+    """获取分析仪表板数据"""
+    try:
+        from utils.advanced_mapping_analyzer import AdvancedMappingAnalyzer
+
+        analyzer = AdvancedMappingAnalyzer(db)
+
+        # 获取最近7天的快速分析
+        quick_analysis = analyzer.generate_comprehensive_analysis(analysis_period_days=7)
+        trends = analyzer.analyze_mapping_trends(days_back=30)
+        suggestions = analyzer.generate_optimization_suggestions()
+
+        dashboard_data = {
+            "quick_metrics": quick_analysis.summary,
+            "recent_insights": quick_analysis.insights[:3],  # 只显示前3个洞察
+            "trends_summary": {
+                "total_days": len(trends.get('daily_stats', [])),
+                "trend_analysis": trends.get('trend_analysis', {}),
+                "recent_performance": trends.get('daily_stats', [])[-7:] if trends.get('daily_stats') else []
+            },
+            "priority_suggestions": [s for s in suggestions if s.get('priority') == 'high'][:3],
+            "top_patterns": [
+                {
+                    "mapping_key": pattern.mapping_key,
+                    "frequency": pattern.frequency,
+                    "success_rate": pattern.success_rate
+                }
+                for pattern in quick_analysis.patterns[:5]
+            ]
+        }
+
+        return {
+            "success": True,
+            "dashboard": dashboard_data
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get analysis dashboard: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get analysis dashboard: {str(e)}")
 
 
 if __name__ == "__main__":

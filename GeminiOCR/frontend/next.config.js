@@ -11,15 +11,11 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
 
-  // Note: allowedDevOrigins will be needed in future Next.js versions
-  // experimental: {
-  //   allowedDevOrigins: ['52.220.245.213']
-  // },
 
   // Allow cross-origin requests to our API
   async rewrites() {
-    // Use environment variable or fallback to localhost for development
-    const apiHost = process.env.NEXT_PUBLIC_API_URL || 'http://backend:8000';
+    // Use environment variable or fallback to EC2 IP for development
+    const apiHost = process.env.NEXT_PUBLIC_API_URL || 'http://18.142.68.48:8000';
 
     return [
       {

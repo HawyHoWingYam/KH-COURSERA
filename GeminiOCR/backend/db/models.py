@@ -1,6 +1,8 @@
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
+    Enum,
     ForeignKey,
     Integer,
     String,
@@ -11,6 +13,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 import enum
+from sqlalchemy.dialects.postgresql import JSON
 from .database import Base
 from datetime import datetime
 
@@ -20,6 +23,11 @@ class FileCategory(enum.Enum):
     processed_image = "processed_image"
     json_output = "json_output"
     excel_output = "excel_output"
+
+
+class StorageType(enum.Enum):
+    local = "local"
+    s3 = "s3"
 
 
 class Department(Base):
@@ -111,8 +119,15 @@ class CompanyDocumentConfig(Base):
     doc_type_id = Column(
         Integer, ForeignKey("document_types.doc_type_id"), nullable=False
     )
-    prompt_path = Column(String(255), nullable=False)
-    schema_path = Column(String(255), nullable=False)
+    prompt_path = Column(String(500), nullable=True, comment='Path to prompt file (supports local paths and S3 URIs like s3://bucket/prompts/...)')
+    schema_path = Column(String(500), nullable=True, comment='Path to schema file (supports local paths and S3 URIs like s3://bucket/schemas/...)')
+    storage_type = Column(Enum(StorageType), nullable=False, default=StorageType.local, comment='Storage backend type for prompts and schemas')
+    storage_metadata = Column(JSON, nullable=True, comment='Additional metadata for storage backend (e.g., S3 bucket info, cache settings)')
+    original_prompt_filename = Column(String(255), nullable=True, comment='Original filename of uploaded prompt file (e.g., invoice_prompt.txt)')
+    original_schema_filename = Column(String(255), nullable=True, comment='Original filename of uploaded schema file (e.g., invoice_schema.json)')
+    default_mapping_keys = Column(JSON, nullable=True, default=list, comment='Default mapping keys for auto-mapping [key1, key2, key3]')
+    auto_mapping_enabled = Column(Boolean, default=False, comment='Whether to enable auto-mapping for this document type')
+    cross_field_mappings = Column(JSON, nullable=True, default=dict, comment='Cross-field mappings for semantic field mapping {"ocr_field": "mapping_field"}')
     active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -127,11 +142,14 @@ class File(Base):
     __tablename__ = "files"
 
     file_id = Column(Integer, primary_key=True)
-    file_path = Column(String(255), nullable=False, unique=True)
     file_name = Column(String(255), nullable=False)
-    file_size = Column(Integer, nullable=True)
-    file_type = Column(String(50), nullable=True)
+    file_path = Column(String(255), nullable=False, unique=True)
+    file_type = Column(String(255), nullable=False)
+    file_size = Column(BigInteger, nullable=True)
+    mime_type = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    s3_bucket = Column(String(255), nullable=True)
+    s3_key = Column(String(255), nullable=True)
 
     document_files = relationship("DocumentFile", back_populates="file")
 
@@ -199,6 +217,13 @@ class ApiUsage(Base):
     job = relationship("ProcessingJob", back_populates="api_usages")
 
 
+class UploadType(enum.Enum):
+    single_file = "single_file"
+    multiple_files = "multiple_files"
+    zip_file = "zip_file"
+    mixed = "mixed"
+
+
 class BatchJob(Base):
     __tablename__ = "batch_jobs"
 
@@ -208,15 +233,31 @@ class BatchJob(Base):
         Integer, ForeignKey("document_types.doc_type_id"), nullable=False
     )
     uploader_user_id = Column(Integer, ForeignKey("users.user_id"), nullable=True)
-    zip_filename = Column(String(255), nullable=True)
-    s3_zipfile_path = Column(String(255), nullable=True)
+    
+    # Updated for unified batch system
+    upload_description = Column(String(255), nullable=True, comment='Description of uploaded files (filename or summary)')
+    s3_upload_path = Column(String(255), nullable=True, comment='S3 path to uploaded files')
+    upload_type = Column(Enum(UploadType), nullable=False, default=UploadType.single_file, comment='Type of upload batch')
+    original_file_names = Column(JSON, nullable=True, comment='Array of original uploaded filenames')
+    file_count = Column(Integer, nullable=False, default=0, comment='Total number of files in this batch')
+    
+    # Keep legacy column for backward compatibility during transition
     original_zipfile = Column(String(255), nullable=True)
+    
     total_files = Column(Integer, default=0)
     processed_files = Column(Integer, default=0)
     status = Column(String(20), nullable=False, default="pending")
     error_message = Column(Text, nullable=True)
     json_output_path = Column(String(255), nullable=True)
     excel_output_path = Column(String(255), nullable=True)
+    csv_output_path = Column(String(255), nullable=True)
+    
+    # Cost allocation output files
+    netsuite_csv_path = Column(String(255), nullable=True, comment='Path to NetSuite-ready CSV file')
+    matching_report_path = Column(String(255), nullable=True, comment='Path to matching details report (Excel)')
+    summary_report_path = Column(String(255), nullable=True, comment='Path to cost summary report (Excel)')
+    unmatched_count = Column(Integer, nullable=True, default=0, comment='Number of unmatched records in cost allocation')
+    
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -225,3 +266,82 @@ class BatchJob(Base):
     document_type = relationship("DocumentType", back_populates="batch_jobs")
     jobs = relationship("ProcessingJob", back_populates="batch_job")
     uploader = relationship("User", backref="batch_jobs")
+
+
+# OCR Order System Models
+
+class OrderStatus(enum.Enum):
+    DRAFT = "DRAFT"
+    PROCESSING = "PROCESSING"
+    OCR_COMPLETED = "OCR_COMPLETED"  # NEW: OCR finished, ready for mapping configuration
+    MAPPING = "MAPPING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    LOCKED = "LOCKED"  # NEW: Order is locked, no modifications allowed
+
+
+class OrderItemStatus(enum.Enum):
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class OcrOrder(Base):
+    __tablename__ = "ocr_orders"
+
+    order_id = Column(Integer, primary_key=True)
+    order_name = Column(String(255), nullable=True, comment='User-friendly name for the order')
+    status = Column(Enum(OrderStatus), nullable=False, default=OrderStatus.DRAFT, comment='Current status of the order')
+    mapping_file_path = Column(String(500), nullable=True, comment='S3 path to uploaded mapping file (Excel/CSV)')
+    mapping_keys = Column(JSON, nullable=True, comment='Array of 1-3 mapping keys selected by user [key1, key2, key3]')
+    final_report_paths = Column(JSON, nullable=True, comment='Paths to final consolidated reports (NetSuite CSV, Excel reports)')
+    total_items = Column(Integer, nullable=False, default=0, comment='Total number of order items')
+    completed_items = Column(Integer, nullable=False, default=0, comment='Number of completed order items')
+    failed_items = Column(Integer, nullable=False, default=0, comment='Number of failed order items')
+    error_message = Column(Text, nullable=True, comment='Error message if order processing fails')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    items = relationship("OcrOrderItem", back_populates="order", cascade="all, delete-orphan")
+
+
+class OcrOrderItem(Base):
+    __tablename__ = "ocr_order_items"
+
+    item_id = Column(Integer, primary_key=True)
+    order_id = Column(Integer, ForeignKey("ocr_orders.order_id", ondelete="CASCADE"), nullable=False)
+    company_id = Column(Integer, ForeignKey("companies.company_id"), nullable=False)
+    doc_type_id = Column(Integer, ForeignKey("document_types.doc_type_id"), nullable=False)
+    item_name = Column(String(255), nullable=True, comment='User-friendly name for this item')
+    status = Column(Enum(OrderItemStatus), nullable=False, default=OrderItemStatus.PENDING)
+    file_count = Column(Integer, nullable=False, default=0, comment='Number of files in this item')
+    ocr_result_json_path = Column(String(500), nullable=True, comment='S3 path to OCR result JSON file')
+    ocr_result_csv_path = Column(String(500), nullable=True, comment='S3 path to OCR result CSV file')
+    mapping_keys = Column(JSON, nullable=True, comment='Selected mapping keys for this item (up to 3 keys)')
+    processing_started_at = Column(DateTime, nullable=True)
+    processing_completed_at = Column(DateTime, nullable=True)
+    processing_time_seconds = Column(Float, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    order = relationship("OcrOrder", back_populates="items")
+    company = relationship("Company")
+    document_type = relationship("DocumentType")
+    files = relationship("OrderItemFile", back_populates="order_item", cascade="all, delete-orphan")
+
+
+class OrderItemFile(Base):
+    __tablename__ = "order_item_files"
+
+    item_id = Column(Integer, ForeignKey("ocr_order_items.item_id", ondelete="CASCADE"), primary_key=True)
+    file_id = Column(Integer, ForeignKey("files.file_id", ondelete="CASCADE"), primary_key=True)
+    upload_order = Column(Integer, nullable=True, comment='Order in which file was uploaded to this item')
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    order_item = relationship("OcrOrderItem", back_populates="files")
+    file = relationship("File")

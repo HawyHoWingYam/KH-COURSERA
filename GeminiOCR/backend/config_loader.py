@@ -11,14 +11,34 @@ from typing import List, Dict, Any, Optional
 from botocore.exceptions import ClientError, NoCredentialsError
 from dotenv import load_dotenv
 
-# 加載 .env 文件 - 使用正確的路径
-env_paths = [
-    os.path.join("env", ".env"),
-    ".env",
-    os.path.join(os.path.dirname(__file__), "env", ".env"),
-]
+# 加載 .env 文件 - 支持按環境加載 (優先級: .env.<ENV> -> .env)
+env_name = os.getenv("ENVIRONMENT") or os.getenv("DATABASE_ENV")
+candidate_paths = []
+if env_name:
+    candidate_paths.extend([
+        # Centralized project env directory (primary location)
+        os.path.join(os.path.dirname(__file__), "..", "..", "env", f".env.{env_name}"),
+        # Project root env directory (when running from project root)
+        os.path.join("env", f".env.{env_name}"),
+        # Legacy backend env directory (fallback)
+        os.path.join(os.path.dirname(__file__), "env", f".env.{env_name}"),
+        # Dotfile next to CWD (legacy)
+        f".env.{env_name}",
+    ])
 
-for env_path in env_paths:
+# 回退到通用 .env
+candidate_paths.extend([
+    # Centralized project env directory (primary location)
+    os.path.join(os.path.dirname(__file__), "..", "..", "env", ".env"),
+    # Project root env directory
+    os.path.join("env", ".env"),
+    # Legacy backend env directory (fallback)
+    os.path.join(os.path.dirname(__file__), "env", ".env"),
+    # Dotfile next to CWD (legacy)
+    ".env",
+])
+
+for env_path in candidate_paths:
     if os.path.exists(env_path):
         load_dotenv(env_path)
         print(f"✅ 加載環境變量文件: {env_path}")
@@ -173,6 +193,80 @@ class ConfigLoader:
             "document_types": self._get_from_config("document_type", {}),
         }
 
+    def get_prompt_schema_config(self) -> Dict[str, Any]:
+        """獲取prompt和schema管理配置"""
+        default_config = {
+            "storage_backend": "auto",
+            "cache": {
+                "enabled": True,
+                "max_size": 100,
+                "ttl_minutes": 30
+            },
+            "s3": {
+                "enabled": True,
+                "bucket_name": None,
+                "region": "ap-southeast-1",
+                "prompt_prefix": "prompts/",
+                "schema_prefix": "schemas/",
+                "auto_backup": True,
+                "encryption": True
+            },
+            "local_backup": {
+                "enabled": True,
+                "path": "uploads/prompt_schema_backup",
+                "auto_sync": True
+            },
+            "validation": {
+                "strict_mode": True,
+                "prompt_min_length": 10,
+                "prompt_max_length": 50000,
+                "required_prompt_keywords": ["extract", "analyze", "identify", "process"],
+                "schema_required_fields": ["type", "properties"]
+            },
+            "performance": {
+                "thread_pool_size": 4,
+                "concurrent_uploads": 3,
+                "retry_attempts": 3,
+                "timeout_seconds": 30
+            }
+        }
+
+        # 從配置文件加載
+        config_data = self._get_from_config("prompt_schema_management", default_config)
+
+        # 環境變量覆蓋
+        if os.getenv("PROMPT_SCHEMA_STORAGE_BACKEND"):
+            config_data["storage_backend"] = os.getenv("PROMPT_SCHEMA_STORAGE_BACKEND")
+
+        if os.getenv("PROMPT_SCHEMA_CACHE_ENABLED"):
+            config_data["cache"]["enabled"] = os.getenv("PROMPT_SCHEMA_CACHE_ENABLED").lower() == "true"
+
+        if os.getenv("PROMPT_SCHEMA_CACHE_SIZE"):
+            config_data["cache"]["max_size"] = int(os.getenv("PROMPT_SCHEMA_CACHE_SIZE"))
+
+        if os.getenv("PROMPT_SCHEMA_S3_ENABLED"):
+            config_data["s3"]["enabled"] = os.getenv("PROMPT_SCHEMA_S3_ENABLED").lower() == "true"
+
+        if os.getenv("PROMPT_SCHEMA_S3_BUCKET"):
+            config_data["s3"]["bucket_name"] = os.getenv("PROMPT_SCHEMA_S3_BUCKET")
+
+        if os.getenv("PROMPT_SCHEMA_LOCAL_BACKUP_PATH"):
+            config_data["local_backup"]["path"] = os.getenv("PROMPT_SCHEMA_LOCAL_BACKUP_PATH")
+
+        # 如果沒有明確設置bucket_name，使用主S3配置的bucket
+        if not config_data["s3"]["bucket_name"]:
+            config_data["s3"]["bucket_name"] = os.getenv("S3_BUCKET_NAME")
+
+        # 如果storage_backend是auto，根據S3可用性自動決定
+        if config_data["storage_backend"] == "auto":
+            config_data["storage_backend"] = "s3" if (
+                config_data["s3"]["enabled"] and 
+                config_data["s3"]["bucket_name"] and 
+                os.getenv("S3_BUCKET_NAME")
+            ) else "local"
+
+        return config_data
+
     def _get_aws_secret(self, secret_type: str) -> Optional[Dict[str, Any]]:
         """從 AWS Secrets Manager 獲取機密"""
         if secret_type in self._secrets_cache:
@@ -228,9 +322,14 @@ class ConfigLoader:
             return self._config_file_cache
 
         config_paths = [
+            # Centralized project env directory (primary location)
+            os.path.join(os.path.dirname(__file__), "..", "..", "env", "config.json"),
+            # Project root env directory
             os.path.join("env", "config.json"),
-            "config.json",
+            # Legacy backend env directory (fallback)
             os.path.join(os.path.dirname(__file__), "env", "config.json"),
+            # Current directory (legacy)
+            "config.json",
         ]
 
         for config_path in config_paths:
@@ -340,8 +439,15 @@ class APIKeyManager:
         return self.usage_count.copy()
 
 
-# 全局 API Key 管理器
-api_key_manager = APIKeyManager()
+# 全局 API Key 管理器 (延遲初始化)
+api_key_manager = None
+
+def get_api_key_manager():
+    """獲取 API Key 管理器 (延遲初始化)"""
+    global api_key_manager
+    if api_key_manager is None:
+        api_key_manager = APIKeyManager()
+    return api_key_manager
 
 
 # 驗證配置

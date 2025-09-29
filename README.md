@@ -36,7 +36,7 @@ conda activate gemini-sandbox
 export AWS_ACCESS_KEY_ID=your_aws_access_key_id
 export AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
 export AWS_DEFAULT_REGION=ap-southeast-1
-uvicorn app:app --host 0.0.0.0 --port 8001
+uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### 启动 Frontend（Terminal 2）
@@ -47,8 +47,8 @@ npm run dev
 
 ### 访问
 - Frontend: http://localhost:3000
-- API Docs: http://localhost:8001/docs
-- Health: http://localhost:8001/health
+- API Docs: http://localhost:8000/docs
+- Health: http://localhost:8000/health
 
 ---
 
@@ -59,25 +59,23 @@ npm run dev
 ### 开发环境（可选）
 ```bash
 # 启动
-docker compose -f GeminiOCR/docker-compose.dev.yml up -d
+docker compose -f docker/docker-compose.dev.yml up -d
 
 # 查看状态与日志
-docker compose -f GeminiOCR/docker-compose.dev.yml ps
-docker compose -f GeminiOCR/docker-compose.dev.yml logs -f
+docker compose -f docker/docker-compose.dev.yml ps
+docker compose -f docker/docker-compose.dev.yml logs -f
 ```
 
 ### 生产部署
 ```bash
-cd GeminiOCR
-
 # 蓝绿部署（推荐）
-./deploy.sh blue-green auto     # 智能选择镜像源（Hub 优先）
+docker/deploy.sh blue-green auto     # 智能选择镜像源（Hub 优先）
 
 # 滚动更新
-./deploy.sh rolling auto
+docker/deploy.sh rolling auto
 
 # 指定版本（从 Docker Hub 拉取）
-DEPLOY_VERSION=v1.0.0 ./deploy.sh blue-green hub
+DEPLOY_VERSION=v1.0.0 docker/deploy.sh blue-green hub
 ```
 
 > 部署脚本会完成：预检查 → 备份 → 构建/拉取镜像 → 蓝绿/滚动部署 → 健康验证 → 清理旧资源。
@@ -91,6 +89,10 @@ DEPLOY_VERSION=v1.0.0 ./deploy.sh blue-green hub
 ## 🔁 CI/CD（GitHub Actions）
 
 完整的四阶段流水线：**功能开发** → **UAT测试** → **生产发布** → **维护回滚**
+
+安全护栏（自动化）：
+- 提交/PR 自动运行密钥扫描：Gitleaks + TruffleHog（命中即失败）
+- Terraform IaC 检测：Checkov（命中阻断）
 
 ### 🐳 双仓库架构
 - **开发/测试环境**: `karasho62/hya-ocr-sandbox`
@@ -119,6 +121,16 @@ DEPLOY_VERSION=v1.0.0 ./deploy.sh blue-green hub
 - `DOCKERHUB_USERNAME`: Docker Hub 用户名
 - `DOCKERHUB_TOKEN`: Docker Hub 访问令牌
 
+### 🏁 环境与审批（UAT/Prod）
+- 在仓库 Settings → Environments 中新建 `uat` 与 `production` 环境，并为二者设置 Required reviewers（发布前审批点）。
+- 在 AWS 中为每个环境创建 Secrets Manager 项：`sandbox/database`、`uat/database`、`prod/database`，JSON 必须含 `{"database_url": "postgresql://...:5432/document_processing_platform?sslmode=require"}`。
+- 在仓库 Secrets 配置 AWS 访问（任选其一）：
+  - `AWS_ROLE_TO_ASSUME`（推荐，OIDC 方式），或
+  - `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`。
+- 流程：
+  - develop 分支：先执行 UAT 迁移（需 `uat` 审批）→ 再部署到 Staging。
+  - 标记版本（tags）：先执行 Prod 迁移（需 `production` 审批）→ 再创建 Release。
+
 ### 集成测试要点
 - 使用 Compose v2 启动 `db / redis / backend / frontend`
 - 后端健康探针命中 `/health`，根路径 404 不视为失败
@@ -135,51 +147,133 @@ DEPLOY_VERSION=v1.0.0 ./deploy.sh blue-green hub
 ## 📁 目录结构
 
 ```
-GeminiOCR/
-├── backend/              # FastAPI app
-│   ├── app.py            # 主应用（含 WebSocket）
-│   ├── config_loader.py  # 配置加载与校验
-│   ├── env/.env          # 环境变量（不提交）
-│   ├── db/               # 数据库模型与连接
-│   └── utils/            # S3/Excel/工具
-├── frontend/             # Next.js 应用
-│   ├── src/app/
-│   └── .env.local
-├── deploy.sh             # 零停机部署脚本
-└── .github/workflows/ci-cd.yml
+KH-COURSERA/
+├── GeminiOCR/            # 应用代码
+│   ├── backend/          # FastAPI app
+│   │   ├── app.py        # 主应用（含 WebSocket）
+│   │   ├── config_loader.py # 配置加载与校验
+│   │   ├── db/           # 数据库模型与连接
+│   │   └── utils/        # S3/Excel/工具
+│   └── frontend/         # Next.js 应用
+│       └── src/app/
+├── env/                  # 环境配置文件（集中管理）
+│   ├── .env.example      # 模板文件
+│   ├── .env.development  # 开发环境配置
+│   └── .env.local        # 本地覆盖（gitignored）
+├── docker/               # Docker 配置（集中管理）
+│   ├── backend.Dockerfile
+│   ├── frontend.Dockerfile
+│   ├── docker-compose.yml
+│   ├── docker-compose.dev.yml
+│   ├── docker-compose.prod.yml
+│   └── deploy.sh         # 零停机部署脚本
+├── migrations/           # 数据库迁移文件
+├── scripts/              # 数据库和部署脚本
+├── terraform/            # 基础设施即代码
+├── config/               # 应用配置文件
+└── .github/workflows/    # CI/CD 流水线
 ```
 
 ---
 
 ## ⚙️ 配置
 
-### 环境文件
-- `backend/env/.env`（后端）
-- `frontend/.env.local`（前端）
+### 环境文件（集中管理）
+- 项目根目录：`env/`（统一管理所有环境配置）
+  - `.env.development` / `.env.staging` / `.env.production` / `.env.local (gitignored)`
+  - `.env.example`：模板清单（无敏感信息）
+- 兼容性：后端 config_loader.py 支持多路径自动加载
+- 前端：同样使用 `env/.env.local`
+
+运行方式：
+- 本地：`cd GeminiOCR && cp env/env.example env/.env.development && <填入本地变量>`
+- Docker Compose：`docker compose --env-file env/.env.development -f docker/docker-compose.dev.yml up -d`
 
 ### 示例（Sandbox）
 ```bash
-# Backend (backend/env/.env)
+# Backend (backend/env/.env.sandbox)
 ENVIRONMENT=sandbox
-PORT=8001
-DATABASE_URL="postgresql://HYA_OCR:password@hya-ocr-sandbox.c94k46soeqmk.ap-southeast-1.rds.amazonaws.com:5432/postgres"
+PORT=8000
+# 注意：仅在 backend/env/.env 中保存凭证；其他位置仅引用
+# 示例（不要在文档中放真实值）
+# DATABASE_URL="postgresql://HYA_OCR:<ENCODED_PASSWORD>@hya-ocr-sandbox.c94k46soeqmk.ap-southeast-1.rds.amazonaws.com:5432/document_processing_platform"
 S3_BUCKET_NAME=hya-ocr-sandbox
+AWS_ACCESS_KEY_ID=your_aws_access_key_id
+AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
 GEMINI_API_KEY_1=your_sandbox_gemini_key
 
 # Frontend (frontend/.env.local)
-NEXT_PUBLIC_API_URL=http://localhost:8001
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+### 示例（Production）
+```bash
+# Backend (backend/env/.env.production)
+ENVIRONMENT=production
+PORT=8000
+# 注意：仅在 backend/env/.env 中保存凭证；其他位置仅引用
+# 示例（不要在文档中放真实值）
+# DATABASE_URL="postgresql://HYA_OCR:<ENCODED_PASSWORD>@hya-ocr-instance-dev.c94k46soeqmk.ap-southeast-1.rds.amazonaws.com:5432/document_processing_platform"
+AWS_ACCESS_KEY_ID=your_aws_access_key_id
+AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
+S3_BUCKET_NAME=hya-ocr-production
 ```
 
 **注意**
-- 不要提交 `.env`、`.env.local`
-- 配置优先级：环境变量 > AWS Secrets > .env > 默认值
+- 不要提交 `.env*` 文件，尤其是 `.env.local`；仅提交 `env.example`
+- 配置优先级：环境变量 > AWS Secrets > `.env.<env>` > 默认值
+
+## 🗄️ 数据库与环境（Aurora + 本地 Postgres）
+
+统一由 `GeminiOCR/backend/config_loader.py` 读取数据库配置，优先级：环境变量 > AWS Secrets Manager > 配置文件。
+
+- 开发切换（不改文件，直接导出变量）：
+  - 本地：`source scripts/use-db.sh local`（`sslmode=disable`）
+  - 云端：`source scripts/use-db.sh sandbox|uat|production`（注入 `DATABASE_SECRET_NAME=<env>/database`）
+  - 也可直接：`export DATABASE_URL=postgresql://user:pass@host:5432/db?sslmode=...`
+
+- 迁移（Alembic）：
+  - `cd GeminiOCR/backend && pip install -r requirements.txt`
+  - `bash ./scripts/manage_migrations.sh upgrade head`
+  - 约定：生产/UAT依赖 Alembic；仅在 `ENVIRONMENT ∈ {development,test}` 时后端会执行 `Base.metadata.create_all` 便于本地起步。
+
+- CI/CD 迁移（带审批）：
+  - 手动：`.github/workflows/db-migrate.yml`（选择 `sandbox/uat/production/custom_url`）
+  - UAT：部署到 Staging 前自动执行迁移（Environment `uat` 审批）
+  - Prod：创建 Release 前自动执行迁移（Environment `production` 审批）
+
+- Terraform（Aurora 脚手架）：
+  - 目录：`terraform/modules/aurora-postgresql/` 与 `terraform/environments/{sandbox,uat,production}`
+  - 变量：`region`、`vpc_id`、`subnet_ids`（私有子网）`allowed_sg_ids`（允许访问 5432 的应用 SG 列表）`secret_name`
+  - 示例：
+    ```hcl
+    module "aurora" {
+      source         = "../../modules/aurora-postgresql"
+      name           = "geminiocr-sandbox"
+      region         = "ap-southeast-1"
+      vpc_id         = "vpc-xxxx"
+      subnet_ids     = ["subnet-a","subnet-b","subnet-c"]
+      allowed_sg_ids = ["sg-app"]
+      secret_name    = "sandbox/database"
+    }
+    ```
+  - 运行：
+    ```bash
+    cd terraform/environments/sandbox
+    terraform init && terraform apply \
+      -var="region=ap-southeast-1" \
+      -var="vpc_id=vpc-xxxx" \
+      -var='subnet_ids=["subnet-a","subnet-b","subnet-c"]' \
+      -var='allowed_sg_ids=["sg-app"]'
+    ```
+  - 输出：`cluster_endpoint`、`secret_arn`；后端只需设置 `DATABASE_SECRET_NAME=<env>/database` 即可切换。
 
 ---
 
 ## 🔍 监控与健康
-- Backend API: http://localhost:8001
-- API Docs: http://localhost:8001/docs
-- Health: http://localhost:8001/health
+- Backend API: http://localhost:8000
+- API Docs: http://localhost:8000/docs
+- Health: http://localhost:8000/health
 - Frontend: http://localhost:3000
 
 ### 运维常用命令（Docker）
@@ -208,9 +302,8 @@ curl -v http://localhost:8000/health
 
 **部署脚本排错**
 ```bash
-cd GeminiOCR
-./deploy.sh -h
-./deploy.sh blue-green auto 2>&1 | tee deploy.log
+docker/deploy.sh -h
+docker/deploy.sh blue-green auto 2>&1 | tee deploy.log
 ```
 
 **镜像拉取失败**

@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import { fetchDocumentTypes, fetchCompaniesForDocType, processDocument, processZipFile } from '@/lib/api';
+import { fetchDocumentTypes, fetchCompaniesForDocType, processBatch } from '@/lib/api';
 import type { DocumentType, Company } from '@/lib/api';
 import { MdZoomIn, MdZoomOut, MdRefresh } from 'react-icons/md';
 
@@ -13,7 +13,8 @@ export default function Upload() {
   const [selectedType, setSelectedType] = useState<number | null>(null);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<number | null>(null);
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [mappingFile, setMappingFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -79,7 +80,7 @@ export default function Upload() {
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
+    const selectedFiles = Array.from(e.target.files || []);
 
     // Clear previous errors and preview
     setError('');
@@ -91,29 +92,83 @@ export default function Upload() {
     }
     setPreviewUrl(null);
 
-    // Check if file exists
-    if (!selectedFile) {
-      setFile(null);
+    // Check if files exist
+    if (selectedFiles.length === 0) {
+      setFiles([]);
       return;
     }
 
-    // Check file size
-    if (selectedFile.size > MAX_FILE_SIZE) {
-      setError(`File size (${formatFileSize(selectedFile.size)}) exceeds the ${formatFileSize(MAX_FILE_SIZE)} limit`);
-      setFile(null);
-      // Reset the file input
+    // Check file sizes and types
+    const validFiles: File[] = [];
+    let totalSize = 0;
+    
+    for (const file of selectedFiles) {
+      // Check individual file size
+      if (file.size > MAX_FILE_SIZE) {
+        setError(`File "${file.name}" size (${formatFileSize(file.size)}) exceeds the ${formatFileSize(MAX_FILE_SIZE)} limit`);
+        e.target.value = '';
+        return;
+      }
+      
+      totalSize += file.size;
+      
+      // Check file type
+      const validTypes = ['image/jpeg', 'image/png', 'application/pdf', 'application/zip'];
+      const validExtensions = ['.jpg', '.jpeg', '.png', '.pdf', '.zip'];
+      const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
+      
+      if (!validTypes.includes(file.type) && !validExtensions.includes(fileExtension)) {
+        setError(`File "${file.name}" type not supported. Please upload images, PDFs, or ZIP files.`);
+        e.target.value = '';
+        return;
+      }
+      
+      validFiles.push(file);
+    }
+
+    // Check total size (50MB limit for batch uploads)
+    const BATCH_SIZE_LIMIT = 50 * 1024 * 1024; // 50MB
+    if (totalSize > BATCH_SIZE_LIMIT) {
+      setError(`Total file size (${formatFileSize(totalSize)}) exceeds the ${formatFileSize(BATCH_SIZE_LIMIT)} limit for batch uploads`);
       e.target.value = '';
       return;
     }
 
-    // Create preview URL for image files
-    if (selectedFile.type.startsWith('image/')) {
-      const url = URL.createObjectURL(selectedFile);
+    // Create preview URL for first image file
+    const firstImage = validFiles.find(f => f.type.startsWith('image/'));
+    if (firstImage) {
+      const url = URL.createObjectURL(firstImage);
       fileUrlRef.current = url;
       setPreviewUrl(url);
     }
 
-    setFile(selectedFile);
+    setFiles(validFiles);
+  };
+
+  const handleMappingFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0];
+    setError('');
+
+    if (!selectedFile) {
+      setMappingFile(null);
+      return;
+    }
+
+    // Check file extension
+    if (!selectedFile.name.toLowerCase().endsWith('.xlsx')) {
+      setError('Mapping file must be an Excel (.xlsx) file');
+      e.target.value = '';
+      return;
+    }
+
+    // Check file size (max 10MB)
+    if (selectedFile.size > MAX_FILE_SIZE) {
+      setError(`Mapping file size (${formatFileSize(selectedFile.size)}) exceeds the ${formatFileSize(MAX_FILE_SIZE)} limit`);
+      e.target.value = '';
+      return;
+    }
+
+    setMappingFile(selectedFile);
   };
 
   const formatFileSize = (bytes: number): string => {
@@ -143,8 +198,8 @@ export default function Upload() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!selectedType || !selectedCompany || !file) {
-      setError('Please select document type, company, and file');
+    if (!selectedType || !selectedCompany || files.length === 0) {
+      setError('Please select document type, company, and at least one file');
       return;
     }
 
@@ -152,50 +207,35 @@ export default function Upload() {
     setError(null);
 
     try {
-      // Create the FormData object
+      // Create the FormData object for unified batch processing
       const formData = new FormData();
       formData.append('doc_type_id', selectedType.toString());
       formData.append('company_id', selectedCompany.toString());
       
-      // Check if file is a ZIP (batch job) or individual file
-      if (file.type === 'application/zip' || file.name.toLowerCase().endsWith('.zip')) {
-        formData.append('zip_file', file);
-        formData.append('uploader_user_id', '1');
-        
-        // Process as ZIP batch
-        processZipFile(formData)
-          .then(result => {
-            console.log('ZIP upload completed in background:', result);
-          })
-          .catch(err => {
-            console.error('Background ZIP upload failed:', err);
-          });
-        
-        // Store batch upload info
-        sessionStorage.setItem('pendingBatchUpload', JSON.stringify({
-          fileName: file.name,
-          documentType: documentTypes.find(dt => dt.doc_type_id === selectedType)?.type_name || 'Unknown',
-          timestamp: new Date().toISOString()
-        }));
-      } else {
-        // Process as single document (existing code)
-        formData.append('document', file);
-        
-        processDocument(formData)
-          .then(result => {
-            console.log('Upload completed in background:', result);
-          })
-          .catch(err => {
-            console.error('Background upload failed:', err);
-          });
-        
-        // Store upload info for jobs page
-        sessionStorage.setItem('pendingUpload', JSON.stringify({
-          fileName: file.name,
-          documentType: documentTypes.find(dt => dt.doc_type_id === selectedType)?.type_name || 'Unknown',
-          timestamp: new Date().toISOString()
-        }));
+      // Add all files to the form data
+      files.forEach((file, index) => {
+        formData.append('files', file);
+      });
+
+      // Add mapping file if selected
+      if (mappingFile) {
+        formData.append('mapping_file', mappingFile);
       }
+      
+      // Process as unified batch (handles all file types)
+      const result = await processBatch(formData);
+      
+      console.log('Batch upload completed:', result);
+      
+      // Store batch upload info for jobs page
+      sessionStorage.setItem('pendingBatchUpload', JSON.stringify({
+        batchId: result.batch_id,
+        uploadType: result.upload_type,
+        fileCount: result.file_count,
+        fileNames: files.map(f => f.name),
+        documentType: documentTypes.find(dt => dt.doc_type_id === selectedType)?.type_name || 'Unknown',
+        timestamp: new Date().toISOString()
+      }));
 
       // Navigate to jobs page
       router.push('/jobs');
@@ -255,21 +295,72 @@ export default function Upload() {
         </div>
 
         <div>
-          <label className="block text-gray-700 mb-2">Document File</label>
+          <label className="block text-gray-700 mb-2">Document Files</label>
           <input
             type="file"
             accept="image/jpeg,image/png,application/pdf,application/zip,.zip"
             onChange={handleFileChange}
             className="w-full"
+            multiple
             required
           />
           <p className="text-sm text-gray-500 mt-1">
-            Supported formats: JPEG, JPG, PNG, PDF, ZIP (contains multiple images)
+            Supported formats: JPEG, JPG, PNG, PDF, ZIP. You can select multiple files for batch processing.
           </p>
+          {files.length > 0 && (
+            <div className="mt-3 p-3 bg-gray-50 rounded border">
+              <p className="text-sm font-medium text-gray-700 mb-2">
+                Selected files ({files.length}):
+              </p>
+              <div className="space-y-1">
+                {files.map((file, index) => (
+                  <div key={index} className="flex justify-between items-center text-sm">
+                    <span className="text-gray-600">{file.name}</span>
+                    <span className="text-gray-500">{formatFileSize(file.size)}</span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-gray-500 mt-2">
+                Total size: {formatFileSize(files.reduce((sum, f) => sum + f.size, 0))}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Cost Allocation Mapping File */}
+        <div>
+          <label className="block text-gray-700 mb-2">
+            Cost Allocation Mapping File 
+            <span className="text-gray-500 text-sm">(Optional)</span>
+          </label>
+          <input
+            type="file"
+            accept=".xlsx"
+            onChange={handleMappingFileChange}
+            className="w-full"
+          />
+          <p className="text-sm text-gray-500 mt-1">
+            Upload an Excel (.xlsx) file containing phone number to shop/department mappings for automatic cost allocation. 
+            The file should contain multiple sheets (Phone, Broadband, CLP, Water, HKELE) with appropriate mapping data.
+          </p>
+          {mappingFile && (
+            <div className="mt-3 p-3 bg-green-50 rounded border border-green-200">
+              <p className="text-sm font-medium text-green-700 mb-1">
+                Mapping file selected:
+              </p>
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-green-600">{mappingFile.name}</span>
+                <span className="text-green-500">{formatFileSize(mappingFile.size)}</span>
+              </div>
+              <p className="text-xs text-green-600 mt-1">
+                ✓ Cost allocation will be performed automatically after OCR processing
+              </p>
+            </div>
+          )}
         </div>
 
         {/* File Preview Section with Zoom Controls */}
-        {previewUrl && file && (
+        {previewUrl && files.length > 0 && (
           <div className="my-4">
             <div className="flex justify-between items-center mb-2">
               <h3 className="text-lg font-medium">File Preview</h3>
