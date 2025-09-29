@@ -1,157 +1,40 @@
-name: Unified CI/CD Pipeline
+name: Simplified CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, develop, docker-deployment-integration ]
+    branches: [ main, develop ]
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
-  workflow_dispatch:
-    inputs:
-      action_type:
-        description: "Action to perform"
-        type: choice
-        options:
-          - "build_and_test"
-          - "database_migrate"
-          - "health_check"
-          - "full_pipeline"
-        default: "full_pipeline"
-      target_env:
-        description: "Target environment (for database operations)"
-        type: choice
-        options: [sandbox, uat, production]
-        default: sandbox
 
 permissions:
   contents: write
   security-events: write
 
 concurrency:
-  group: unified-${{ github.workflow }}-${{ github.ref }}-${{ github.event.inputs.action_type || 'auto' }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   DOCKER_REGISTRY: docker.io
   DOCKER_REPOSITORY_SANDBOX: karasho62/hya-ocr-sandbox
   DOCKER_REPOSITORY_PRODUCTION: karasho62/hya-ocr-production
-  AWS_REGION: ap-southeast-1
 
 jobs:
-  # 检测变更和工作流类型
-  setup:
-    name: Setup Pipeline
+  # 简化版构建和部署
+  build-and-deploy:
+    name: Build & Deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 2
-    outputs:
-      backend_changed: ${{ steps.changes.outputs.backend }}
-      frontend_changed: ${{ steps.changes.outputs.frontend }}
-      database_changed: ${{ steps.changes.outputs.database }}
-      should_build: ${{ steps.decide.outputs.should_build }}
-      should_migrate: ${{ steps.decide.outputs.should_migrate }}
-      should_health_check: ${{ steps.decide.outputs.should_health_check }}
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Detect changes
-      uses: dorny/paths-filter@v3.0.2
-      id: changes
-      with:
-        filters: |
-          backend:
-            - 'GeminiOCR/backend/**'
-            - 'docker/backend.Dockerfile'
-            - 'requirements.txt'
-          frontend:
-            - 'GeminiOCR/frontend/**'
-            - 'docker/frontend.Dockerfile'
-          database:
-            - 'migrations/**'
-            - 'GeminiOCR/backend/db/**'
-            - 'scripts/manage_migrations.py'
-
-    - name: Decide what to run
-      id: decide
-      run: |
-        ACTION_TYPE="${{ github.event.inputs.action_type || 'auto' }}"
-
-        if [[ "$ACTION_TYPE" == "auto" ]]; then
-          # Auto mode based on changes
-          if [[ "${{ steps.changes.outputs.backend }}" == "true" || "${{ steps.changes.outputs.frontend }}" == "true" || "${{ github.ref }}" =~ ^refs/tags/ ]]; then
-            echo "should_build=true" >> $GITHUB_OUTPUT
-          else
-            echo "should_build=false" >> $GITHUB_OUTPUT
-          fi
-
-          if [[ "${{ steps.changes.outputs.database }}" == "true" ]]; then
-            echo "should_migrate=true" >> $GITHUB_OUTPUT
-          else
-            echo "should_migrate=false" >> $GITHUB_OUTPUT
-          fi
-
-          echo "should_health_check=true" >> $GITHUB_OUTPUT
-        else
-          # Manual mode
-          case "$ACTION_TYPE" in
-            "build_and_test")
-              echo "should_build=true" >> $GITHUB_OUTPUT
-              echo "should_migrate=false" >> $GITHUB_OUTPUT
-              echo "should_health_check=false" >> $GITHUB_OUTPUT
-              ;;
-            "database_migrate")
-              echo "should_build=false" >> $GITHUB_OUTPUT
-              echo "should_migrate=true" >> $GITHUB_OUTPUT
-              echo "should_health_check=false" >> $GITHUB_OUTPUT
-              ;;
-            "health_check")
-              echo "should_build=false" >> $GITHUB_OUTPUT
-              echo "should_migrate=false" >> $GITHUB_OUTPUT
-              echo "should_health_check=true" >> $GITHUB_OUTPUT
-              ;;
-            "full_pipeline")
-              echo "should_build=true" >> $GITHUB_OUTPUT
-              echo "should_migrate=true" >> $GITHUB_OUTPUT
-              echo "should_health_check=true" >> $GITHUB_OUTPUT
-              ;;
-          esac
-        fi
-
-  # 构建和测试（简化版）
-  build-and-test:
-    name: Build & Test
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    needs: setup
-    if: needs.setup.outputs.should_build == 'true'
+    timeout-minutes: 20
 
     strategy:
       fail-fast: false
       matrix:
         service: [backend, frontend]
-        include:
-          - service: backend
-            skip_condition: ${{ needs.setup.outputs.backend_changed != 'true' && !startsWith(github.ref, 'refs/tags/') }}
-          - service: frontend
-            skip_condition: ${{ needs.setup.outputs.frontend_changed != 'true' && !startsWith(github.ref, 'refs/tags/') }}
 
     steps:
-    - name: Skip if no changes
-      if: matrix.skip_condition == 'true' && github.event.inputs.action_type != 'build_and_test' && github.event.inputs.action_type != 'full_pipeline'
-      run: |
-        echo "⏭️ Skipping ${{ matrix.service }} - no changes detected"
-        exit 0
-
     - name: Checkout code
       uses: actions/checkout@v4
-
-    # 极简安全扫描
-    - name: Quick security scan
-      continue-on-error: true
-      uses: gitleaks/gitleaks-action@v2
-      with:
-        args: detect --source . --no-git --redact --exit-code 0
 
     - name: Set Docker repository
       run: |
@@ -187,7 +70,7 @@ jobs:
 
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
-      timeout-minutes: 10
+      timeout-minutes: 15
       with:
         context: .
         file: ./docker/${{ matrix.service }}.Dockerfile
@@ -202,15 +85,9 @@ jobs:
 
     # 快速健康检查
     - name: Quick health test
-      timeout-minutes: 2
+      timeout-minutes: 3
       continue-on-error: true
       run: |
-        # 如果镜像被推送到 Docker Hub，先拉取进行测试
-        if [[ "${{ github.ref }}" == "refs/heads/develop" || "${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" =~ ^refs/tags/ ]]; then
-          echo "拉取已推送的镜像进行测试..."
-          docker pull ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}
-        fi
-
         if [ "${{ matrix.service }}" = "backend" ]; then
           docker run -d --name test-${{ matrix.service }} \
             -p 8000:8000 \
@@ -218,7 +95,7 @@ jobs:
             -e ENVIRONMENT=test \
             ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}
 
-          sleep 10
+          sleep 15
           curl -f http://localhost:8000/health || echo "Health check warning"
 
         elif [ "${{ matrix.service }}" = "frontend" ]; then
@@ -226,161 +103,36 @@ jobs:
             -p 3000:3000 \
             ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}
 
-          sleep 15
+          sleep 20
           curl -f http://localhost:3000/ || echo "Frontend check warning"
         fi
 
         docker stop test-${{ matrix.service }} || true
         docker rm test-${{ matrix.service }} || true
 
-  # 数据库迁移（简化版）
-  database-migrate:
-    name: Database Migration
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: setup
-    if: needs.setup.outputs.should_migrate == 'true'
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt || echo "Requirements install completed"
-
-    - name: Configure AWS credentials (if available)
-      continue-on-error: true
-      if: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Database migration check
-      continue-on-error: true
-      run: |
-        TARGET_ENV="${{ github.event.inputs.target_env || 'sandbox' }}"
-        echo "🔍 Checking database migration for environment: $TARGET_ENV"
-
-        # 简化的迁移检查 - 只检查本地迁移文件
-        if [ -d "migrations" ]; then
-          echo "✅ Migrations directory found"
-          ls -la migrations/ || echo "No migration files yet"
-        else
-          echo "⚠️ No migrations directory found"
-        fi
-
-        # 检查数据库管理脚本
-        if [ -f "scripts/manage_migrations.py" ]; then
-          echo "✅ Migration management script found"
-          python scripts/manage_migrations.py --help || echo "Migration script help completed"
-        else
-          echo "⚠️ No migration management script found"
-        fi
-
-  # 健康检查（简化版）
-  health-check:
-    name: Health Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: setup
-    if: needs.setup.outputs.should_health_check == 'true'
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Basic health checks
-      run: |
-        echo "🏥 Running basic health checks..."
-
-        # 检查重要文件存在
-        echo "📁 Checking important files..."
-
-        if [ -f "docker/docker-compose.prod.yml" ]; then
-          echo "✅ Production Docker config found"
-        else
-          echo "⚠️ Production Docker config missing"
-        fi
-
-        if [ -f "requirements.txt" ]; then
-          echo "✅ Python requirements found"
-        else
-          echo "⚠️ Python requirements missing"
-        fi
-
-        if [ -f "GeminiOCR/frontend/package.json" ]; then
-          echo "✅ Frontend package.json found"
-        else
-          echo "⚠️ Frontend package.json missing"
-        fi
-
-        # 检查Docker配置
-        echo "🐳 Checking Docker configurations..."
-        if [ -f "docker/backend.Dockerfile" ] && [ -f "docker/frontend.Dockerfile" ]; then
-          echo "✅ Docker configurations are present"
-        else
-          echo "⚠️ Some Docker configurations missing"
-        fi
-
-    - name: AWS connectivity check (optional)
-      continue-on-error: true
-      if: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
-      run: |
-        echo "☁️ Testing AWS connectivity..."
-
-        # 配置AWS（如果可用）
-        if [ -n "${{ secrets.AWS_ACCESS_KEY_ID }}" ]; then
-          aws configure set aws_access_key_id "${{ secrets.AWS_ACCESS_KEY_ID }}"
-          aws configure set aws_secret_access_key "${{ secrets.AWS_SECRET_ACCESS_KEY }}"
-          aws configure set region "${{ env.AWS_REGION }}"
-
-          # 简单的AWS连接测试
-          aws sts get-caller-identity || echo "AWS connectivity check completed"
-        else
-          echo "⚠️ AWS credentials not available"
-        fi
-
-  # 统一状态报告
-  status-report:
-    name: Pipeline Status
+  # 简化状态报告
+  status:
+    name: Status Report
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    needs: [setup, build-and-test, database-migrate, health-check]
+    needs: [build-and-deploy]
     if: always()
 
     steps:
     - name: Generate status report
       run: |
-        echo "# 🚀 Unified Pipeline Status Report"
-        echo "=================================="
+        echo "# 🚀 CI/CD Pipeline Status"
+        echo "=========================="
         echo ""
-        echo "**Trigger**: ${{ github.event_name }}"
         echo "**Branch**: ${{ github.ref }}"
-        echo "**Action**: ${{ github.event.inputs.action_type || 'auto' }}"
+        echo "**Trigger**: ${{ github.event_name }}"
+        echo "**Build Result**: ${{ needs.build-and-deploy.result }}"
         echo ""
 
-        echo "## Job Results:"
-        echo "- Setup: ${{ needs.setup.result }}"
-        echo "- Build & Test: ${{ needs.build-and-test.result || 'skipped' }}"
-        echo "- Database Migration: ${{ needs.database-migrate.result || 'skipped' }}"
-        echo "- Health Check: ${{ needs.health-check.result || 'skipped' }}"
-        echo ""
-
-        echo "## Next Steps:"
-        if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-          echo "✅ Main branch - Ready for production deployment"
-          echo "💡 Run: \`docker/deploy.sh blue-green auto\`"
-        elif [[ "${{ github.ref }}" =~ ^refs/tags/ ]]; then
-          echo "🏷️ Tagged release - Ready for versioned deployment"
-        else
-          echo "🔧 Development branch - Continue testing"
+        if [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+          echo "✅ Develop branch - Images pushed to sandbox repository"
+          echo "📦 Images: karasho62/hya-ocr-sandbox:backend-latest, frontend-latest"
+          echo "🚀 Ready for Production EC2 deployment!"
+        elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          echo "✅ Main branch - Images pushed to production repository"
         fi
