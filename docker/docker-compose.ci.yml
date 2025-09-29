@@ -1,0 +1,137 @@
+# ==============================================
+# GeminiOCR CI/CD Testing Configuration
+# ==============================================
+# This configuration is used by GitHub Actions for integration testing
+
+services:
+  # PostgreSQL Database for Testing
+  db:
+    image: postgres:13-alpine
+    container_name: gemini-test-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-test_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-test_password}
+      POSTGRES_DB: ${POSTGRES_DB:-test_db}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-test_user} -d ${POSTGRES_DB:-test_db}"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - gemini-test-network
+
+  # Redis for Testing
+  redis:
+    image: redis:7-alpine
+    container_name: gemini-test-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-test_redis_password}
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gemini-test-network
+
+  # Backend Service (uses image built in CI)
+  backend:
+    image: ${BACKEND_IMAGE:-karasho62/hya-ocr-sandbox:backend-latest}
+    container_name: gemini-test-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Test database configuration
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-test_user}:${POSTGRES_PASSWORD:-test_password}@db:5432/${POSTGRES_DB:-test_db}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-test_redis_password}@redis:6379/0
+      - ENVIRONMENT=test
+      
+      # Disable external services for testing
+      - USE_S3_STORAGE=false
+      - AWS_S3_BUCKET=
+      - AWS_ACCESS_KEY_ID=
+      - AWS_SECRET_ACCESS_KEY=
+      
+      # Testing configuration
+      - LOG_LEVEL=INFO
+      - TESTING=true
+    volumes:
+      - test_uploads:/app/uploads
+      - test_logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 90s
+    networks:
+      - gemini-test-network
+
+  # Frontend Service (uses image built in CI)
+  frontend:
+    image: ${FRONTEND_IMAGE:-karasho62/hya-ocr-sandbox:frontend-latest}
+    container_name: gemini-test-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=test
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - gemini-test-network
+
+  # Integration Test Runner
+  test-runner:
+    image: ${BACKEND_IMAGE:-karasho62/hya-ocr-sandbox:backend-latest}
+    container_name: gemini-test-runner
+    restart: "no"
+    command: ["python", "-m", "pytest", "/app/tests", "-v"]
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-test_user}:${POSTGRES_PASSWORD:-test_password}@db:5432/${POSTGRES_DB:-test_db}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-test_redis_password}@redis:6379/0
+      - BACKEND_URL=http://backend:8000
+      - FRONTEND_URL=http://frontend:3000
+      - ENVIRONMENT=test
+    volumes:
+      - test_uploads:/app/uploads
+      - test_logs:/app/logs
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    networks:
+      - gemini-test-network
+    profiles:
+      - test  # Only run when explicitly requested
+
+volumes:
+  test_uploads:
+    driver: local
+  test_logs:
+    driver: local
+
+networks:
+  gemini-test-network:
+    driver: bridge

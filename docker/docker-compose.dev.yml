@@ -1,0 +1,153 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库服务 (开发环境)
+  db:
+    image: postgres:15-alpine
+    container_name: gemini-postgres-dev
+    restart: unless-stopped
+    ports:
+      - "5432:5432"  # 开发环境暴露端口方便调试
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password}
+      POSTGRES_USER: ${POSTGRES_USER:-gemini_user}
+      POSTGRES_DB: ${POSTGRES_DB:-gemini_dev}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gemini_user} -d ${POSTGRES_DB:-gemini_dev}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - gemini-dev-network
+
+  # Redis 缓存服务 (开发环境)
+  redis:
+    image: redis:7-alpine
+    container_name: gemini-redis-dev
+    restart: unless-stopped
+    ports:
+      - "6379:6379"  # 开发环境暴露端口
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data_dev:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - gemini-dev-network
+
+  # 后端服务 (开发模式)
+  backend:
+    build:
+      context: .
+      dockerfile: ./docker/backend.Dockerfile
+      target: base  # 使用开发阶段
+    container_name: gemini-backend-dev
+    restart: unless-stopped
+    ports:
+      - "8000:8000"  # 直接暴露后端端口用于开发
+    volumes:
+      - ./backend:/app:delegated  # 开发时挂载源代码
+      - ./env:/app/env:ro
+      - uploads_data_dev:/app/uploads
+      - /app/__pycache__  # 排除缓存目录
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-gemini_user}:${POSTGRES_PASSWORD:-dev_password}@db:5432/${POSTGRES_DB:-gemini_dev}
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - PYTHONPATH=/app
+      # AWS 配置 (开发环境)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-southeast-1}
+      # 开发环境可以使用本地文件存储
+      - USE_S3_STORAGE=false
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - gemini-dev-network
+
+  # 前端服务 (开发模式)
+  frontend:
+    build:
+      context: .
+      dockerfile: ./docker/frontend.Dockerfile
+      target: builder  # 使用构建阶段，但运行开发服务器
+    container_name: gemini-frontend-dev
+    restart: unless-stopped
+    ports:
+      - "3000:3000"  # 直接暴露前端端口
+    volumes:
+      - ./frontend:/app:delegated  # 开发时挂载源代码
+      - /app/node_modules  # 排除node_modules
+      - /app/.next  # 排除构建缓存
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    command: ["npm", "run", "dev"]
+    depends_on:
+      - backend
+    networks:
+      - gemini-dev-network
+
+  # 数据库初始化服务 (开发环境)
+  db-init:
+    build:
+      context: .
+      dockerfile: ./docker/backend.Dockerfile
+    container_name: gemini-db-init-dev
+    restart: "no"
+    command: ["python", "/app/init_db.py"]
+    volumes:
+      - ./env:/app/env:ro
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-gemini_user}:${POSTGRES_PASSWORD:-dev_password}@db:5432/${POSTGRES_DB:-gemini_dev}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - gemini-dev-network
+
+  # 开发工具容器 (可选)
+  devtools:
+    build:
+      context: .
+      dockerfile: ./docker/backend.Dockerfile
+    container_name: gemini-devtools
+    restart: "no"
+    volumes:
+      - ./backend:/app:delegated
+      - ./env:/app/env:ro
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-gemini_user}:${POSTGRES_PASSWORD:-dev_password}@db:5432/${POSTGRES_DB:-gemini_dev}
+    command: ["tail", "-f", "/dev/null"]  # 保持容器运行
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - gemini-dev-network
+    profiles:
+      - tools  # 只有在指定profile时才启动
+
+volumes:
+  postgres_data_dev:
+    driver: local
+  redis_data_dev:
+    driver: local
+  uploads_data_dev:
+    driver: local
+
+networks:
+  gemini-dev-network:
+    driver: bridge
