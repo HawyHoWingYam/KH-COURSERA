@@ -8,13 +8,13 @@ WORKDIR /app
 RUN npm install -g npm@latest
 
 # 复制package files
-COPY GeminiOCR/frontend/package.json GeminiOCR/frontend/package-lock.json ./
+COPY frontend/package.json frontend/package-lock.json ./
 
 # 安装依赖 (Phase 2.1 security fix: cross-spawn ^7.0.5 override)
 RUN npm ci --production=false && npm cache clean --force
 
 # 复制源代码
-COPY GeminiOCR/frontend/ .
+COPY frontend/ .
 
 # 构建应用
 RUN npm run build

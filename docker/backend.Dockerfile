@@ -35,14 +35,14 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # 复制并安装Python依赖（分层缓存优化）
-COPY GeminiOCR/backend/requirements.txt .
+COPY backend/requirements.txt .
 
 # 升级核心Python工具并安装依赖
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
     && pip install --no-cache-dir --verbose --timeout=60 -r requirements.txt
 
 # 复制应用代码
-COPY GeminiOCR/backend/ .
+COPY backend/ .
 
 # 创建必要的目录并设置权限
 RUN mkdir -p uploads env logs \
