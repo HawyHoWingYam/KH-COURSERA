@@ -53,7 +53,7 @@ jobs:
     - name: Build and push
       uses: docker/build-push-action@v5
       with:
-        context: ./GeminiOCR
+        context: .
         file: ./docker/${{ matrix.service }}.Dockerfile
         push: true
         tags: |
