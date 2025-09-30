@@ -1,0 +1,10 @@
+# 测试部署流程 - 2025-09-29 17:15
+
+这是一个测试文件，用于验证完整的自动化部署流程：
+1. Push to develop branch
+2. GitHub Actions 自动构建镜像
+3. 推送到 karasho62/hya-ocr-sandbox
+4. Production EC2 拉取镜像部署
+
+测试时间: 2025-09-29 17:15
+功能: 验证 develop → Docker Hub → Production 完整流程

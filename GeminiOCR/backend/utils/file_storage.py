@@ -58,6 +58,257 @@ class FileStorageService:
                 uploaded_file, company_code, doc_type_code, filename, job_id
             )
 
+    def save_order_file(
+        self,
+        uploaded_file,
+        order_id: int,
+        item_id: int
+    ) -> tuple[str, str]:
+        """
+        Save uploaded file for OCR Order system
+        Uses dedicated order path structure: orders/{order_id}/items/{item_id}/{timestamp}_{filename}
+
+        Args:
+            uploaded_file: FastAPI UploadFile object
+            order_id: Order ID
+            item_id: Order Item ID
+
+        Returns:
+            tuple[str, str]: (storage_path, display_name)
+        """
+        filename = uploaded_file.filename
+
+        if self.use_s3:
+            return self._save_order_file_to_s3(uploaded_file, order_id, item_id, filename)
+        else:
+            return self._save_order_file_to_local(uploaded_file, order_id, item_id, filename)
+
+    def _save_order_file_to_s3(
+        self,
+        uploaded_file,
+        order_id: int,
+        item_id: int,
+        filename: str
+    ) -> tuple[str, str]:
+        """Save order file to S3 with dedicated path structure"""
+        try:
+            # Generate S3 key with order-specific structure
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_id = uuid.uuid4().hex[:8]  # Add uniqueness
+            safe_filename = filename.replace(" ", "_")
+            s3_key = f"orders/{order_id}/items/{item_id}/{timestamp}_{unique_id}_{safe_filename}"
+
+            # Prepare metadata
+            metadata = {
+                "order_id": str(order_id),
+                "item_id": str(item_id),
+                "original_filename": filename,
+                "upload_timestamp": timestamp
+            }
+
+            # Upload to S3 using S3StorageManager
+            success = self.s3_manager.upload_file(
+                file_content=uploaded_file.file,
+                key=s3_key,
+                metadata=metadata
+            )
+
+            if not success:
+                raise Exception("S3 upload failed")
+
+            # Generate full S3 URI (including upload_prefix since S3StorageManager adds it during upload)
+            s3_uri = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{s3_key}"
+
+            logger.info(f"✅ Order file uploaded to S3: {s3_uri}")
+            return s3_uri, filename
+
+        except Exception as e:
+            logger.error(f"❌ Failed to upload order file to S3: {str(e)}")
+            raise
+
+    def _save_order_file_to_local(
+        self,
+        uploaded_file,
+        order_id: int,
+        item_id: int,
+        filename: str
+    ) -> tuple[str, str]:
+        """Save order file to local storage with dedicated path structure"""
+        try:
+            # Create directory structure
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_id = uuid.uuid4().hex[:8]
+            safe_filename = filename.replace(" ", "_")
+
+            order_dir = os.path.join(self.local_path, "orders", str(order_id), "items", str(item_id))
+            os.makedirs(order_dir, exist_ok=True)
+
+            # Generate file path
+            local_filename = f"{timestamp}_{unique_id}_{safe_filename}"
+            file_path = os.path.join(order_dir, local_filename)
+
+            # Save file
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(uploaded_file.file, buffer)
+
+            logger.info(f"✅ Order file saved locally: {file_path}")
+            return file_path, filename
+
+        except Exception as e:
+            logger.error(f"❌ Failed to save order file locally: {str(e)}")
+            raise
+
+    def delete_order_file(self, file_path: str) -> bool:
+        """
+        Delete order file from storage
+
+        Args:
+            file_path: File path (S3 URI or local path)
+
+        Returns:
+            bool: True if deletion successful, False otherwise
+        """
+        try:
+            if file_path.startswith('s3://'):
+                return self._delete_order_file_from_s3(file_path)
+            else:
+                return self._delete_order_file_from_local(file_path)
+        except Exception as e:
+            logger.error(f"❌ Failed to delete order file {file_path}: {str(e)}")
+            return False
+
+    def _delete_order_file_from_s3(self, s3_uri: str) -> bool:
+        """Delete order file from S3"""
+        try:
+            # Parse S3 URI: s3://bucket/key
+            s3_parts = s3_uri[5:].split('/', 1)  # Remove 's3://' and split
+            if len(s3_parts) != 2:
+                logger.error(f"❌ Invalid S3 URI format: {s3_uri}")
+                return False
+
+            bucket_name = s3_parts[0]
+            s3_key = s3_parts[1]
+
+            # Delete from S3 using S3StorageManager's boto3 client
+            self.s3_manager.s3_client.delete_object(Bucket=bucket_name, Key=s3_key)
+            logger.info(f"✅ Order file deleted from S3: {s3_uri}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to delete order file from S3 {s3_uri}: {str(e)}")
+            return False
+
+    def _delete_order_file_from_local(self, file_path: str) -> bool:
+        """Delete order file from local storage"""
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logger.info(f"✅ Order file deleted locally: {file_path}")
+                return True
+            else:
+                logger.warning(f"⚠️ Order file not found locally: {file_path}")
+                return False
+
+        except Exception as e:
+            logger.error(f"❌ Failed to delete order file locally {file_path}: {str(e)}")
+            return False
+
+    def save_order_mapping_file(
+        self,
+        uploaded_file,
+        order_id: int
+    ) -> tuple[str, str]:
+        """
+        Save mapping file for OCR Order system
+        Uses dedicated path: orders/{order_id}/mapping/{timestamp}_{filename}
+
+        Args:
+            uploaded_file: FastAPI UploadFile object
+            order_id: Order ID
+
+        Returns:
+            tuple[str, str]: (storage_path, display_name)
+        """
+        filename = uploaded_file.filename
+
+        if self.use_s3:
+            return self._save_order_mapping_file_to_s3(uploaded_file, order_id, filename)
+        else:
+            return self._save_order_mapping_file_to_local(uploaded_file, order_id, filename)
+
+    def _save_order_mapping_file_to_s3(
+        self,
+        uploaded_file,
+        order_id: int,
+        filename: str
+    ) -> tuple[str, str]:
+        """Save order mapping file to S3"""
+        try:
+            # Generate S3 key for mapping file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_id = uuid.uuid4().hex[:8]
+            safe_filename = filename.replace(" ", "_")
+            s3_key = f"orders/{order_id}/mapping/{timestamp}_{unique_id}_{safe_filename}"
+
+            # Prepare metadata
+            metadata = {
+                "order_id": str(order_id),
+                "file_type": "mapping",
+                "original_filename": filename,
+                "upload_timestamp": timestamp
+            }
+
+            # Upload to S3 using S3StorageManager
+            success = self.s3_manager.upload_file(
+                file_content=uploaded_file.file,
+                key=s3_key,
+                metadata=metadata
+            )
+
+            if not success:
+                raise Exception("S3 upload failed")
+
+            # Generate full S3 URI (including upload_prefix since S3StorageManager adds it during upload)
+            s3_uri = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{s3_key}"
+
+            logger.info(f"✅ Order mapping file uploaded to S3: {s3_uri}")
+            return s3_uri, filename
+
+        except Exception as e:
+            logger.error(f"❌ Failed to upload order mapping file to S3: {str(e)}")
+            raise
+
+    def _save_order_mapping_file_to_local(
+        self,
+        uploaded_file,
+        order_id: int,
+        filename: str
+    ) -> tuple[str, str]:
+        """Save order mapping file to local storage"""
+        try:
+            # Create directory structure
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            unique_id = uuid.uuid4().hex[:8]
+            safe_filename = filename.replace(" ", "_")
+
+            mapping_dir = os.path.join(self.local_path, "orders", str(order_id), "mapping")
+            os.makedirs(mapping_dir, exist_ok=True)
+
+            # Generate file path
+            local_filename = f"{timestamp}_{unique_id}_{safe_filename}"
+            file_path = os.path.join(mapping_dir, local_filename)
+
+            # Save file
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(uploaded_file.file, buffer)
+
+            logger.info(f"✅ Order mapping file saved locally: {file_path}")
+            return file_path, filename
+
+        except Exception as e:
+            logger.error(f"❌ Failed to save order mapping file locally: {str(e)}")
+            raise
+
     def _save_to_s3(
         self,
         uploaded_file,
@@ -167,23 +418,11 @@ class FileStorageService:
     def _read_from_s3(self, s3_url: str) -> Optional[bytes]:
         """从S3读取文件"""
         try:
-            # 解析S3 URL
-            # s3://bucket-name/key/path
-            s3_url = s3_url[5:]  # 移除 's3://'
-            parts = s3_url.split("/", 1)
-            if len(parts) != 2:
-                raise ValueError("无效的S3 URL格式")
-
-            bucket_name, key = parts
-
-            if self.s3_manager and self.s3_manager.bucket_name == bucket_name:
-                return self.s3_manager.download_file(key)
+            if self.s3_manager:
+                return self.s3_manager.download_file_by_stored_path(s3_url)
             else:
-                logger.error(
-                    f"❌ S3存储桶不匹配：{bucket_name} vs {self.s3_manager.bucket_name}"
-                )
+                logger.error("❌ S3管理器未初始化")
                 return None
-
         except Exception as e:
             logger.error(f"❌ 从S3读取文件失败：{e}")
             return None
@@ -200,6 +439,16 @@ class FileStorageService:
         except Exception as e:
             logger.error(f"❌ 从本地读取文件失败：{e}")
             return None
+
+    def download_file(self, file_path: str) -> Optional[bytes]:
+        """
+        下载文件内容（read_file的别名，用于兼容性）
+        Args:
+            file_path: 文件路径（可以是本地路径或S3 URL）
+        Returns:
+            Optional[bytes]: 文件内容
+        """
+        return self.read_file(file_path)
 
     def delete_file(self, file_path: str) -> bool:
         """

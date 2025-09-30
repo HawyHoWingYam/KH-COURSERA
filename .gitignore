@@ -61,3 +61,8 @@ error_log.txt
 .DS_Store
 Thumbs.db
 .ref/
+
+# Env directory (project-level)
+GeminiOCR/env/.env.local
+GeminiOCR/env/.env.*
+!GeminiOCR/env/env.example

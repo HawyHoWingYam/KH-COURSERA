@@ -1,0 +1,9 @@
+# Test CI/CD Trigger - 2025-09-29
+
+Testing simplified CI/CD workflow:
+- Single pipeline design
+- Build + Docker Hub push
+- Expected completion: < 20 minutes
+- Target: karasho62/hya-ocr-sandbox repository
+
+Time: 2025-09-29 17:35

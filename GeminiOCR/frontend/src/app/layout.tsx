@@ -7,7 +7,7 @@ const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
   title: 'Document OCR Portal',
-  description: 'OCR processing using Google Gemini AI',
+  description: 'Batch OCR processing using Google Gemini AI - Upload multiple documents for efficient text extraction',
 }
 
 

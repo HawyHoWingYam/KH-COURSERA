@@ -34,7 +34,7 @@ export default function CICDTestPage() {
     expectedTags: {
       develop: ['backend-develop', 'frontend-develop'],
       main: ['backend-latest', 'frontend-latest'],
-      version: ['backend-v1.3.1', 'frontend-v1.3.1']
+      version: ['backend-v1.3.2', 'frontend-v1.3.2']
     }
   };
 
@@ -139,10 +139,7 @@ export default function CICDTestPage() {
             </div>
             <div className="ml-3">
               <p className="text-sm text-green-800">
-                CI/CD 双仓库架构配置验证通过，准备开始完整测试流程！
-              </p>
-              <p className="text-xs text-green-600 mt-1">
-                触发完整流水线：构建 → 测试 → 扫描 → 集成测试 → 发布
+                CI/CD 双仓库架构配置验证通过，准备开始测试流程！
               </p>
             </div>
           </div>
