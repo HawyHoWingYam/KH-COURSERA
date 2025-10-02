@@ -34,21 +34,12 @@ RUN apt-get update && apt-get install -y \
 # 创建应用目录
 WORKDIR /app
 
-<<<<<<<< HEAD:GeminiOCR/backend.Dockerfile
-# 升级核心Python工具以修复setuptools/pip漏洞
-RUN python -m pip install --upgrade pip setuptools wheel
-
-# 复制并安装Python依赖
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-========
 # 复制并安装Python依赖（分层缓存优化）
 COPY requirements.txt .
 
 # 升级核心Python工具并安装依赖
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
     && pip install --no-cache-dir --verbose --timeout=60 -r requirements.txt
->>>>>>>> develop:docker/backend.Dockerfile
 
 # 复制应用代码
 COPY GeminiOCR/backend/ .
