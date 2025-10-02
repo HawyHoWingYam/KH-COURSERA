@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 // Resolve backend base URL once, avoiding accidental use of the Next.js PORT (3000)
-const apiBase = (process.env.NEXT_PUBLIC_API_URL || process.env.API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+// Use Docker service name for environment-independent deployment
+const apiBase = (process.env.NEXT_PUBLIC_API_URL || "http://backend:8000").replace(/\/$/, "");
 
 const nextConfig: NextConfig = {
   async rewrites() {
