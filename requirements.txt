@@ -8,8 +8,8 @@ python-multipart==0.0.18
 sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
 
-# Google Gemini AI (New unified SDK)
-google-genai
+# Google Gemini AI (使用旧SDK以匹配现有代码)
+google-generativeai==0.3.2
 
 # Image processing
 Pillow==10.3.0
