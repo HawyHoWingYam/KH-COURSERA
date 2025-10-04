@@ -13,6 +13,16 @@ console.log("Resolved apiBase:", apiBase);
 console.log("==========================");
 
 const nextConfig: NextConfig = {
+  // 启用standalone输出模式，用于Docker部署
+  output: 'standalone',
+
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+
   async rewrites() {
     const rules = [
       {

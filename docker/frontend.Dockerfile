@@ -15,7 +15,21 @@ RUN npm ci --production=false && npm cache clean --force
 
 # 复制源代码（排除.env文件避免构建时污染）
 COPY GeminiOCR/frontend/ .
-RUN rm -f .env .env.local .env.*.local
+
+# Debug: 显示复制后的.env文件
+RUN echo "=== Files before cleanup ===" && \
+    ls -la | grep -E "\.env" || echo "No .env files found" && \
+    echo "=== Content of .env.local if exists ===" && \
+    cat .env.local 2>/dev/null || echo "No .env.local" && \
+    echo "=== Content of .env if exists ===" && \
+    cat .env 2>/dev/null || echo "No .env" && \
+    echo "==========================="
+
+# 删除所有.env文件
+RUN rm -f .env .env.local .env.*.local && \
+    echo "=== Files after cleanup ===" && \
+    ls -la | grep -E "\.env" || echo "All .env files removed" && \
+    echo "==========================="
 
 # Cache bust layer - increment this to force rebuild
 ARG CACHE_BUST=1
