@@ -116,7 +116,7 @@ export default function OrderDetailsPage() {
 
   const loadOrder = async () => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}`);
+      const response = await fetch(`/api/orders/${orderId}`);
       if (!response.ok) {
         throw new Error('Failed to fetch order');
       }
@@ -146,7 +146,7 @@ export default function OrderDetailsPage() {
 
   const loadCompanies = async () => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/companies`);
+      const response = await fetch(`/api/companies`);
       if (!response.ok) throw new Error('Failed to fetch companies');
       const data = await response.json();
       setCompanies(data);
@@ -157,7 +157,7 @@ export default function OrderDetailsPage() {
 
   const loadDocumentTypes = async () => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/document-types`);
+      const response = await fetch(`/api/document-types`);
       if (!response.ok) throw new Error('Failed to fetch document types');
       const data = await response.json();
       setDocumentTypes(data);
@@ -168,7 +168,7 @@ export default function OrderDetailsPage() {
 
   const loadMappingHeaders = async () => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/mapping-headers`);
+      const response = await fetch(`/api/orders/${orderId}/mapping-headers`);
       if (!response.ok) throw new Error('Failed to fetch mapping headers');
       const data = await response.json();
       setMappingHeaders(data.sheet_headers);
@@ -185,7 +185,7 @@ export default function OrderDetailsPage() {
 
     setIsAddingItem(true);
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items`, {
+      const response = await fetch(`/api/orders/${orderId}/items`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -226,7 +226,7 @@ export default function OrderDetailsPage() {
         formData.append('files', file);
       });
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}/files`, {
+      const response = await fetch(`/api/orders/${orderId}/items/${itemId}/files`, {
         method: 'POST',
         body: formData,
       });
@@ -257,7 +257,7 @@ export default function OrderDetailsPage() {
     setDeletingFiles(prev => ({ ...prev, [deleteKey]: true }));
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}/files/${fileId}`, {
+      const response = await fetch(`/api/orders/${orderId}/items/${itemId}/files/${fileId}`, {
         method: 'DELETE',
       });
 
@@ -286,7 +286,7 @@ export default function OrderDetailsPage() {
     setDeletingItems(prev => ({ ...prev, [itemId]: true }));
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}`, {
+      const response = await fetch(`/api/orders/${orderId}/items/${itemId}`, {
         method: 'DELETE',
       });
 
@@ -309,7 +309,7 @@ export default function OrderDetailsPage() {
     setDownloadingFiles(prev => ({ ...prev, [downloadKey]: true }));
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}/download/${format}`);
+      const response = await fetch(`/api/orders/${orderId}/items/${itemId}/download/${format}`);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -357,7 +357,7 @@ export default function OrderDetailsPage() {
       const formData = new FormData();
       formData.append('mapping_file', mappingFile);
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/mapping-file`, {
+      const response = await fetch(`/api/orders/${orderId}/mapping-file`, {
         method: 'POST',
         body: formData,
       });
@@ -386,7 +386,7 @@ export default function OrderDetailsPage() {
 
     setIsDeletingMapping(true);
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/mapping-file`, {
+      const response = await fetch(`/api/orders/${orderId}/mapping-file`, {
         method: 'DELETE',
       });
 
@@ -412,7 +412,7 @@ export default function OrderDetailsPage() {
     setIsUpdatingMappingKeys(true);
     setError('');
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}`, {
+      const response = await fetch(`/api/orders/${orderId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -447,7 +447,7 @@ export default function OrderDetailsPage() {
         await updateMappingKeys();
       }
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/submit`, {
+      const response = await fetch(`/api/orders/${orderId}/submit`, {
         method: 'POST',
       });
 
@@ -465,7 +465,7 @@ export default function OrderDetailsPage() {
 
   const startOcrOnlyProcessing = async () => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/process-ocr-only`, {
+      const response = await fetch(`/api/orders/${orderId}/process-ocr-only`, {
         method: 'POST',
       });
 
@@ -490,7 +490,7 @@ export default function OrderDetailsPage() {
         await updateMappingKeys();
       }
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/process-mapping`, {
+      const response = await fetch(`/api/orders/${orderId}/process-mapping`, {
         method: 'POST',
       });
 
@@ -515,7 +515,7 @@ export default function OrderDetailsPage() {
   const loadItemCsvHeaders = async (itemId: number) => {
     setLoadingItemHeaders(prev => ({ ...prev, [itemId]: true }));
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}/csv-headers`);
+      const response = await fetch(`/api/orders/${orderId}/items/${itemId}/csv-headers`);
       if (!response.ok) {
         throw new Error('Failed to fetch item CSV headers');
       }
@@ -541,7 +541,7 @@ export default function OrderDetailsPage() {
 
     setLoadingRecommendations(prev => ({ ...prev, [itemId]: true }));
     try {
-      let apiUrl = `${process.env.NEXT_PUBLIC_API_URL}/companies/${item.company_id}/document-types/${item.doc_type_id}/suggested-mapping-keys?limit=5`;
+      let apiUrl = `/api/companies/${item.company_id}/document-types/${item.doc_type_id}/suggested-mapping-keys?limit=5`;
 
       // If csvHeaders are provided, include them in the request
       if (csvHeaders && csvHeaders.length > 0) {
@@ -573,7 +573,7 @@ export default function OrderDetailsPage() {
       // Use the first item's company and document type for order-level suggestions
       const firstItem = order.items[0];
       const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/companies/${firstItem.company_id}/document-types/${firstItem.doc_type_id}/suggested-mapping-keys?limit=3`
+        `/api/companies/${firstItem.company_id}/document-types/${firstItem.doc_type_id}/suggested-mapping-keys?limit=3`
       );
 
       if (response.ok) {
@@ -606,7 +606,7 @@ export default function OrderDetailsPage() {
   const saveItemMappingKeys = async (itemId: number) => {
     setSavingItemMapping(prev => ({ ...prev, [itemId]: true }));
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}/mapping-keys`, {
+      const response = await fetch(`/api/orders/${orderId}/items/${itemId}/mapping-keys`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -662,7 +662,7 @@ export default function OrderDetailsPage() {
     setDownloadingFiles(prev => ({ ...prev, [downloadKey]: true }));
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/download/mapped-${format}`);
+      const response = await fetch(`/api/orders/${orderId}/download/mapped-${format}`);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -711,7 +711,7 @@ export default function OrderDetailsPage() {
     setIsLockingOrder(true);
     setError('');
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/lock`, {
+      const response = await fetch(`/api/orders/${orderId}/lock`, {
         method: 'POST',
       });
 
@@ -739,7 +739,7 @@ export default function OrderDetailsPage() {
     setIsUnlockingOrder(true);
     setError('');
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/unlock`, {
+      const response = await fetch(`/api/orders/${orderId}/unlock`, {
         method: 'POST',
       });
 
@@ -767,7 +767,7 @@ export default function OrderDetailsPage() {
     setIsRestartingOcr(true);
     setError('');
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/restart-ocr`, {
+      const response = await fetch(`/api/orders/${orderId}/restart-ocr`, {
         method: 'POST',
       });
 
@@ -795,7 +795,7 @@ export default function OrderDetailsPage() {
     setIsRestartingMapping(true);
     setError('');
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/restart-mapping`, {
+      const response = await fetch(`/api/orders/${orderId}/restart-mapping`, {
         method: 'POST',
       });
 
