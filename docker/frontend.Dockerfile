@@ -16,6 +16,10 @@ RUN npm ci --production=false && npm cache clean --force
 # 复制源代码
 COPY GeminiOCR/frontend/ .
 
+# Cache bust layer - increment this to force rebuild
+ARG CACHE_BUST=1
+RUN echo "Cache bust: $CACHE_BUST"
+
 # 构建应用
 RUN npm run build
 
