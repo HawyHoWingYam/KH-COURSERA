@@ -8,10 +8,20 @@ from sqlalchemy import pool
 from alembic import context
 
 # Add backend path to sys.path for imports
-# Works both in development (repo root) and in Docker (/app)
-backend_path = os.path.join(os.path.dirname(__file__), '..', 'GeminiOCR', 'backend')
+# In development: repo_root/GeminiOCR/backend
+# In Docker: /app (backend files are copied to /app root)
+current_dir = os.path.dirname(__file__)  # migrations directory
+parent_dir = os.path.dirname(current_dir)  # parent directory
+
+# Try development path first
+backend_path = os.path.join(parent_dir, 'GeminiOCR', 'backend')
 if os.path.exists(backend_path):
     sys.path.insert(0, backend_path)
+else:
+    # In Docker, backend files are at /app (parent_dir itself)
+    # Check if db module exists at parent level
+    if os.path.exists(os.path.join(parent_dir, 'db')):
+        sys.path.insert(0, parent_dir)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
