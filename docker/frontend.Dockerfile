@@ -13,8 +13,9 @@ COPY GeminiOCR/frontend/package.json GeminiOCR/frontend/package-lock.json ./
 # 安装依赖 (Phase 2.1 security fix: cross-spawn ^7.0.5 override)
 RUN npm ci --production=false && npm cache clean --force
 
-# 复制源代码
+# 复制源代码（排除.env文件避免构建时污染）
 COPY GeminiOCR/frontend/ .
+RUN rm -f .env .env.local .env.*.local
 
 # Cache bust layer - increment this to force rebuild
 ARG CACHE_BUST=1
