@@ -14,6 +14,9 @@ export interface DocumentType {
   type_name: string;
   type_code: string;
   description: string | null;
+  template_json_path: string | null;
+  template_version: string | null;
+  has_template: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -179,13 +182,26 @@ export const companiesApi = {
 export const documentTypesApi = {
   getAll: () => fetchApi<DocumentType[]>('/document-types'),
   getById: (id: number) => fetchApi<DocumentType>(`/document-types/${id}`),
-  create: (data: Omit<DocumentType, 'doc_type_id' | 'created_at' | 'updated_at'>) =>
+  create: (
+    data: Omit<
+      DocumentType,
+      'doc_type_id' | 'created_at' | 'updated_at' | 'template_json_path' | 'template_version' | 'has_template'
+    >
+  ) =>
     fetchApi<DocumentType>('/document-types', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     }),
-  update: (id: number, data: Partial<Omit<DocumentType, 'doc_type_id' | 'created_at' | 'updated_at'>>) =>
+  update: (
+    id: number,
+    data: Partial<
+      Omit<
+        DocumentType,
+        'doc_type_id' | 'created_at' | 'updated_at' | 'template_json_path' | 'template_version' | 'has_template'
+      >
+    >
+  ) =>
     fetchApi<DocumentType>(`/document-types/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

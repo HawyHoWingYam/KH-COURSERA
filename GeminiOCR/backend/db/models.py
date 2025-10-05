@@ -68,6 +68,11 @@ class DocumentType(Base):
     type_name = Column(String(100), nullable=False, unique=True)
     type_code = Column(String(50), nullable=False, unique=True)
     description = Column(Text, nullable=True)
+    template_json_path = Column(
+        String(500),
+        nullable=True,
+        comment="S3 key or URL for uploaded template JSON file",
+    )
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -79,6 +84,11 @@ class DocumentType(Base):
     configs = relationship("CompanyDocumentConfig", back_populates="document_type")
     jobs = relationship("ProcessingJob", back_populates="document_type")
     batch_jobs = relationship("BatchJob", back_populates="document_type")
+    primary_orders = relationship(
+        "OcrOrder",
+        back_populates="primary_doc_type",
+        foreign_keys="OcrOrder.primary_doc_type_id",
+    )
 
 
 class DepartmentDocTypeAccess(Base):
@@ -300,11 +310,22 @@ class OcrOrder(Base):
     completed_items = Column(Integer, nullable=False, default=0, comment='Number of completed order items')
     failed_items = Column(Integer, nullable=False, default=0, comment='Number of failed order items')
     error_message = Column(Text, nullable=True, comment='Error message if order processing fails')
+    primary_doc_type_id = Column(
+        Integer,
+        ForeignKey("document_types.doc_type_id", ondelete="SET NULL"),
+        nullable=True,
+        comment='Primary document type driving template-based special CSV generation',
+    )
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
     items = relationship("OcrOrderItem", back_populates="order", cascade="all, delete-orphan")
+    primary_doc_type = relationship(
+        "DocumentType",
+        back_populates="primary_orders",
+        foreign_keys=[primary_doc_type_id],
+    )
 
 
 class OcrOrderItem(Base):

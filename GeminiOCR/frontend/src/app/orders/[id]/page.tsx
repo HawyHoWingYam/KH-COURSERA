@@ -3,15 +3,27 @@
 import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
+import { DocumentType } from '@/lib/api';
 
 interface Company {
   company_id: number;
   company_name: string;
 }
 
-interface DocumentType {
+interface PrimaryDocTypeInfo {
   doc_type_id: number;
   type_name: string;
+  type_code: string;
+  template_json_path: string | null;
+  template_version?: string | null;
+  has_template?: boolean;
+}
+
+interface OrderFinalReportPaths {
+  mapped_csv?: string;
+  mapped_excel?: string;
+  special_csv?: string;
+  [key: string]: string | undefined;
 }
 
 interface OrderItem {
@@ -43,7 +55,9 @@ interface Order {
   failed_items: number;
   mapping_file_path: string | null;
   mapping_keys: string[] | null;
-  final_report_paths: any | null;
+  primary_doc_type_id: number | null;
+  primary_doc_type: PrimaryDocTypeInfo | null;
+  final_report_paths: OrderFinalReportPaths | null;
   error_message: string | null;
   items: OrderItem[];
   created_at: string;
@@ -657,16 +671,20 @@ export default function OrderDetailsPage() {
     });
   };
 
-  const downloadFinalMappedResults = async (format: 'csv' | 'excel') => {
-    const downloadKey = `final-${format}`;
+  const downloadFinalMappedResults = async (format: 'csv' | 'excel' | 'special-csv') => {
+    const downloadKey = format === 'special-csv' ? 'final-special-csv' : `final-${format}`;
     setDownloadingFiles(prev => ({ ...prev, [downloadKey]: true }));
 
     try {
-      const response = await fetch(`/api/orders/${orderId}/download/mapped-${format}`);
+      const endpoint = format === 'special-csv' ? 'special-csv' : `mapped-${format}`;
+      const response = await fetch(`/api/orders/${orderId}/download/${endpoint}`);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `Failed to download final ${format.toUpperCase()} results`);
+        throw new Error(
+          errorData.detail ||
+            `Failed to download final ${format === 'special-csv' ? 'special CSV' : format.toUpperCase()} results`
+        );
       }
 
       // Create download link
@@ -677,7 +695,12 @@ export default function OrderDetailsPage() {
 
       // Get filename from response headers or create default
       const contentDisposition = response.headers.get('content-disposition');
-      let filename = `order_${orderId}_mapped_results.${format === 'excel' ? 'xlsx' : 'csv'}`;
+      let filename =
+        format === 'excel'
+          ? `order_${orderId}_mapped_results.xlsx`
+          : format === 'special-csv'
+            ? `order_${orderId}_special.csv`
+            : `order_${orderId}_mapped_results.csv`;
 
       if (contentDisposition) {
         const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
@@ -696,7 +719,11 @@ export default function OrderDetailsPage() {
 
     } catch (error) {
       console.error(`Error downloading final ${format} results:`, error);
-      setError(error instanceof Error ? error.message : `Failed to download final ${format.toUpperCase()} results`);
+      setError(
+        error instanceof Error
+          ? error.message
+          : `Failed to download final ${format === 'special-csv' ? 'special CSV' : format.toUpperCase()} results`
+      );
     } finally {
       setDownloadingFiles(prev => ({ ...prev, [downloadKey]: false }));
     }
@@ -976,6 +1003,23 @@ export default function OrderDetailsPage() {
         </div>
       </div>
 
+      {order.primary_doc_type && (
+        <div className="mb-6 text-sm text-gray-600">
+          Primary Document Type:{' '}
+          <span className="font-medium text-gray-900">
+            {order.primary_doc_type.type_name} ({order.primary_doc_type.type_code})
+          </span>
+          {order.primary_doc_type.template_json_path ? (
+            <span className="ml-2 text-xs text-green-600">
+              Template configured
+              {order.primary_doc_type.template_version ? ` (v${order.primary_doc_type.template_version})` : ''}
+            </span>
+          ) : (
+            <span className="ml-2 text-xs text-gray-500">No template uploaded</span>
+          )}
+        </div>
+      )}
+
       {error && (
         <div className={`border-l-4 p-4 mb-6 ${
           error.startsWith('✅')
@@ -1040,6 +1084,52 @@ export default function OrderDetailsPage() {
             <div className="text-2xl font-bold">
               {order.total_items > 0 ? Math.round((order.completed_items / order.total_items) * 100) : 0}%
             </div>
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-4 md:grid-cols-2">
+          <div>
+            <div className="text-sm text-gray-500">Primary Document Type</div>
+            <div className="mt-1 text-base font-medium text-gray-900">
+              {order.primary_doc_type
+                ? `${order.primary_doc_type.type_name} (${order.primary_doc_type.type_code})`
+                : 'Not selected'}
+            </div>
+            {order.primary_doc_type ? (
+              order.primary_doc_type.template_json_path ? (
+                <div className="mt-1 text-xs text-green-600">
+                  Template configured
+                  {order.primary_doc_type.template_version
+                    ? ` (v${order.primary_doc_type.template_version})`
+                    : ''}
+                </div>
+              ) : (
+                <div className="mt-1 text-xs text-gray-500">
+                  No template uploaded; special CSV export will be skipped.
+                </div>
+              )
+            ) : (
+              <div className="mt-1 text-xs text-gray-500">
+                Select a primary document type when creating an order to enable template-driven outputs.
+              </div>
+            )}
+          </div>
+          <div>
+            <div className="text-sm text-gray-500">Special CSV</div>
+            <div className="mt-1 text-base font-medium text-gray-900">
+              {order.final_report_paths?.special_csv ? 'Ready for download' : 'Not generated'}
+            </div>
+            {order.final_report_paths?.special_csv ? (
+              <div className="mt-1 text-xs text-green-600">
+                Generated using the configured template.
+              </div>
+            ) : (
+              <div className="mt-1 text-xs text-gray-500">
+                {order.primary_doc_type?.template_json_path
+                  ? 'Special CSV will become available after mapping completes.'
+                  : 'Upload a template for the primary document type to produce a special CSV.'}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1460,7 +1550,11 @@ export default function OrderDetailsPage() {
       </div>
 
       {/* Final Mapped Results Section - Show only for completed orders with mapped results */}
-      {order.status === 'COMPLETED' && order.final_report_paths && (order.final_report_paths.mapped_csv || order.final_report_paths.mapped_excel) && (
+      {order.status === 'COMPLETED' && (
+        order.final_report_paths?.mapped_csv ||
+        order.final_report_paths?.mapped_excel ||
+        order.final_report_paths?.special_csv
+      ) && (
         <div className="bg-white rounded-lg shadow p-6 mb-8">
           <div className="mb-4">
             <h2 className="text-lg font-semibold text-green-600">📊 Final Mapped Results</h2>
@@ -1484,7 +1578,7 @@ export default function OrderDetailsPage() {
             </div>
 
             <div className="flex items-center gap-3">
-              {order.final_report_paths.mapped_csv && (
+              {order.final_report_paths?.mapped_csv && (
                 <button
                   onClick={() => downloadFinalMappedResults('csv')}
                   disabled={downloadingFiles['final-csv']}
@@ -1501,7 +1595,7 @@ export default function OrderDetailsPage() {
                 </button>
               )}
 
-              {order.final_report_paths.mapped_excel && (
+              {order.final_report_paths?.mapped_excel && (
                 <button
                   onClick={() => downloadFinalMappedResults('excel')}
                   disabled={downloadingFiles['final-excel']}
@@ -1517,10 +1611,21 @@ export default function OrderDetailsPage() {
                   )}
                 </button>
               )}
+
+              {order.final_report_paths?.special_csv && (
+                <button
+                  onClick={() => downloadFinalMappedResults('special-csv')}
+                  disabled={downloadingFiles['final-special-csv']}
+                  className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white py-2 px-4 rounded font-medium flex items-center gap-2"
+                  title="Download template-driven special CSV output"
+                >
+                  {downloadingFiles['final-special-csv'] ? 'Downloading...' : '✨ Download Special CSV'}
+                </button>
+              )}
             </div>
 
             <div className="mt-3 text-xs text-green-600">
-              💡 The Excel report includes multiple sheets: Mapped Results, Matched Records, Unmatched Records, and Summary analysis.
+              💡 CSV delivers the raw mapped dataset, Excel provides analytics worksheets, and Special CSV applies template-defined formatting.
             </div>
           </div>
         </div>

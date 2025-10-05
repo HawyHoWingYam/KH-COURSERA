@@ -10,13 +10,14 @@ from fastapi import (
     Query,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse, Response
+from fastapi.responses import JSONResponse, FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
 import shutil
 import tempfile
+import io
 import zipfile
 from datetime import datetime, timedelta
 import json
@@ -50,6 +51,14 @@ from main import extract_text_from_image, extract_text_from_pdf
 from utils.excel_converter import json_to_excel, json_to_csv
 from utils.s3_storage import get_s3_manager, is_s3_enabled
 from utils.file_storage import get_file_storage
+from utils.template_service import (
+    build_template_object_name,
+    collect_computed_expressions,
+    pretty_print_template,
+    sanitize_template_version,
+    extract_template_version_from_path,
+    validate_template_payload,
+)
 from utils.prompt_schema_manager import get_prompt_schema_manager, load_prompt_and_schema
 from utils.company_file_manager import FileType
 from utils.force_delete_manager import ForceDeleteManager
@@ -353,20 +362,29 @@ def delete_company(company_id: int, db: Session = Depends(get_db)):
 
 
 # Document Types API endpoints
+def _serialize_document_type(doc_type: DocumentType) -> dict:
+    """Serialize DocumentType model to API-friendly payload."""
+
+    template_path = doc_type.template_json_path
+    template_version = extract_template_version_from_path(template_path)
+
+    return {
+        "doc_type_id": doc_type.doc_type_id,
+        "type_name": doc_type.type_name,
+        "type_code": doc_type.type_code,
+        "description": doc_type.description,
+        "template_json_path": template_path,
+        "template_version": template_version,
+        "has_template": bool(template_path),
+        "created_at": doc_type.created_at.isoformat(),
+        "updated_at": doc_type.updated_at.isoformat(),
+    }
+
+
 @app.get("/document-types", response_model=List[dict])
 def get_document_types(db: Session = Depends(get_db)):
     doc_types = db.query(DocumentType).all()
-    return [
-        {
-            "doc_type_id": doc_type.doc_type_id,
-            "type_name": doc_type.type_name,
-            "type_code": doc_type.type_code,
-            "description": doc_type.description,
-            "created_at": doc_type.created_at.isoformat(),
-            "updated_at": doc_type.updated_at.isoformat(),
-        }
-        for doc_type in doc_types
-    ]
+    return [_serialize_document_type(doc_type) for doc_type in doc_types]
 
 
 @app.post("/document-types", response_model=dict)
@@ -381,14 +399,7 @@ def create_document_type(doc_type_data: dict, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(doc_type)
 
-    return {
-        "doc_type_id": doc_type.doc_type_id,
-        "type_name": doc_type.type_name,
-        "type_code": doc_type.type_code,
-        "description": doc_type.description,
-        "created_at": doc_type.created_at.isoformat(),
-        "updated_at": doc_type.updated_at.isoformat(),
-    }
+    return _serialize_document_type(doc_type)
 
 
 @app.get("/document-types/{doc_type_id}", response_model=dict)
@@ -399,14 +410,7 @@ def get_document_type(doc_type_id: int, db: Session = Depends(get_db)):
     if not doc_type:
         raise HTTPException(status_code=404, detail="Document type not found")
 
-    return {
-        "doc_type_id": doc_type.doc_type_id,
-        "type_name": doc_type.type_name,
-        "type_code": doc_type.type_code,
-        "description": doc_type.description,
-        "created_at": doc_type.created_at.isoformat(),
-        "updated_at": doc_type.updated_at.isoformat(),
-    }
+    return _serialize_document_type(doc_type)
 
 
 @app.put("/document-types/{doc_type_id}", response_model=dict)
@@ -463,6 +467,223 @@ def delete_document_type(doc_type_id: int, db: Session = Depends(get_db)):
             status_code=500,
             detail=f"Failed to delete document type: {str(e)}"
         )
+
+
+@app.post("/document-types/{doc_type_id}/template", response_model=dict)
+async def upload_document_type_template(
+    doc_type_id: int,
+    template_file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Upload and store a template.json for a document type."""
+
+    doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+    if not doc_type:
+        raise HTTPException(status_code=404, detail="Document type not found")
+
+    if not is_s3_enabled():
+        raise HTTPException(
+            status_code=400,
+            detail="S3 storage must be enabled to upload templates",
+        )
+
+    try:
+        raw_bytes = await template_file.read()
+    except Exception as exc:
+        logger.error(
+            "Failed to read uploaded template file for doc_type %s: %s",
+            doc_type_id,
+            exc,
+        )
+        raise HTTPException(status_code=400, detail="Failed to read uploaded file") from exc
+
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded template file is empty")
+
+    try:
+        template_text = raw_bytes.decode("utf-8")
+        template_json = json.loads(template_text)
+    except UnicodeDecodeError as exc:
+        logger.warning(
+            "Template upload decoding failed for doc_type %s: %s",
+            doc_type_id,
+            exc,
+        )
+        raise HTTPException(status_code=400, detail="Template must be valid UTF-8 JSON") from exc
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "Template upload JSON parsing failed for doc_type %s: %s",
+            doc_type_id,
+            exc,
+        )
+        raise HTTPException(status_code=400, detail="Template file is not valid JSON") from exc
+
+    try:
+        validate_template_payload(template_json)
+    except ValueError as exc:
+        logger.warning(
+            "Template validation failed for doc_type %s: %s | payload=%s",
+            doc_type_id,
+            exc,
+            pretty_print_template(template_json),
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    computed_expressions = collect_computed_expressions(template_json["column_definitions"])
+    logger.info(
+        "Validated template upload for doc_type %s: version=%s, computed_columns=%d",
+        doc_type_id,
+        template_json.get("version", "unspecified"),
+        len(computed_expressions),
+    )
+
+    s3_manager = get_s3_manager()
+    if not s3_manager:
+        raise HTTPException(status_code=500, detail="S3 storage manager is not configured")
+
+    safe_version = sanitize_template_version(template_json.get("version", "latest"))
+    object_key = build_template_object_name(doc_type_id, safe_version)
+
+    metadata = {
+        "doc_type_id": str(doc_type_id),
+        "template_name": str(template_json.get("template_name", ""))[:50],
+        "template_version": safe_version,
+    }
+
+    logger.info(
+        "Uploading template for doc_type %s to s3://%s/%s",
+        doc_type_id,
+        s3_manager.bucket_name,
+        f"{s3_manager.upload_prefix}{object_key}",
+    )
+
+    try:
+        upload_success = s3_manager.upload_file(
+            file_content=raw_bytes,
+            key=object_key,
+            content_type="application/json",
+            metadata=metadata,
+        )
+    except Exception as exc:
+        logger.error(
+            "Unexpected error uploading template for doc_type %s: %s",
+            doc_type_id,
+            exc,
+        )
+        raise HTTPException(status_code=500, detail="Failed to upload template to S3") from exc
+
+    if not upload_success:
+        raise HTTPException(status_code=500, detail="Failed to upload template to S3")
+
+    template_uri = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{object_key}"
+    previous_path = doc_type.template_json_path
+
+    try:
+        doc_type.template_json_path = template_uri
+        doc_type.updated_at = datetime.utcnow()
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error(
+            "Failed to persist template path for doc_type %s: %s",
+            doc_type_id,
+            exc,
+        )
+        raise HTTPException(status_code=500, detail="Failed to save template metadata") from exc
+
+    logger.info(
+        "Template uploaded for doc_type %s. Stored at %s (previous=%s)",
+        doc_type_id,
+        template_uri,
+        previous_path,
+    )
+
+    return {
+        "message": "Template uploaded successfully",
+        "template_path": template_uri,
+        "previous_template_path": previous_path,
+        "computed_columns": list(computed_expressions.keys()),
+    }
+
+
+@app.get("/document-types/{doc_type_id}/template")
+def download_document_type_template(doc_type_id: int, db: Session = Depends(get_db)):
+    """Download the stored template.json for a document type."""
+
+    doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+    if not doc_type:
+        raise HTTPException(status_code=404, detail="Document type not found")
+
+    if not doc_type.template_json_path:
+        raise HTTPException(status_code=404, detail="Document type has no template configured")
+
+    file_storage = get_file_storage()
+    template_content = file_storage.download_file(doc_type.template_json_path)
+
+    if not template_content:
+        logger.error(
+            "Template download failed for doc_type %s: file not found at %s",
+            doc_type_id,
+            doc_type.template_json_path,
+        )
+        raise HTTPException(status_code=500, detail="Failed to download template file")
+
+    file_name = doc_type.template_json_path.split("/")[-1] or f"doc_type_{doc_type_id}_template.json"
+    logger.info(
+        "Template downloaded for doc_type %s from %s",
+        doc_type_id,
+        doc_type.template_json_path,
+    )
+
+    return StreamingResponse(
+        io.BytesIO(template_content),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f"attachment; filename={file_name}",
+        },
+    )
+
+
+@app.delete("/document-types/{doc_type_id}/template", response_model=dict)
+def delete_document_type_template(doc_type_id: int, db: Session = Depends(get_db)):
+    """Delete the configured template.json for a document type."""
+
+    doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+    if not doc_type:
+        raise HTTPException(status_code=404, detail="Document type not found")
+
+    if not doc_type.template_json_path:
+        raise HTTPException(status_code=404, detail="Document type has no template configured")
+
+    template_path = doc_type.template_json_path
+    file_storage = get_file_storage()
+
+    deletion_success = file_storage.delete_file(template_path)
+    logger.info(
+        "Template deletion for doc_type %s requested. Path=%s deleted=%s",
+        doc_type_id,
+        template_path,
+        deletion_success,
+    )
+
+    try:
+        doc_type.template_json_path = None
+        doc_type.updated_at = datetime.utcnow()
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error(
+            "Failed to clear template metadata for doc_type %s: %s",
+            doc_type_id,
+            exc,
+        )
+        raise HTTPException(status_code=500, detail="Failed to update document type") from exc
+
+    return {
+        "message": "Template removed successfully",
+        "template_path": template_path,
+        "deleted": deletion_success,
+    }
 
 
 # Dependency Management API endpoints
@@ -4030,6 +4251,7 @@ def get_config_dependencies(config_id: int, db: Session = Depends(get_db)):
 # Pydantic models for OCR Order requests/responses
 class CreateOrderRequest(BaseModel):
     order_name: Optional[str] = None
+    primary_doc_type_id: Optional[int] = None
 
 class UpdateOrderRequest(BaseModel):
     order_name: Optional[str] = None
@@ -4047,6 +4269,8 @@ class OrderResponse(BaseModel):
     total_items: int
     completed_items: int
     failed_items: int
+    primary_doc_type_id: Optional[int]
+    primary_doc_type: Optional[dict]
     mapping_file_path: Optional[str]
     mapping_keys: Optional[List[str]]
     final_report_paths: Optional[dict]
@@ -4077,22 +4301,58 @@ class OrderItemResponse(BaseModel):
     created_at: str
     updated_at: str
 
+
+def _serialize_primary_doc_type(doc_type: Optional[DocumentType]) -> Optional[dict]:
+    """Serialize primary document type details for API responses."""
+
+    if not doc_type:
+        return None
+
+    return {
+        "doc_type_id": doc_type.doc_type_id,
+        "type_name": doc_type.type_name,
+        "type_code": doc_type.type_code,
+        "template_json_path": doc_type.template_json_path,
+        "template_version": extract_template_version_from_path(doc_type.template_json_path),
+        "has_template": bool(doc_type.template_json_path),
+    }
+
+
 @app.post("/orders", response_model=dict)
 def create_order(request: CreateOrderRequest, db: Session = Depends(get_db)):
     """Create a new OCR order"""
     try:
+        primary_doc_type = None
+        if request.primary_doc_type_id is not None:
+            primary_doc_type = (
+                db.query(DocumentType)
+                .filter(DocumentType.doc_type_id == request.primary_doc_type_id)
+                .first()
+            )
+            if not primary_doc_type:
+                raise HTTPException(status_code=400, detail="Primary document type not found")
+
         order = OcrOrder(
             order_name=request.order_name,
-            status=OrderStatus.DRAFT
+            status=OrderStatus.DRAFT,
+            primary_doc_type_id=primary_doc_type.doc_type_id if primary_doc_type else None,
         )
         db.add(order)
         db.commit()
         db.refresh(order)
 
+        logger.info(
+            "Created order %s with primary_doc_type_id=%s",
+            order.order_id,
+            order.primary_doc_type_id,
+        )
+
         return {
             "order_id": order.order_id,
             "order_name": order.order_name,
             "status": order.status.value,
+            "primary_doc_type_id": order.primary_doc_type_id,
+            "primary_doc_type": _serialize_primary_doc_type(primary_doc_type),
             "message": "Order created successfully"
         }
     except Exception as e:
@@ -4126,6 +4386,8 @@ def list_orders(
                 "order_id": order.order_id,
                 "order_name": order.order_name,
                 "status": order.status.value,
+                "primary_doc_type_id": order.primary_doc_type_id,
+                "primary_doc_type": _serialize_primary_doc_type(order.primary_doc_type),
                 "total_items": order.total_items,
                 "completed_items": order.completed_items,
                 "failed_items": order.failed_items,
@@ -4207,6 +4469,8 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
             "order_id": order.order_id,
             "order_name": order.order_name,
             "status": order.status.value,
+            "primary_doc_type_id": order.primary_doc_type_id,
+            "primary_doc_type": _serialize_primary_doc_type(order.primary_doc_type),
             "total_items": order.total_items,
             "completed_items": order.completed_items,
             "failed_items": order.failed_items,
@@ -5554,6 +5818,48 @@ def download_order_mapped_csv(order_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Failed to download order mapped CSV {order_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to download mapped CSV file: {str(e)}")
+
+
+@app.get("/orders/{order_id}/download/special-csv")
+def download_order_special_csv(order_id: int, db: Session = Depends(get_db)):
+    """Download special CSV generated from template for an order"""
+
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Order must be completed to download special CSV")
+
+        if not order.final_report_paths or 'special_csv' not in order.final_report_paths:
+            raise HTTPException(status_code=404, detail="No special CSV available for this order")
+
+        special_csv_path = order.final_report_paths['special_csv']
+        if not special_csv_path:
+            raise HTTPException(status_code=404, detail="Special CSV path is empty")
+
+        file_storage = get_file_storage()
+        file_content = file_storage.download_file(special_csv_path)
+
+        if not file_content:
+            raise HTTPException(status_code=500, detail="Failed to download special CSV from storage")
+
+        filename = f"order_{order_id}_special.csv"
+        response = Response(
+            content=file_content,
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+        response.headers["X-File-Source"] = "S3"
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download order special CSV {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download special CSV file: {str(e)}")
+
 
 @app.get("/orders/{order_id}/download/mapped-excel")
 def download_order_mapped_excel(order_id: int, db: Session = Depends(get_db)):

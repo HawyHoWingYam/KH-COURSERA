@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { DocumentType } from '@/lib/api';
 
 interface Order {
   order_id: number;
@@ -36,6 +37,13 @@ export default function OrdersPage() {
   const [isPageLoading, setIsPageLoading] = useState(false);
   const [error, setError] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [showCreateOrderModal, setShowCreateOrderModal] = useState(false);
+  const [newOrderName, setNewOrderName] = useState('');
+  const [primaryDocTypeId, setPrimaryDocTypeId] = useState<number | ''>('');
+  const [docTypes, setDocTypes] = useState<DocumentType[]>([]);
+  const [isLoadingDocTypes, setIsLoadingDocTypes] = useState(false);
+  const [isCreatingOrder, setIsCreatingOrder] = useState(false);
+  const [createOrderError, setCreateOrderError] = useState('');
 
   const loadOrders = async (page: number = 1, status: string = '', isPageChange: boolean = false) => {
     if (isPageChange) {
@@ -74,6 +82,22 @@ export default function OrdersPage() {
     }
   };
 
+  const loadDocumentTypes = async () => {
+    try {
+      setIsLoadingDocTypes(true);
+      const response = await fetch('/api/document-types');
+      if (!response.ok) {
+        throw new Error('Failed to fetch document types');
+      }
+      const data = await response.json();
+      setDocTypes(data);
+    } catch (err) {
+      console.error('Error fetching document types:', err);
+    } finally {
+      setIsLoadingDocTypes(false);
+    }
+  };
+
   useEffect(() => {
     loadOrders(currentPage, statusFilter);
 
@@ -101,6 +125,10 @@ export default function OrdersPage() {
     return () => clearInterval(refreshInterval);
   }, [currentPage, statusFilter]);
 
+  useEffect(() => {
+    loadDocumentTypes();
+  }, []);
+
   const handlePageChange = (page: number) => {
     if (page !== currentPage && page >= 1 && (!pagination || page <= pagination.total_pages)) {
       loadOrders(page, statusFilter, true);
@@ -113,27 +141,55 @@ export default function OrdersPage() {
     loadOrders(1, status);
   };
 
-  const createNewOrder = async () => {
+  const openCreateOrderModal = () => {
+    const defaultName = `Order ${new Date().toLocaleDateString()}`;
+    setNewOrderName(defaultName);
+    setPrimaryDocTypeId('');
+    setCreateOrderError('');
+    setShowCreateOrderModal(true);
+  };
+
+  const closeCreateOrderModal = () => {
+    setShowCreateOrderModal(false);
+    setCreateOrderError('');
+  };
+
+  const handleCreateOrder = async () => {
+    setCreateOrderError('');
+    setIsCreatingOrder(true);
     try {
+      const payload: Record<string, unknown> = {};
+      const trimmedName = newOrderName.trim();
+      if (trimmedName) {
+        payload.order_name = trimmedName;
+      }
+      if (typeof primaryDocTypeId === 'number') {
+        payload.primary_doc_type_id = primaryDocTypeId;
+      }
+
       const response = await fetch(`/api/orders`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          order_name: `Order ${new Date().toLocaleDateString()}`
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
-        throw new Error('Failed to create order');
+        const errorBody = await response.json().catch(() => ({}));
+        throw new Error(errorBody.detail || 'Failed to create order');
       }
 
       const data = await response.json();
+      setShowCreateOrderModal(false);
+      setNewOrderName('');
+      setPrimaryDocTypeId('');
       router.push(`/orders/${data.order_id}`);
     } catch (error) {
       console.error('Error creating order:', error);
-      setError('Failed to create order');
+      setCreateOrderError(error instanceof Error ? error.message : 'Failed to create order');
+    } finally {
+      setIsCreatingOrder(false);
     }
   };
 
@@ -159,12 +215,17 @@ export default function OrdersPage() {
     return Math.round((order.completed_items / order.total_items) * 100);
   };
 
+  const selectedPrimaryDocType =
+    typeof primaryDocTypeId === 'number'
+      ? docTypes.find((dt) => dt.doc_type_id === primaryDocTypeId)
+      : null;
+
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="flex items-center justify-between mb-8">
         <h1 className="text-2xl font-bold">OCR Orders</h1>
         <button
-          onClick={createNewOrder}
+          onClick={openCreateOrderModal}
           className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-6 rounded"
         >
           Create New Order
@@ -363,6 +424,95 @@ export default function OrdersPage() {
           </>
         )}
       </div>
+
+      {showCreateOrderModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold text-gray-900">Create New Order</h2>
+              <button
+                onClick={closeCreateOrderModal}
+                className="text-gray-500 hover:text-gray-700"
+                aria-label="Close create order modal"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Order Name</label>
+                <input
+                  type="text"
+                  value={newOrderName}
+                  onChange={(e) => setNewOrderName(e.target.value)}
+                  className="w-full border border-gray-300 rounded px-3 py-2"
+                />
+                <p className="text-xs text-gray-500 mt-1">Optional. Leave blank for an auto-generated name.</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Primary Document Type</label>
+                <select
+                  value={primaryDocTypeId === '' ? '' : primaryDocTypeId}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (value === '') {
+                      setPrimaryDocTypeId('');
+                    } else {
+                      setPrimaryDocTypeId(parseInt(value, 10));
+                    }
+                  }}
+                  disabled={isLoadingDocTypes}
+                  className="w-full border border-gray-300 rounded px-3 py-2"
+                >
+                  <option value="">None selected</option>
+                  {docTypes.map((docType) => (
+                    <option key={docType.doc_type_id} value={docType.doc_type_id}>
+                      {docType.type_name} {docType.has_template ? '(Template ready)' : '(No template)'}
+                    </option>
+                  ))}
+                </select>
+                {isLoadingDocTypes && (
+                  <p className="text-xs text-gray-500 mt-1">Loading document types…</p>
+                )}
+                <p className="text-xs text-gray-500 mt-1">
+                  Selecting a type with a template will enable automated special CSV generation.
+                </p>
+                {selectedPrimaryDocType && (
+                  <div className={`mt-2 text-xs ${selectedPrimaryDocType.has_template ? 'text-green-600' : 'text-gray-500'}`}>
+                    {selectedPrimaryDocType.has_template
+                      ? `Template configured${selectedPrimaryDocType.template_version ? ` (v${selectedPrimaryDocType.template_version})` : ''}`
+                      : 'This document type does not currently have a template.'}
+                  </div>
+                )}
+              </div>
+
+              {createOrderError && (
+                <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded text-sm">
+                  {createOrderError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3 mt-6">
+              <button
+                onClick={closeCreateOrderModal}
+                className="px-4 py-2 text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateOrder}
+                disabled={isCreatingOrder}
+                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+              >
+                {isCreatingOrder ? 'Creating...' : 'Create Order'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

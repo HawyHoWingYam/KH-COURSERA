@@ -17,7 +17,7 @@ import logging
 import pandas as pd
 from difflib import SequenceMatcher
 
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker, joinedload
 
 from db.database import engine
 from db.models import (
@@ -27,6 +27,8 @@ from db.models import (
 from main import extract_text_from_image, extract_text_from_pdf
 from utils.s3_storage import get_s3_manager
 from utils.file_storage import get_file_storage
+from utils.special_csv_generator import SpecialCsvGenerator
+from utils.template_service import sanitize_template_version
 from utils.prompt_schema_manager import get_prompt_schema_manager
 from utils.excel_converter import json_to_excel, json_to_csv
 from config_loader import config_loader
@@ -424,6 +426,7 @@ class OrderProcessor:
         self.s3_manager = get_s3_manager()
         self.prompt_schema_manager = get_prompt_schema_manager()
         self.app_config = config_loader.get_app_config()
+        self.special_csv_generator = SpecialCsvGenerator()
 
         # Initialize intelligent matching engine with default configuration
         default_config = MatchingConfig(
@@ -1046,7 +1049,8 @@ class OrderProcessor:
 
                 # Generate final CSV with proper format
                 if joined_results:
-                    csv_content = self._generate_mapped_csv(joined_results, mapping_columns)
+                    template_details = self._get_template_details_from_order(order, db)
+                    csv_content, standard_df = self._generate_mapped_csv(joined_results, mapping_columns)
 
                     # Save final results to S3 - using consistent path format
                     s3_base = f"results/orders/{order_id // 1000}/mapped"
@@ -1064,7 +1068,29 @@ class OrderProcessor:
                         csv_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{final_key}"
                         current_paths = order.final_report_paths or {}
                         current_paths['mapped_csv'] = csv_path
+
+                        special_csv_path = None
+                        if template_details:
+                            special_csv_path = self._generate_special_csv_from_template(
+                                order.order_id,
+                                standard_df,
+                                template_details["template_path"],
+                                template_details.get("doc_type_name", ""),
+                                s3_base,
+                            )
+                        else:
+                            logger.info(
+                                "Order %s does not have a primary document template configured; skipping special CSV",
+                                order.order_id,
+                            )
+
+                        if special_csv_path:
+                            current_paths['special_csv'] = special_csv_path
+
                         order.final_report_paths = current_paths
+
+                        from sqlalchemy.orm.attributes import flag_modified
+                        flag_modified(order, 'final_report_paths')
 
                         db.commit()
 
@@ -1591,10 +1617,12 @@ class OrderProcessor:
         normalized = re.sub(r'[^\w]', '', normalized)
         return normalized.upper()
 
-    def _generate_mapped_csv(self, joined_results: List[Dict], mapping_columns: List[str]) -> str:
-        """Generate CSV content with proper column ordering"""
+    def _generate_mapped_csv(
+        self, joined_results: List[Dict], mapping_columns: List[str]
+    ) -> Tuple[str, pd.DataFrame]:
+        """Generate CSV content and DataFrame with proper column ordering."""
         if not joined_results:
-            return ""
+            return "", pd.DataFrame()
 
         # Get all unique columns
         all_columns = set()
@@ -1620,7 +1648,103 @@ class OrderProcessor:
         df = pd.DataFrame(normalized_results, columns=ordered_columns)
         csv_buffer = io.StringIO()
         df.to_csv(csv_buffer, index=False)
-        return csv_buffer.getvalue()
+        return csv_buffer.getvalue(), df
+
+    def _get_template_details_from_order(
+        self, order: OcrOrder, db: Session
+    ) -> Optional[Dict[str, str]]:
+        """Resolve template path and metadata for an order within an active session."""
+
+        if not order or not order.primary_doc_type_id:
+            return None
+
+        doc_type = order.primary_doc_type
+        if not doc_type and order.primary_doc_type_id:
+            doc_type = (
+                db.query(DocumentType)
+                .filter(DocumentType.doc_type_id == order.primary_doc_type_id)
+                .first()
+            )
+
+        if doc_type and doc_type.template_json_path:
+            return {
+                "template_path": doc_type.template_json_path,
+                "doc_type_name": doc_type.type_name or "",
+            }
+
+        return None
+
+    def _get_order_template_details(self, order_id: int) -> Optional[Dict[str, str]]:
+        """Fetch template details for an order using a dedicated session."""
+
+        with Session(engine) as db:
+            order = (
+                db.query(OcrOrder)
+                .options(joinedload(OcrOrder.primary_doc_type))
+                .filter(OcrOrder.order_id == order_id)
+                .first()
+            )
+            if not order:
+                return None
+            return self._get_template_details_from_order(order, db)
+
+    def _generate_special_csv_from_template(
+        self,
+        order_id: int,
+        standard_df: pd.DataFrame,
+        template_path: str,
+        doc_type_name: str,
+        s3_base: str,
+    ) -> Optional[str]:
+        """Generate and upload special CSV using the provided template."""
+
+        if standard_df is None or standard_df.empty:
+            logger.warning(
+                "Skipping special CSV generation for order %s because standard DataFrame is empty",
+                order_id,
+            )
+            return None
+
+        try:
+            template_config = self.special_csv_generator.load_template_from_s3(template_path)
+            self.special_csv_generator.validate_template(template_config)
+            special_df = self.special_csv_generator.generate_special_csv(standard_df, template_config)
+
+            template_version = sanitize_template_version(template_config.get("version", "latest"))
+            special_key = f"{s3_base}/order_{order_id}_special_v{template_version}.csv"
+            special_csv_content = special_df.to_csv(index=False)
+
+            upload_success = self.s3_manager.upload_file(
+                special_csv_content.encode("utf-8"), special_key
+            )
+
+            if upload_success:
+                special_path = (
+                    f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{special_key}"
+                )
+                logger.info(
+                    "Special CSV generated for order %s using template '%s' (version %s)",
+                    order_id,
+                    doc_type_name or "unknown",
+                    template_version,
+                )
+                return special_path
+
+            logger.error(
+                "Failed to upload special CSV for order %s using template '%s'",
+                order_id,
+                doc_type_name or "unknown",
+            )
+
+        except Exception as exc:
+            logger.error(
+                "Special CSV generation failed for order %s using template '%s': %s",
+                order_id,
+                doc_type_name or "unknown",
+                exc,
+            )
+
+        return None
 
     async def _apply_order_mapping(self, order_id: int, results: List[Dict[str, Any]]):
         """Apply mapping rules to consolidated order results"""
@@ -2024,6 +2148,22 @@ class OrderProcessor:
             logger.info(f"📊 Final column count: {len(business_columns)}")
 
             df = pd.DataFrame(business_results)
+            template_details = self._get_order_template_details(order_id)
+            special_csv_path = None
+
+            if template_details:
+                special_csv_path = self._generate_special_csv_from_template(
+                    order_id,
+                    df,
+                    template_details["template_path"],
+                    template_details.get("doc_type_name", ""),
+                    s3_base,
+                )
+            else:
+                logger.info(
+                    "Order %s has no template configured; skipping special CSV",
+                    order_id,
+                )
 
             # Create CSV content with clean business format
             csv_content = df.to_csv(index=False)
@@ -2098,10 +2238,14 @@ class OrderProcessor:
                     logger.info(f"   final csv_full_path: {csv_full_path}")
                     logger.info(f"   excel_path: {excel_path}")
 
-                    current_paths.update({
+                    path_updates = {
                         'mapped_csv': csv_full_path,
                         'mapped_excel': excel_path
-                    })
+                    }
+                    if special_csv_path:
+                        path_updates['special_csv'] = special_csv_path
+
+                    current_paths.update(path_updates)
                     order.final_report_paths = current_paths
 
                     # Force SQLAlchemy to detect JSONB field changes
