@@ -21,7 +21,6 @@ interface PrimaryDocTypeInfo {
 
 interface OrderFinalReportPaths {
   mapped_csv?: string;
-  mapped_excel?: string;
   special_csv?: string;
   [key: string]: string | undefined;
 }
@@ -549,7 +548,7 @@ export default function OrderDetailsPage() {
 
   
   
-  const downloadFinalMappedResults = async (format: 'csv' | 'excel' | 'special-csv') => {
+  const downloadFinalMappedResults = async (format: 'csv' | 'special-csv') => {
     const downloadKey = format === 'special-csv' ? 'final-special-csv' : `final-${format}`;
     setDownloadingFiles(prev => ({ ...prev, [downloadKey]: true }));
 
@@ -573,12 +572,9 @@ export default function OrderDetailsPage() {
 
       // Get filename from response headers or create default
       const contentDisposition = response.headers.get('content-disposition');
-      let filename =
-        format === 'excel'
-          ? `order_${orderId}_mapped_results.xlsx`
-          : format === 'special-csv'
-            ? `order_${orderId}_special.csv`
-            : `order_${orderId}_mapped_results.csv`;
+      let filename = format === 'special-csv'
+        ? `order_${orderId}_special.csv`
+        : `order_${orderId}_mapped_results.csv`;
 
       if (contentDisposition) {
         const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
@@ -874,7 +870,7 @@ export default function OrderDetailsPage() {
               className="bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded font-medium"
               title="Start OCR processing with mapping (requires mapping file and keys)"
             >
-              OCR + 映射处理
+              OCR & Mapping
             </button>
           )}
           {canStartMapping && (
@@ -1294,7 +1290,6 @@ export default function OrderDetailsPage() {
       {/* Final Mapped Results Section - Show only for completed orders with mapped results */}
       {order.status === 'COMPLETED' && (
         order.final_report_paths?.mapped_csv ||
-        order.final_report_paths?.mapped_excel ||
         order.final_report_paths?.special_csv
       ) && (
         <div className="bg-white rounded-lg shadow p-6 mb-8">
@@ -1337,23 +1332,7 @@ export default function OrderDetailsPage() {
                 </button>
               )}
 
-              {order.final_report_paths?.mapped_excel && (
-                <button
-                  onClick={() => downloadFinalMappedResults('excel')}
-                  disabled={downloadingFiles['final-excel']}
-                  className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white py-2 px-4 rounded font-medium flex items-center gap-2"
-                  title="Download final mapped results as Excel (includes analysis sheets)"
-                >
-                  {downloadingFiles['final-excel'] ? (
-                    'Downloading...'
-                  ) : (
-                    <>
-                      📈 Download Excel Report
-                    </>
-                  )}
-                </button>
-              )}
-
+        
               {order.final_report_paths?.special_csv && (
                 <button
                   onClick={() => downloadFinalMappedResults('special-csv')}

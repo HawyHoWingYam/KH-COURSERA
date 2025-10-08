@@ -1404,7 +1404,7 @@ class OrderProcessor:
                 else:
                     # No intelligent match found either
                     match_info["unmatched_reason"] = "No match found using exact or intelligent strategies"
-                    logger.warning(f"✗ Row {i}: No match found for OCR record with item_id={ocr_row.get('__item_id', 'unknown')}")
+                    # logger.warning(f"✗ Row {i}: No match found for OCR record with item_id={ocr_row.get('__item_id', 'unknown')}")
 
             debug_info.append(match_info)
 
@@ -1814,36 +1814,39 @@ class OrderProcessor:
                         from io import StringIO
 
                         df = pd.read_csv(StringIO(csv_content.decode('utf-8')))
-                        item_records = df.to_dict('records')
 
-                        # Apply item-specific mapping with priority-based matching
+                        # Add item metadata to all records
+                        df['__item_id'] = item.item_id
+                        df['__item_name'] = item.item_name
+                        df['__company'] = item.company.company_name if item.company else None
+                        df['__doc_type'] = item.document_type.type_name if item.document_type else None
+
+                        # Use unified mapping logic (same as re-mapping pipeline)
                         item_mapping_keys = item.mapping_keys or order.mapping_keys or []
+                        logger.info(f"🔄 Using _perform_dynamic_join for item {item.item_id} with {len(df)} records")
 
-                        for record in item_records:
-                            # Add item metadata
-                            record['__item_id'] = item.item_id
-                            record['__item_name'] = item.item_name
-                            record['__company'] = item.company.company_name if item.company else None
-                            record['__doc_type'] = item.document_type.type_name if item.document_type else None
+                        # Convert DataFrame to records format for _perform_dynamic_join
+                        ocr_results = df.to_dict('records')
 
-                            # Apply mapping with priority order
-                            enriched_record = self._apply_priority_mapping(
-                                record, unified_map, item_mapping_keys, order_id, item.item_id
-                            )
+                        # Convert unified_map back to mapping_data format
+                        mapping_data = list(unified_map.values())
 
-                            # 🔍 DEBUG: Check enriched_record before adding to list
-                            mapping_keys_before_append = [k for k in enriched_record.keys() if k in item_mapping_keys]
-                            logger.info(f"🔍 BEFORE APPEND: enriched_record has mapping keys: {mapping_keys_before_append}")
+                        # Get mapping columns from mapping data
+                        mapping_columns = mapping_result['columns']
 
-                            all_enriched_results.append(enriched_record)
+                        joined_results = await self._perform_dynamic_join(
+                            ocr_results, mapping_data, mapping_columns, item_mapping_keys, order_id
+                        )
 
-                            # 🔍 DEBUG: Check the record after adding to list
-                            if all_enriched_results:
-                                last_record = all_enriched_results[-1]
-                                mapping_keys_after_append = [k for k in last_record.keys() if k in item_mapping_keys]
-                                logger.info(f"🔍 AFTER APPEND: last record in list has mapping keys: {mapping_keys_after_append}")
-
-                        logger.info(f"Processed {len(item_records)} records from item {item.item_id}")
+                        if joined_results and len(joined_results) > 0:
+                            # Convert results back to DataFrame for consistency
+                            enriched_df = pd.DataFrame(joined_results)
+                            item_records = joined_results  # Already in dict format
+                            all_enriched_results.extend(item_records)
+                            logger.info(f"✅ Processed {len(item_records)} records from item {item.item_id} using unified pipeline")
+                        else:
+                            logger.warning(f"⚠️ No enriched results from _perform_dynamic_join for item {item.item_id}")
+                            continue
 
                     except Exception as e:
                         logger.error(f"Error processing item {item.item_id}: {str(e)}")
@@ -1853,8 +1856,8 @@ class OrderProcessor:
                     logger.error(f"No enriched results generated for order {order_id}")
                     return
 
-                # 🔍 FINAL DEBUG: Check all_enriched_results before passing to report generation
-                logger.info(f"🔍 FINAL CHECK: all_enriched_results has {len(all_enriched_results)} records")
+                # 🔍 UNIFIED PIPELINE CHECK: Verify unified pipeline results
+                logger.info(f"🔍 UNIFIED PIPELINE CHECK: all_enriched_results has {len(all_enriched_results)} records")
                 if all_enriched_results:
                     # Collect all mapping keys from order and items
                     all_mapping_keys = set(order.mapping_keys or [])
@@ -1862,20 +1865,21 @@ class OrderProcessor:
                         if item.mapping_keys:
                             all_mapping_keys.update(item.mapping_keys)
 
-                    # Check first, middle, and last records
-                    for idx, label in [(0, "FIRST"), (len(all_enriched_results)//2, "MIDDLE"), (-1, "LAST")]:
-                        if idx < len(all_enriched_results):
-                            sample_record = all_enriched_results[idx]
-                            all_columns = list(sample_record.keys())
-                            mapping_keys = [k for k in all_columns if k in all_mapping_keys]
-                            logger.info(f"🔍 FINAL CHECK: {label} record mapping keys: {mapping_keys}")
+                    # Count matched vs unmatched records to verify Matched column preservation
+                    matched_count = sum(1 for record in all_enriched_results if record.get('Matched', False))
+                    unmatched_count = len(all_enriched_results) - matched_count
+                    logger.info(f"🔍 UNIFIED PIPELINE: Matched={matched_count}, Unmatched={unmatched_count}")
 
-                    # Count records with mapping data
-                    records_with_mapping = sum(1 for record in all_enriched_results
-                                             if any(k in record for k in all_mapping_keys))
-                    logger.info(f"🔍 FINAL CHECK: {records_with_mapping} out of {len(all_enriched_results)} records have mapping fields")
+                    # Verify Matched column is preserved from _perform_dynamic_join
+                    has_matched_column = any('Matched' in record for record in all_enriched_results)
+                    logger.info(f"🔍 UNIFIED PIPELINE: Matched column preserved: {has_matched_column}")
 
-                # Generate final mapped reports
+                    if has_matched_column:
+                        logger.info(f"🔍 ✅ Unified pipeline working - Special CSV will have Matched data for sorting")
+                    else:
+                        logger.error(f"🔍 ❌ Unified pipeline issue - Matched column missing")
+
+                # Generate final mapped reports using same logic as re-mapping pipeline
                 await self._generate_mapped_reports(order_id, all_enriched_results)
 
                 logger.info(f"Successfully completed mapping for order {order_id} with {len(all_enriched_results)} records")
@@ -1888,11 +1892,11 @@ class OrderProcessor:
         """Apply priority-based mapping to a single record with auto-derivation support"""
         enriched_record = record.copy()
 
-        # Default values for unmatched records
-        enriched_record['Department'] = 'Unallocated'
-        enriched_record['ShopCode'] = 'UNMATCHED'
-        enriched_record['ServiceType'] = 'Unknown'
-        enriched_record['MatchedBy'] = 'unmatched'
+        # Default values for unmatched records - keep empty for consistency with _perform_dynamic_join
+        enriched_record['Department'] = ''
+        enriched_record['ShopCode'] = ''
+        enriched_record['ServiceType'] = ''
+        enriched_record['MatchedBy'] = ''
         enriched_record['MatchSource'] = ''
         enriched_record['Matched'] = False
 
@@ -2091,8 +2095,9 @@ class OrderProcessor:
                 internal_columns = {col for col in all_columns if col.startswith('__')}
 
                 # Also exclude explicit internal tracking fields (not business data)
+                # NOTE: Keep 'Matched' column so Special CSV generator can use it for sorting and computed column logic
                 explicit_internal_fields = {
-                    'MatchedBy', 'MatchSource', 'Matched', 'MatchedValue', 'MatchedKey', 'ActualFieldUsed'
+                    'MatchedBy', 'MatchSource', 'MatchedValue', 'MatchedKey', 'ActualFieldUsed'
                 }
 
                 # Combined internal columns to exclude
@@ -2121,6 +2126,22 @@ class OrderProcessor:
                 logger.info(f"📊 Business columns (FIXED - no hardcoded assumptions): {business_columns}")
                 logger.info(f"📊 Business columns include Department, ShopCode, ServiceType: {[col for col in ['Department', 'ShopCode', 'ServiceType'] if col in business_columns]}")
                 logger.info(f"📊 GUARANTEED MAPPING COLUMNS IN CSV: {[col for col in business_columns if col in all_mapping_keys]}")
+
+                # 🔍 NEW: Check if Matched column is preserved for Special CSV generator
+                has_matched_column = 'Matched' in business_columns
+                logger.info(f"🔍 MATCHED COLUMN TRACKING:")
+                logger.info(f"🔍 'Matched' column in all_columns: {'Matched' in all_columns}")
+                logger.info(f"🔍 'Matched' column in business_columns: {has_matched_column}")
+                logger.info(f"🔍 'Matched' column excluded from internal fields: {'Matched' not in explicit_internal_fields}")
+
+                if has_matched_column:
+                    # Count matched vs unmatched records for verification
+                    matched_count = sum(1 for record in enriched_results if record.get('Matched', False))
+                    unmatched_count = len(enriched_results) - matched_count
+                    logger.info(f"🔍 Matched records: {matched_count}, Unmatched records: {unmatched_count}")
+                    logger.info(f"🔍 ✅ Matched column preserved - Special CSV generator can sort and compute columns correctly")
+                else:
+                    logger.warning(f"🔍 ❌ Matched column NOT preserved - Special CSV generator will not have Matched data for sorting")
 
                 # Sample records to check mapping data (check first, middle, last)
                 sample_indices = [0, len(enriched_results)//2, -1] if len(enriched_results) > 1 else [0]
@@ -2160,74 +2181,53 @@ class OrderProcessor:
             special_csv_path = None
 
             if template_details:
-                special_csv_path = self._generate_special_csv_from_template(
-                    order_id,
-                    df,
-                    template_details["template_path"],
-                    template_details.get("doc_type_name", ""),
-                    s3_base,
-                )
+                try:
+                    logger.info(f"🎯 Starting Special CSV generation for order {order_id}")
+                    logger.info(f"   Template: {template_details.get('template_path', 'N/A')}")
+                    logger.info(f"   DataFrame shape: {df.shape}")
+                    logger.info(f"   DataFrame columns: {list(df.columns)}")
+
+                    special_csv_path = self._generate_special_csv_from_template(
+                        order_id,
+                        df,
+                        template_details["template_path"],
+                        template_details.get("doc_type_name", ""),
+                        s3_base,
+                    )
+
+                    if special_csv_path:
+                        logger.info(f"✅ Successfully generated Special CSV for order {order_id}: {special_csv_path}")
+                    else:
+                        logger.warning(f"⚠️ Special CSV generation returned None for order {order_id}")
+
+                except Exception as special_csv_error:
+                    logger.error(f"❌ Error generating Special CSV for order {order_id}: {str(special_csv_error)}")
+                    special_csv_path = None
             else:
                 logger.info(
-                    "Order %s has no template configured; skipping special CSV",
+                    "📋 Order %s has no template configured; skipping special CSV",
                     order_id,
                 )
 
             # Create CSV content with clean business format
-            csv_content = df.to_csv(index=False)
-            csv_s3_key = f"{s3_base}/order_{order_id}_mapped.csv"
-            csv_upload_success = self.s3_manager.upload_file(csv_content.encode('utf-8'), csv_s3_key)
-
-            # Generate Excel report with multiple sheets
-            excel_path = None
-            with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temp_excel:
-                temp_excel_path = temp_excel.name
-
             try:
-                # Create Excel with multiple sheets using business format
-                with pd.ExcelWriter(temp_excel_path, engine='openpyxl') as writer:
-                    # Main results sheet
-                    df.to_excel(writer, sheet_name='Mapped Results', index=False)
+                csv_content = df.to_csv(index=False)
+                csv_s3_key = f"{s3_base}/order_{order_id}_mapped.csv"
+                csv_upload_success = self.s3_manager.upload_file(csv_content.encode('utf-8'), csv_s3_key)
 
-                    # Matched vs Unmatched analysis (determine from original enriched_results)
-                    matched_records = []
-                    unmatched_records = []
-                    for i, record in enumerate(enriched_results):
-                        business_record = business_results[i]
-                        if record.get('Matched', False):
-                            matched_records.append(business_record)
-                        else:
-                            unmatched_records.append(business_record)
+                if csv_upload_success:
+                    logger.info(f"✅ Successfully uploaded mapped CSV for order {order_id} to {csv_s3_key}")
+                else:
+                    logger.error(f"❌ Failed to upload mapped CSV for order {order_id} to {csv_s3_key}")
 
-                    if matched_records:
-                        matched_df = pd.DataFrame(matched_records)
-                        matched_df.to_excel(writer, sheet_name='Matched Records', index=False)
+            except Exception as csv_error:
+                logger.error(f"❌ Error generating/uploading CSV for order {order_id}: {str(csv_error)}")
+                csv_upload_success = False
+                csv_s3_key = None
 
-                    if unmatched_records:
-                        unmatched_df = pd.DataFrame(unmatched_records)
-                        unmatched_df.to_excel(writer, sheet_name='Unmatched Records', index=False)
-
-                    # Summary sheet
-                    summary_data = {
-                        'Total Records': len(enriched_results),
-                        'Matched Records': len(matched_records),
-                        'Unmatched Records': len(unmatched_records),
-                        'Match Rate': f"{(len(matched_records) / len(enriched_results) * 100):.1f}%" if enriched_results else "0%"
-                    }
-                    summary_df = pd.DataFrame(list(summary_data.items()), columns=['Metric', 'Value'])
-                    summary_df.to_excel(writer, sheet_name='Summary', index=False)
-
-                # Upload Excel file
-                with open(temp_excel_path, 'rb') as excel_file:
-                    excel_content = excel_file.read()
-                    excel_s3_key = f"{s3_base}/order_{order_id}_mapped.xlsx"
-                    excel_upload_success = self.s3_manager.upload_file(excel_content, excel_s3_key)
-
-                    if excel_upload_success:
-                        excel_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{excel_s3_key}"
-
-            finally:
-                os.unlink(temp_excel_path)
+            # Excel generation skipped - only CSV and Special CSV needed
+            excel_path = None
+            logger.info(f"📋 Excel generation skipped for order {order_id} - only CSV and Special CSV required")
 
             # Update order with mapped report paths
             with Session(engine) as db:
@@ -2244,11 +2244,10 @@ class OrderProcessor:
                     logger.info(f"   upload_prefix: {self.s3_manager.upload_prefix}")
                     logger.info(f"   csv_s3_key: {csv_s3_key}")
                     logger.info(f"   final csv_full_path: {csv_full_path}")
-                    logger.info(f"   excel_path: {excel_path}")
+                    logger.info(f"   special_csv_path: {special_csv_path}")
 
                     path_updates = {
-                        'mapped_csv': csv_full_path,
-                        'mapped_excel': excel_path
+                        'mapped_csv': csv_full_path
                     }
                     if special_csv_path:
                         path_updates['special_csv'] = special_csv_path
