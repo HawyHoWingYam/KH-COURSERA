@@ -71,8 +71,67 @@ class SpecialCsvGenerator:
 
         validate_template_payload(template_config)
 
+        # === COMPREHENSIVE DIAGNOSTIC LOGGING ===
+        logger.info(f"=== SPECIAL CSV GENERATION DIAGNOSTICS ===")
+        logger.info(f"Input DataFrame shape: {standard_df.shape}")
+        logger.info(f"Input DataFrame columns: {list(standard_df.columns)}")
+
+        if 'Matched' in standard_df.columns:
+            logger.info(f"✓ Matched column EXISTS in DataFrame")
+            try:
+                matched_values = standard_df['Matched'].value_counts().to_dict()
+                logger.info(f"  - Matched value counts: {matched_values}")
+            except Exception as e:
+                logger.error(f"  - Error analyzing Matched column: {e}")
+                logger.info(f"  - Matched column sample: {standard_df['Matched'].head().tolist()}")
+
+            # Additional validation for Matched column
+            try:
+                matched_mask = standard_df['Matched'].astype(bool)
+                matched_count = matched_mask.sum()
+                total_count = len(matched_mask)
+                logger.info(f"  - Matched rows after bool conversion: {matched_count}/{total_count}")
+
+                if matched_count == 0:
+                    logger.warning(f"  ⚠️  ALL ROWS ARE UNMATCHED! This suggests a problem with Matched detection")
+                elif matched_count == total_count:
+                    logger.info(f"  ✓ All rows are matched")
+                else:
+                    logger.info(f"  ✓ Mixed match status: {matched_count} matched, {total_count - matched_count} unmatched")
+
+            except Exception as e:
+                logger.error(f"  ✗ Failed to convert Matched column to bool: {e}")
+        else:
+            logger.warning(f"✗ Matched column NOT FOUND in DataFrame")
+            logger.info(f"  Available columns: {list(standard_df.columns)}")
+
         column_order: List[str] = template_config["column_order"]
         column_definitions: Dict[str, Any] = template_config["column_definitions"]
+
+        # Log computed columns details
+        computed_columns = []
+        source_columns = []
+        constant_columns = []
+
+        for column_name in column_order:
+            definition = column_definitions[column_name]
+            column_type = definition.get("type")
+            if column_type == "computed":
+                expression = definition.get("expression")
+                computed_columns.append(f"{column_name}='{expression}'")
+            elif column_type == "source":
+                source_col = definition.get("source_column")
+                source_columns.append(f"{column_name}←{source_col}")
+            elif column_type == "constant":
+                const_val = definition.get("value", "")
+                constant_columns.append(f"{column_name}='{const_val}'")
+
+        logger.info(f"Template analysis:")
+        logger.info(f"  - Computed columns ({len(computed_columns)}): {computed_columns}")
+        logger.info(f"  - Source columns ({len(source_columns)}): {source_columns}")
+        logger.info(f"  - Constant columns ({len(constant_columns)}): {constant_columns}")
+        logger.info(f"=== END DIAGNOSTICS ===")
+        # === END DIAGNOSTIC LOGGING ===
 
         self._validate_columns_exist(standard_df, self._required_source_columns(column_definitions))
 
@@ -91,16 +150,70 @@ class SpecialCsvGenerator:
                 expression = definition.get("expression")
                 parsed_expression = self.expression_engine.parse_expression(expression)
 
-                # Merge standard_df with result_df to allow computed columns to reference
-                # both input columns AND previously-created template columns
-                merged_df = pd.concat([standard_df, result_df], axis=1)
+                logger.info(f"Processing computed column '{column_name}' with expression: '{expression}'")
 
-                result_df[column_name] = self._evaluate_computed_column(
-                    merged_df,
-                    parsed_expression,
-                    default_value,
-                    column_name,
-                )
+                # Decide whether to use Matched-based logic with robust validation
+                use_matched_logic = False
+                matched_mask = None
+
+                if 'Matched' in standard_df.columns:
+                    try:
+                        # Validate Matched column and create boolean mask
+                        matched_mask = standard_df['Matched'].astype(bool)
+                        matched_count = matched_mask.sum()
+                        total_count = len(matched_mask)
+
+                        logger.info(f"Matched analysis for '{column_name}': {matched_count}/{total_count} rows matched")
+
+                        # Only use Matched logic if we have both matched and unmatched rows
+                        # AND there's at least some matched rows
+                        if 0 < matched_count < total_count:
+                            use_matched_logic = True
+                            logger.info(f"Using Matched-based logic for '{column_name}': {matched_count} matched, {total_count - matched_count} unmatched")
+                        elif matched_count == 0:
+                            logger.warning(f"ALL rows unmatched for '{column_name}'. This suggests a Matched detection issue - using fallback logic")
+                        elif matched_count == total_count:
+                            logger.info(f"All rows matched for '{column_name}'. Using standard computation for all rows")
+
+                    except Exception as e:
+                        logger.error(f"Failed to process Matched column for '{column_name}': {e}. Using fallback logic")
+                else:
+                    logger.info(f"No Matched column found for '{column_name}'. Using standard computation for all rows")
+
+                # Apply the appropriate logic
+                if use_matched_logic:
+                    # Use Matched-based logic (mixed match status)
+                    computed_values = pd.Series(index=standard_df.index, data=default_value)
+
+                    # Merge standard_df with result_df for calculation context
+                    merged_df = pd.concat([standard_df, result_df], axis=1)
+
+                    # Calculate only for matched rows
+                    matched_results = self._evaluate_computed_column(
+                        merged_df[matched_mask],
+                        parsed_expression,
+                        default_value,
+                        column_name,
+                    )
+                    computed_values[matched_mask] = matched_results
+
+                    # Log statistics
+                    unmatched_count = (~matched_mask).sum()
+                    if unmatched_count > 0:
+                        logger.info(f"Computed column '{column_name}': {matched_count} calculated, {unmatched_count} used default value")
+
+                    result_df[column_name] = computed_values
+
+                else:
+                    # Use original logic (no Matched column, or all matched/unmatched)
+                    logger.info(f"Computed column '{column_name}': using standard computation for all rows")
+                    merged_df = pd.concat([standard_df, result_df], axis=1)
+                    result_df[column_name] = self._evaluate_computed_column(
+                        merged_df,
+                        parsed_expression,
+                        default_value,
+                        column_name,
+                    )
 
             elif column_type == "constant":
                 result_df[column_name] = definition.get("value", default_value)

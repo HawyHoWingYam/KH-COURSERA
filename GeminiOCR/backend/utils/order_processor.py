@@ -1422,11 +1422,26 @@ class OrderProcessor:
             for col, value in ocr_row.items():
                 joined_row[col] = value
 
+            # Add match status (CRITICAL for Special CSV generation)
+            joined_row['Matched'] = match_info.get('matched', False)
+
+            # Log the match status for debugging
+            if i < 3:  # Log first 3 rows to avoid spam
+                logger.info(f"📝 Row {i}: Matched status = {joined_row['Matched']}, item_id = {ocr_row.get('__item_id', 'unknown')}")
+
             joined_results.append(joined_row)
 
         # Enhanced validation and debug logging
         unmatched_count = len(ocr_results) - matched_count
         match_rate = (matched_count / len(ocr_results) * 100) if ocr_results else 0
+
+        # Log Matched column preservation verification
+        matched_columns_in_output = sum(1 for row in joined_results if row.get('Matched', False))
+        logger.info(f"🎯 CRITICAL VERIFICATION: Matched column preservation in joined_results:")
+        logger.info(f"   Rows with Matched=True: {matched_columns_in_output}")
+        logger.info(f"   Rows with Matched=False: {len(joined_results) - matched_columns_in_output}")
+        logger.info(f"   Total rows in joined_results: {len(joined_results)}")
+        logger.info(f"   Expected matches: {matched_count}")
 
         logger.info(f"🎯 JOIN OPERATION SUMMARY:")
         logger.info(f"   Total OCR records processed: {len(ocr_results)}")
@@ -1515,9 +1530,23 @@ class OrderProcessor:
         for row in joined_results:
             all_columns.update(row.keys())
 
-        # Order columns: mapping columns first, then OCR columns
-        ocr_columns = [col for col in all_columns if col not in mapping_columns and not col.startswith('__')]
-        ordered_columns = mapping_columns + ocr_columns
+        # Check if Matched column exists and log it
+        has_matched_column = 'Matched' in all_columns
+        if has_matched_column:
+            logger.info(f"✓ Found Matched column in joined_results, will preserve in output DataFrame")
+            matched_count = sum(1 for row in joined_results if row.get('Matched', False))
+            logger.info(f"📊 Matched statistics in joined_results: {matched_count} matched, {len(joined_results) - matched_count} unmatched")
+        else:
+            logger.warning(f"✗ Matched column not found in joined_results - this will affect Special CSV generation")
+
+        # Order columns: mapping columns first, then OCR columns, then metadata (Matched)
+        ocr_columns = [col for col in all_columns if col not in mapping_columns and not col.startswith('__') and col != 'Matched']
+        metadata_columns = ['Matched'] if has_matched_column else []
+        ordered_columns = mapping_columns + ocr_columns + metadata_columns
+
+        logger.info(f"📋 Column ordering: {len(mapping_columns)} mapping, {len(ocr_columns)} OCR, {len(metadata_columns)} metadata columns")
+        if has_matched_column:
+            logger.info(f"🔍 Matched column will be at position {len(ordered_columns) - 1} in output DataFrame")
 
         # Generate CSV
         import pandas as pd
@@ -1601,9 +1630,43 @@ class OrderProcessor:
             self.special_csv_generator.validate_template(template_config)
             template_version = sanitize_template_version(template_config.get("version", "latest"))
 
-            # Step 3: Generate special CSV with detailed logging
+            # Step 3: Sort DataFrame by match status and generate special CSV with detailed logging
             logger.info(f"Generating special CSV for order {order_id} using template version {template_version}")
             logger.info(f"Input DataFrame shape: {standard_df.shape}, columns: {list(standard_df.columns)}")
+
+            # Sort DataFrame by match status: matched records first, unmatched records last
+            if 'Matched' in standard_df.columns:
+                matched_count = standard_df['Matched'].sum()
+                unmatched_count = len(standard_df) - matched_count
+                logger.info(f"📊 Special CSV sorting: {matched_count} matched, {unmatched_count} unmatched")
+
+                # Validate Matched column data
+                logger.info(f"🔍 Matched column analysis:")
+                matched_count = (standard_df['Matched'] == True).sum()
+                unmatched_count = (standard_df['Matched'] == False).sum()
+                logger.info(f"  - Matched rows: {matched_count}, Unmatched rows: {unmatched_count}")
+
+                # Show sample data before sorting
+                if matched_count > 0:
+                    sample_matched_row = standard_df[standard_df['Matched'] == True].iloc[0]
+                    logger.info(f"📋 Sample matched row: Department='{sample_matched_row.get('Department', 'N/A')}', Location_1='{sample_matched_row.get('Location_1', 'N/A')}', Mobile no.='{sample_matched_row.get('Mobile no.', 'N/A')}'")
+
+                if unmatched_count > 0:
+                    sample_unmatched_row = standard_df[standard_df['Matched'] == False].iloc[0]
+                    logger.info(f"📋 Sample unmatched row: Department='{sample_unmatched_row.get('Department', 'N/A')}', Location_1='{sample_unmatched_row.get('Location_1', 'N/A')}', Mobile no.='{sample_unmatched_row.get('Mobile no.', 'N/A')}'")
+
+                # Sort: matched records (True) first, unmatched (False) last
+                logger.info("🔄 Performing sort: matched records first, unmatched records last")
+                standard_df = standard_df.sort_values('Matched', ascending=False)
+                logger.info("✅ DataFrame sorting completed successfully")
+
+                # Verify sorting worked correctly
+                first_rows = standard_df.head(3)['Matched'].tolist()
+                last_rows = standard_df.tail(3)['Matched'].tolist()
+                logger.info(f"🔍 Sorting verification: First 3 rows Matched status = {first_rows}, Last 3 rows Matched status = {last_rows}")
+            else:
+                logger.warning("⚠️ No 'Matched' column found in DataFrame - all computed columns will use standard computation")
+                logger.info(f"🔍 Available columns for diagnosis: {list(standard_df.columns)}")
 
             special_df = self.special_csv_generator.generate_special_csv(standard_df, template_config)
 
