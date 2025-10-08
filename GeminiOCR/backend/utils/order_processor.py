@@ -2017,23 +2017,23 @@ class OrderProcessor:
             # Generate mapped CSV with business-friendly format (dynamic column detection)
             import pandas as pd
 
-            # Internal columns to exclude (only filter fields that start with __)
-            internal_columns = {col for col in (all_columns if enriched_results else set()) if col.startswith('__')}
-
-            # Also exclude explicit internal tracking fields (not business data)
-            explicit_internal_fields = {
-                'MatchedBy', 'MatchSource', 'Matched', 'MatchedValue', 'MatchedKey', 'ActualFieldUsed'
-            }
-
-            # Combined internal columns to exclude
-            debug_columns = internal_columns.union(explicit_internal_fields)
-
             # Get all available columns from ALL records (critical fix for mapping columns)
             if enriched_results:
                 all_columns = set()
                 # IMPORTANT: Check ALL records, not just first one, as mapping columns may only exist in some records
                 for record in enriched_results:
                     all_columns.update(record.keys())
+
+                # Internal columns to exclude (only filter fields that start with __)
+                internal_columns = {col for col in all_columns if col.startswith('__')}
+
+                # Also exclude explicit internal tracking fields (not business data)
+                explicit_internal_fields = {
+                    'MatchedBy', 'MatchSource', 'Matched', 'MatchedValue', 'MatchedKey', 'ActualFieldUsed'
+                }
+
+                # Combined internal columns to exclude
+                debug_columns = internal_columns.union(explicit_internal_fields)
 
                 # Check for mapping columns specifically
                 mapping_cols_found = [col for col in all_columns if col in all_mapping_keys]
@@ -2073,7 +2073,12 @@ class OrderProcessor:
                                                 if any(k in record for k in all_mapping_keys))
                 logger.info(f"📊 REPORT LEVEL: {report_records_with_mapping} out of {len(enriched_results)} records have mapping fields")
             else:
+                # Initialize empty variables when no enriched_results
+                all_columns = set()
+                internal_columns = set()
+                debug_columns = set()
                 business_columns = []
+                mapping_cols_found = []
                 logger.warning("📊 No enriched_results to extract columns from")
 
             # Create business-friendly records with only business columns
