@@ -5581,11 +5581,13 @@ def download_order_mapped_csv(order_id: int, db: Session = Depends(get_db)):
         if not file_content:
             raise HTTPException(status_code=500, detail="Failed to download mapped CSV file from storage")
 
-        # Create response
+        # Create response with UTF-8 BOM to ensure proper Chinese character encoding
+        utf8_bom = b'\xef\xbb\xbf'
+        file_content_with_bom = utf8_bom + file_content
         filename = f"order_{order_id}_mapped_results.csv"
         response = Response(
-            content=file_content,
-            media_type="text/csv",
+            content=file_content_with_bom,
+            media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
 
@@ -5624,10 +5626,13 @@ def download_order_special_csv(order_id: int, db: Session = Depends(get_db)):
         if not file_content:
             raise HTTPException(status_code=500, detail="Failed to download special CSV from storage")
 
+        # Create response with UTF-8 BOM to ensure proper Chinese character encoding
+        utf8_bom = b'\xef\xbb\xbf'
+        file_content_with_bom = utf8_bom + file_content
         filename = f"order_{order_id}_special.csv"
         response = Response(
-            content=file_content,
-            media_type="text/csv",
+            content=file_content_with_bom,
+            media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
         response.headers["X-File-Source"] = "S3"
