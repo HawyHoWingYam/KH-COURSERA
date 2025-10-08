@@ -104,12 +104,7 @@ export default function OrderDetailsPage() {
   const [isUpdatingMappingKeys, setIsUpdatingMappingKeys] = useState(false);
   const [isStartingMapping, setIsStartingMapping] = useState(false);
 
-  // Per-item Mapping State
-  const [itemCsvHeaders, setItemCsvHeaders] = useState<{[key: number]: string[]}>({});
-  const [itemMappingKeys, setItemMappingKeys] = useState<{[key: number]: string[]}>({});
-  const [loadingItemHeaders, setLoadingItemHeaders] = useState<{[key: number]: boolean}>({});
-  const [savingItemMapping, setSavingItemMapping] = useState<{[key: number]: boolean}>({});
-
+  
   // Smart Recommendations functionality has been removed
   // const [smartRecommendations, setSmartRecommendations] = useState<{[key: number]: any[]}>({});
   // const [loadingRecommendations, setLoadingRecommendations] = useState<{[key: number]: boolean}>({});
@@ -526,27 +521,7 @@ export default function OrderDetailsPage() {
     }
   };
 
-  const loadItemCsvHeaders = async (itemId: number) => {
-    setLoadingItemHeaders(prev => ({ ...prev, [itemId]: true }));
-    try {
-      const response = await fetch(`/api/orders/${orderId}/items/${itemId}/csv-headers`);
-      if (!response.ok) {
-        throw new Error('Failed to fetch item CSV headers');
-      }
-      const data = await response.json();
-      setItemCsvHeaders(prev => ({ ...prev, [itemId]: data.csv_headers }));
-      setItemMappingKeys(prev => ({ ...prev, [itemId]: data.current_mapping_keys || [] }));
-
-      // Smart recommendations functionality has been removed
-      // await loadSmartRecommendations(itemId, data.csv_headers);
-    } catch (error) {
-      console.error('Error loading item CSV headers:', error);
-      setError('Failed to load CSV headers for item');
-    } finally {
-      setLoadingItemHeaders(prev => ({ ...prev, [itemId]: false }));
-    }
-  };
-
+  
   // Smart recommendations functionality has been removed
   const loadSmartRecommendations = async (itemId: number, csvHeaders?: string[]) => {
     // This functionality has been removed - mapping key recommender is no longer available
@@ -572,60 +547,8 @@ export default function OrderDetailsPage() {
     });
   };
 
-  const saveItemMappingKeys = async (itemId: number) => {
-    setSavingItemMapping(prev => ({ ...prev, [itemId]: true }));
-    try {
-      const response = await fetch(`/api/orders/${orderId}/items/${itemId}/mapping-keys`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          mapping_keys: itemMappingKeys[itemId] || []
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to update item mapping keys');
-      }
-
-      // Refresh the order to show updated mapping keys
-      loadOrder();
-    } catch (error) {
-      console.error('Error saving item mapping keys:', error);
-      setError('Failed to save item mapping keys');
-    } finally {
-      setSavingItemMapping(prev => ({ ...prev, [itemId]: false }));
-    }
-  };
-
-  const updateItemMappingKey = (itemId: number, keyIndex: number, value: string) => {
-    setItemMappingKeys(prev => {
-      const currentKeys = [...(prev[itemId] || [])];
-      if (value) {
-        // Ensure we have enough slots in the array
-        while (currentKeys.length <= keyIndex) {
-          currentKeys.push('');
-        }
-        currentKeys[keyIndex] = value;
-        // Remove empty trailing elements to keep array clean
-        while (currentKeys.length > 0 && currentKeys[currentKeys.length - 1] === '') {
-          currentKeys.pop();
-        }
-      } else {
-        // Clear the value at this index
-        if (keyIndex < currentKeys.length) {
-          currentKeys[keyIndex] = '';
-          // Remove empty trailing elements
-          while (currentKeys.length > 0 && currentKeys[currentKeys.length - 1] === '') {
-            currentKeys.pop();
-          }
-        }
-      }
-      return { ...prev, [itemId]: currentKeys };
-    });
-  };
-
+  
+  
   const downloadFinalMappedResults = async (format: 'csv' | 'excel' | 'special-csv') => {
     const downloadKey = format === 'special-csv' ? 'final-special-csv' : `final-${format}`;
     setDownloadingFiles(prev => ({ ...prev, [downloadKey]: true }));
@@ -849,6 +772,15 @@ export default function OrderDetailsPage() {
     );
   }
 
+  // Helper functions to determine processing state
+  const hasDoneOcr = (status: string) => {
+    return status === 'OCR_COMPLETED' || status === 'MAPPING' || status === 'COMPLETED' || status === 'FAILED';
+  };
+
+  const hasDoneMapping = (status: string) => {
+    return status === 'COMPLETED' || status === 'FAILED';
+  };
+
   const isLocked = order.status === 'LOCKED';
   const canEdit = order.status === 'DRAFT' && !isLocked;
   const canSubmit = order.status === 'DRAFT' && order.total_items > 0 && !isLocked;
@@ -856,12 +788,12 @@ export default function OrderDetailsPage() {
   // Use selectedMappingKeys (current user selection) if available, otherwise use saved mapping_keys
   const effectiveMappingKeys = selectedMappingKeys.length > 0 ? selectedMappingKeys : (order.mapping_keys || []);
   const canStartFullProcess = order.status === 'DRAFT' && order.total_items > 0 && order.mapping_file_path && effectiveMappingKeys.length > 0 && !isLocked;
-  const canStartMapping = (order.status === 'OCR_COMPLETED' || order.status === 'MAPPING' || order.status === 'COMPLETED') && order.mapping_file_path && effectiveMappingKeys.length > 0 && !isLocked;
+  const canStartMapping = hasDoneOcr(order.status) && order.mapping_file_path && effectiveMappingKeys.length > 0 && !isLocked && !hasDoneMapping(order.status);
   const canConfigureMapping = (order.status === 'DRAFT' || order.status === 'OCR_COMPLETED' || order.status === 'COMPLETED' || order.status === 'MAPPING') && !isLocked;
   const canLock = !isLocked && (order.status === 'COMPLETED' || order.status === 'OCR_COMPLETED' || order.status === 'FAILED');
   const canUnlock = isLocked;
-  const canRestartOcr = !isLocked && (order.status === 'OCR_COMPLETED' || order.status === 'COMPLETED' || order.status === 'FAILED');
-  const canRestartMapping = !isLocked && (order.status === 'COMPLETED' || order.status === 'FAILED') && order.mapping_file_path;
+  const canRestartOcr = !isLocked && hasDoneOcr(order.status);
+  const canRestartMapping = !isLocked && hasDoneMapping(order.status) && order.mapping_file_path;
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -1219,78 +1151,7 @@ export default function OrderDetailsPage() {
                   </div>
                 )}
 
-                {/* Per-Item Mapping Configuration - Show for completed items with CSV results */}
-                {item.status === 'COMPLETED' && item.ocr_result_csv_path && (
-                  <div className="mt-4 pt-3 border-t border-gray-200">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="text-sm font-medium text-gray-700">Item Mapping Keys:</div>
-                      <div className="flex items-center gap-2">
-                        {/* Smart Recommendations functionality has been removed */}
-                        {!itemCsvHeaders[item.item_id] && (
-                          <button
-                            onClick={() => loadItemCsvHeaders(item.item_id)}
-                            disabled={loadingItemHeaders[item.item_id]}
-                            className="bg-purple-100 hover:bg-purple-200 disabled:bg-gray-200 text-purple-700 disabled:text-gray-500 py-1 px-3 rounded text-sm font-medium"
-                          >
-                            {loadingItemHeaders[item.item_id] ? 'Loading...' : 'Configure Mapping'}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Smart Recommendations functionality has been removed */}
-
-                    {itemCsvHeaders[item.item_id] && (
-                      <div className="bg-gray-50 p-3 rounded">
-                        <div className="text-xs text-gray-600 mb-3">
-                          Available columns: {itemCsvHeaders[item.item_id].join(', ')}
-                        </div>
-                        <div className="space-y-2">
-                          {[1, 2, 3].map((keyNum) => (
-                            <div key={keyNum} className="flex items-center gap-2">
-                              <span className="text-sm font-medium w-16">Key {keyNum}:</span>
-                              <select
-                                value={itemMappingKeys[item.item_id]?.[keyNum - 1] || ''}
-                                onChange={(e) => updateItemMappingKey(item.item_id, keyNum - 1, e.target.value)}
-                                className="border border-gray-300 rounded px-2 py-1 text-sm flex-1"
-                                disabled={!canConfigureMapping}
-                              >
-                                <option value="">Select column...</option>
-                                {itemCsvHeaders[item.item_id].map((header, index) => (
-                                  <option key={index} value={header}>{header}</option>
-                                ))}
-                              </select>
-                            </div>
-                          ))}
-                        </div>
-                        {canConfigureMapping && itemMappingKeys[item.item_id]?.some(key => key && key.trim() !== '') && (
-                          <div className="mt-3">
-                            <button
-                              onClick={() => saveItemMappingKeys(item.item_id)}
-                              disabled={savingItemMapping[item.item_id]}
-                              className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white py-1 px-3 rounded text-sm font-medium"
-                            >
-                              {savingItemMapping[item.item_id] ? 'Saving...' : 'Save Item Mapping Keys'}
-                            </button>
-                          </div>
-                        )}
-                        {item.mapping_keys && item.mapping_keys.length > 0 && (
-                          <div className="mt-2">
-                            <div className="text-xs text-gray-600">Current keys:</div>
-                            <div className="flex gap-1 mt-1">
-                              {item.mapping_keys.map((key, index) => (
-                                <span key={index} className="bg-purple-100 text-purple-800 px-2 py-1 rounded text-xs">
-                                  {index + 1}. {key}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-
+                
                 {item.error_message && (
                   <div className="mt-2 text-sm text-red-600">
                     Error: {item.error_message}
