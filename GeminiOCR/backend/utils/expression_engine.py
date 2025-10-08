@@ -108,6 +108,18 @@ class ExpressionEngine:
     def _coalesce_text(value: Any) -> str:
         if value is None:
             return ""
+
+        # Handle pandas NaN values from DataFrame rows
+        import math
+        if isinstance(value, float) and math.isnan(value):
+            logger.debug(f"🔧 Converting NaN value to empty string")
+            return ""
+
+        # Also handle string "nan" which can come from NaN conversion
+        if isinstance(value, str) and value.lower() == "nan":
+            logger.debug(f"🔧 Converting string 'nan' to empty string")
+            return ""
+
         return str(value)
 
     def _fn_concat(self, *args: Any) -> str:
