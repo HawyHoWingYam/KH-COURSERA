@@ -1052,6 +1052,13 @@ class OrderProcessor:
                     template_details = self._get_template_details_from_order(order, db)
                     csv_content, standard_df = self._generate_mapped_csv(joined_results, mapping_columns)
 
+                    # DataFrame logging for debugging (show first 5 rows after mapping completion)
+                    logger.info(f"🔍 DataFrame Debug - Order {order_id} after mapping completion:")
+                    logger.info(f"   DataFrame shape: {standard_df.shape}")
+                    logger.info(f"   DataFrame columns: {list(standard_df.columns)}")
+                    logger.info(f"   First 5 rows sample:")
+                    logger.info(f"{standard_df.head().to_dict('records')}")
+
                     # Save final results to S3 - using consistent path format
                     s3_base = f"results/orders/{order_id // 1000}/mapped"
                     final_key = f"{s3_base}/order_{order_id}_mapped.csv"
@@ -1071,6 +1078,11 @@ class OrderProcessor:
 
                         special_csv_path = None
                         if template_details:
+                            logger.info(f"🎯 Starting Special CSV generation for order {order.order_id}")
+                            logger.info(f"   Using template: {template_details.get('template_path', 'N/A')}")
+                            logger.info(f"   Input DataFrame shape: {standard_df.shape}")
+                            logger.info(f"   Input DataFrame columns: {list(standard_df.columns)}")
+
                             special_csv_path = self._generate_special_csv_from_template(
                                 order.order_id,
                                 standard_df,
@@ -1078,9 +1090,14 @@ class OrderProcessor:
                                 template_details.get("doc_type_name", ""),
                                 s3_base,
                             )
+
+                            if special_csv_path:
+                                logger.info(f"✅ Special CSV generated successfully: {special_csv_path}")
+                            else:
+                                logger.error(f"❌ Special CSV generation failed for order {order.order_id}")
                         else:
-                            logger.info(
-                                "Order %s does not have a primary document template configured; skipping special CSV",
+                            logger.warning(
+                                "⚠️  Order %s does not have a primary document template configured; skipping special CSV",
                                 order.order_id,
                             )
 
@@ -1190,77 +1207,20 @@ class OrderProcessor:
         logger.info(f"   Available mapping columns: {mapping_columns}")
         logger.info(f"   User selected mapping keys: {user_mapping_keys}")
 
-        # Enhanced intelligent field mapping with cross-field matching
+        # Simplified field mapping using only default mapping keys
         ocr_fields = []
         mapping_fields = []
-        cross_field_mappings = []  # Store (ocr_field, mapping_field) pairs
 
         logger.info(f"🚀 Starting field analysis for mapping keys...")
 
-        # AUTO-MAPPING: Load cross-field mappings from document configuration
-        auto_cross_field_mappings = {}  # {ocr_field: mapping_field}
+        # AUTO-MAPPING: Use default mapping keys to determine OCR and mapping fields
         if order_id:
-            with Session(engine) as db:
-                # Get order items to find company/document type configurations
-                order_items = db.query(OcrOrderItem).filter(
-                    OcrOrderItem.order_id == order_id,
-                    OcrOrderItem.status == OrderItemStatus.COMPLETED
-                ).all()
-
-                for item in order_items:
-                    config = db.query(CompanyDocumentConfig).filter(
-                        CompanyDocumentConfig.company_id == item.company_id,
-                        CompanyDocumentConfig.doc_type_id == item.doc_type_id,
-                        CompanyDocumentConfig.auto_mapping_enabled == True,
-                        CompanyDocumentConfig.active == True
-                    ).first()
-
-                    if config and config.cross_field_mappings:
-                        logger.info(f"📋 Found cross-field mappings configuration: {config.cross_field_mappings}")
-                        auto_cross_field_mappings.update(config.cross_field_mappings)
-                        logger.info(f"📋 Updated auto_cross_field_mappings: {auto_cross_field_mappings}")
-                        break  # Use first found configuration
-
-        # AUTO-DERIVE: Enhance mapping with auto-derived relationships from Default Keys + User Selection
-        if order_id and not auto_cross_field_mappings:
-            logger.info("🤖 Auto-deriving mapping relationships from Document Default Keys + User Selection")
-            with Session(engine) as db:
-                order_items = db.query(OcrOrderItem).filter(
-                    OcrOrderItem.order_id == order_id,
-                    OcrOrderItem.status == OrderItemStatus.COMPLETED
-                ).all()
-
-                for item in order_items:
-                    config = db.query(CompanyDocumentConfig).filter(
-                        CompanyDocumentConfig.company_id == item.company_id,
-                        CompanyDocumentConfig.doc_type_id == item.doc_type_id,
-                        CompanyDocumentConfig.auto_mapping_enabled == True,
-                        CompanyDocumentConfig.active == True
-                    ).first()
-
-                    if config and config.default_mapping_keys:
-                        logger.info(f"🎯 Found default mapping keys: {config.default_mapping_keys}")
-                        logger.info(f"🎯 User mapping keys: {user_mapping_keys}")
-                        # Auto-derive cross-field mappings: default_key (OCR) -> user_key (mapping_file)
-                        for priority, default_key in enumerate(config.default_mapping_keys):
-                            logger.info(f"🔗 Processing default_key[{priority}]: '{default_key}'")
-                            if default_key and priority < len(user_mapping_keys):
-                                user_key = user_mapping_keys[priority]
-                                logger.info(f"🔗 Pairing with user_key[{priority}]: '{user_key}'")
-                                if default_key != user_key:  # Only if they're different
-                                    auto_cross_field_mappings[default_key] = user_key
-                                    logger.info(f"✅ Auto-derived mapping: '{default_key}' (OCR) -> '{user_key}' (mapping file)")
-                                else:
-                                    logger.info(f"⚠️ Skipped self-mapping: '{default_key}' == '{user_key}'")
-                            else:
-                                logger.info(f"❌ No user_key available for default_key[{priority}]: '{default_key}'")
-                        logger.info(f"🔗 Final auto_cross_field_mappings: {auto_cross_field_mappings}")
-                        break
-
-        logger.info(f"🔍 Starting field analysis with auto-derived mappings: {auto_cross_field_mappings}")
+            logger.info("🤖 Using default mapping keys from document configuration")
+            # We'll use the user_mapping_keys directly for both OCR and mapping field detection
+            # This simplified approach relies on the user's selected mapping keys
 
         for key in user_mapping_keys:
-            # First, check for direct field matches
+            # Check for direct field matches
             direct_ocr_match = key in ocr_columns
             direct_mapping_match = key in mapping_columns
 
@@ -1272,82 +1232,38 @@ class OrderProcessor:
                 mapping_fields.append(key)
                 logger.info(f"'{key}' identified as mapping field")
 
-            # Always check for cross-field semantic mappings, regardless of direct matches
-            # This enables mapping_field -> ocr_field relationships
-            potential_ocr_matches = []
-            potential_mapping_matches = []
+            # If key not found in either column set, try semantic matching
+            if not direct_ocr_match and not direct_mapping_match:
+                logger.warning(f"'{key}' not found in either OCR or mapping columns, trying semantic matching...")
 
-            key_lower = key.lower()
-            logger.info(f"🔍 Analyzing key '{key}' for cross-field semantic matches...")
+                key_lower = key.lower()
 
-            # Find semantically equivalent OCR fields
-            for ocr_col in ocr_columns:
-                ocr_col_lower = ocr_col.lower()
-                is_semantic = self._are_semantically_equivalent(key_lower, ocr_col_lower)
-                if is_semantic and ocr_col != key:  # Avoid self-mapping
-                    potential_ocr_matches.append(ocr_col)
-                    logger.info(f"   ✓ OCR semantic match: '{key}' <-> '{ocr_col}'")
+                # Find semantically equivalent OCR fields
+                for ocr_col in ocr_columns:
+                    ocr_col_lower = ocr_col.lower()
+                    if self._are_semantically_equivalent(key_lower, ocr_col_lower):
+                        ocr_fields.append(ocr_col)
+                        logger.info(f"'{ocr_col}' identified as similar OCR field for '{key}'")
+                        break
 
-            # Find semantically equivalent mapping fields
-            for map_col in mapping_columns:
-                map_col_lower = map_col.lower()
-                is_semantic = self._are_semantically_equivalent(key_lower, map_col_lower)
-                if is_semantic and map_col != key:  # Avoid self-mapping
-                    potential_mapping_matches.append(map_col)
-                    logger.info(f"   ✓ Mapping semantic match: '{key}' <-> '{map_col}'")
+                # Find semantically equivalent mapping fields
+                for map_col in mapping_columns:
+                    map_col_lower = map_col.lower()
+                    if self._are_semantically_equivalent(key_lower, map_col_lower):
+                        mapping_fields.append(map_col)
+                        logger.info(f"'{map_col}' identified as similar mapping field for '{key}'")
+                        break
 
-            # Create cross-field mappings when we have both direct and semantic matches
-            if direct_mapping_match and potential_ocr_matches:
-                # key is in mapping columns, but has semantic OCR equivalents
-                for ocr_match in potential_ocr_matches:
-                    cross_field_mappings.append((ocr_match, key))
-                    logger.info(f"🔗 Cross-field mapping created: '{ocr_match}' (OCR) -> '{key}' (mapping)")
-
-            elif direct_ocr_match and potential_mapping_matches:
-                # key is in OCR columns, but has semantic mapping equivalents
-                for mapping_match in potential_mapping_matches:
-                    cross_field_mappings.append((key, mapping_match))
-                    logger.info(f"🔗 Cross-field mapping created: '{key}' (OCR) -> '{mapping_match}' (mapping)")
-
-            # Handle case where key is not found in either column set
-            elif not direct_ocr_match and not direct_mapping_match:
-                logger.warning(f"'{key}' not found in either OCR or mapping columns")
-
-                if potential_ocr_matches and potential_mapping_matches:
-                    # Create cross-field mapping between semantic matches
-                    best_ocr = potential_ocr_matches[0]
-                    best_mapping = potential_mapping_matches[0]
-                    cross_field_mappings.append((best_ocr, best_mapping))
-                    logger.info(f"🔗 Cross-field mapping created: '{best_ocr}' (OCR) -> '{best_mapping}' (mapping)")
-                elif potential_ocr_matches:
-                    ocr_fields.append(potential_ocr_matches[0])
-                    logger.info(f"'{potential_ocr_matches[0]}' identified as similar OCR field for '{key}'")
-                elif potential_mapping_matches:
-                    mapping_fields.append(potential_mapping_matches[0])
-                    logger.info(f"'{potential_mapping_matches[0]}' identified as similar mapping field for '{key}'")
-                else:
-                    # Last resort: add to both lists
+                # If still not found, add as fallback
+                if not any(key.lower() == field.lower() for field in ocr_fields + mapping_fields):
                     ocr_fields.append(key)
                     mapping_fields.append(key)
                     logger.info(f"'{key}' added to both OCR and mapping fields as fallback")
 
-        # AUTO-MAPPING: Apply configured cross-field mappings
-        if auto_cross_field_mappings:
-            logger.info(f"Applying auto cross-field mappings: {auto_cross_field_mappings}")
-            for ocr_field, mapping_field in auto_cross_field_mappings.items():
-                # Check if both fields exist in their respective datasets
-                if ocr_field in ocr_columns and mapping_field in mapping_columns:
-                    cross_field_mappings.append((ocr_field, mapping_field))
-                    logger.info(f"🔗 Auto cross-field mapping applied: '{ocr_field}' (OCR) -> '{mapping_field}' (mapping)")
-                else:
-                    if ocr_field not in ocr_columns:
-                        logger.warning(f"Auto cross-field mapping skipped: OCR field '{ocr_field}' not found")
-                    if mapping_field not in mapping_columns:
-                        logger.warning(f"Auto cross-field mapping skipped: mapping field '{mapping_field}' not found")
+        logger.info(f"Final OCR fields: {ocr_fields}")
+        logger.info(f"Final mapping fields: {mapping_fields}")
 
-        logger.info(f"Final cross-field mappings: {cross_field_mappings}")
-
-        # Create lookup dictionary from mapping data using mapping fields AND cross-field mappings
+        # Create lookup dictionary from mapping data using mapping fields
         mapping_lookup = {}
 
         for mapping_row in mapping_data:
@@ -1364,15 +1280,6 @@ class OrderProcessor:
                         # Store the mapping record for each lookup key
                         mapping_lookup[normalized_key] = mapping_row.copy()
 
-            # Handle cross-field mappings: use mapping side of the pair
-            for ocr_field, mapping_field in cross_field_mappings:
-                if mapping_field in mapping_row and pd.notna(mapping_row[mapping_field]):
-                    normalized_key = self._normalize_identifier(str(mapping_row[mapping_field]))
-                    if normalized_key:
-                        lookup_keys.append(normalized_key)
-                        mapping_lookup[normalized_key] = mapping_row.copy()
-                        logger.info(f"Added cross-field lookup: mapping[{mapping_field}]='{mapping_row[mapping_field]}' -> key='{normalized_key}'")
-
             # If no direct mapping fields identified, try all user-selected keys in mapping data
             if not mapping_fields:
                 for user_key in user_mapping_keys:
@@ -1383,7 +1290,7 @@ class OrderProcessor:
                             mapping_lookup[normalized_key] = mapping_row.copy()
                             logger.info(f"Added user-key lookup: mapping[{user_key}]='{mapping_row[user_key]}' -> key='{normalized_key}'")
 
-        logger.info(f"Created mapping lookup with {len(mapping_lookup)} entries from mapping fields: {mapping_fields} and cross-field mappings: {cross_field_mappings}")
+        logger.info(f"Created mapping lookup with {len(mapping_lookup)} entries from mapping fields: {mapping_fields}")
 
         # Perform JOIN operation with improved multi-key matching
         joined_results = []
@@ -1415,28 +1322,7 @@ class OrderProcessor:
                         logger.info(f"✓ Row {i}: Matched OCR field '{ocr_field}' value '{lookup_value}'")
                         break
 
-            # Strategy 1.5: Try cross-field mappings (ocr_field -> mapping_field)
-            if not mapping_match:
-                for ocr_field, mapping_field in cross_field_mappings:
-                    if ocr_field in ocr_row and pd.notna(ocr_row[ocr_field]):
-                        lookup_value = self._normalize_identifier(str(ocr_row[ocr_field]))
-                        match_info["attempts"].append({
-                            "strategy": "cross_field",
-                            "ocr_field": ocr_field,
-                            "mapping_field": mapping_field,
-                            "original_value": str(ocr_row[ocr_field]),
-                            "normalized_value": lookup_value
-                        })
-
-                        mapping_match = mapping_lookup.get(lookup_value)
-                        if mapping_match:
-                            matched_count += 1
-                            match_info["matched"] = True
-                            match_info["matched_strategy"] = f"cross_field:{ocr_field}->{mapping_field}"
-                            match_info["matched_value"] = lookup_value
-                            logger.info(f"✓ Row {i}: Cross-field match '{ocr_field}' -> '{mapping_field}' value '{lookup_value}'")
-                            break
-
+            
             # Strategy 2: If no match found with OCR fields, try all user keys directly
             if not mapping_match:
                 for user_key in user_mapping_keys:
@@ -1706,14 +1592,28 @@ class OrderProcessor:
             return None
 
         try:
+            # Step 1: Load and validate template
+            logger.info(f"Loading template for order {order_id} from: {template_path}")
             template_config = self.special_csv_generator.load_template_from_s3(template_path)
+
+            # Step 2: Validate template structure
+            logger.info(f"Validating template structure for order {order_id}")
             self.special_csv_generator.validate_template(template_config)
+            template_version = sanitize_template_version(template_config.get("version", "latest"))
+
+            # Step 3: Generate special CSV with detailed logging
+            logger.info(f"Generating special CSV for order {order_id} using template version {template_version}")
+            logger.info(f"Input DataFrame shape: {standard_df.shape}, columns: {list(standard_df.columns)}")
+
             special_df = self.special_csv_generator.generate_special_csv(standard_df, template_config)
 
-            template_version = sanitize_template_version(template_config.get("version", "latest"))
+            logger.info(f"Special CSV generated successfully - Output shape: {special_df.shape}, columns: {list(special_df.columns)}")
+
+            # Step 4: Prepare and upload file
             special_key = f"{s3_base}/order_{order_id}_special_v{template_version}.csv"
             special_csv_content = special_df.to_csv(index=False)
 
+            logger.info(f"Uploading special CSV to S3: {special_key}")
             upload_success = self.s3_manager.upload_file(
                 special_csv_content.encode("utf-8"), special_key
             )
@@ -1723,26 +1623,44 @@ class OrderProcessor:
                     f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{special_key}"
                 )
                 logger.info(
-                    "Special CSV generated for order %s using template '%s' (version %s)",
+                    "✅ Special CSV generated successfully for order %s using template '%s' (version %s)",
                     order_id,
                     doc_type_name or "unknown",
                     template_version,
                 )
+                logger.info(f"📁 Special CSV path: {special_path}")
                 return special_path
+            else:
+                logger.error(
+                    "❌ Failed to upload special CSV for order %s using template '%s' - S3 upload failed",
+                    order_id,
+                    doc_type_name or "unknown",
+                )
 
+        except FileNotFoundError as exc:
             logger.error(
-                "Failed to upload special CSV for order %s using template '%s'",
+                "❌ Template file not found for order %s using template '%s': %s",
                 order_id,
                 doc_type_name or "unknown",
+                template_path,
             )
-
-        except Exception as exc:
+        except ValueError as exc:
             logger.error(
-                "Special CSV generation failed for order %s using template '%s': %s",
+                "❌ Template validation failed for order %s using template '%s': %s",
                 order_id,
                 doc_type_name or "unknown",
                 exc,
             )
+        except Exception as exc:
+            logger.error(
+                "❌ Special CSV generation failed for order %s using template '%s': %s",
+                order_id,
+                doc_type_name or "unknown",
+                exc,
+            )
+            logger.error(f"Error type: {type(exc).__name__}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
 
         return None
 
@@ -1851,7 +1769,7 @@ class OrderProcessor:
                             )
 
                             # 🔍 DEBUG: Check enriched_record before adding to list
-                            mapping_keys_before_append = [k for k in enriched_record.keys() if k in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']]
+                            mapping_keys_before_append = [k for k in enriched_record.keys() if k in item_mapping_keys]
                             logger.info(f"🔍 BEFORE APPEND: enriched_record has mapping keys: {mapping_keys_before_append}")
 
                             all_enriched_results.append(enriched_record)
@@ -1859,7 +1777,7 @@ class OrderProcessor:
                             # 🔍 DEBUG: Check the record after adding to list
                             if all_enriched_results:
                                 last_record = all_enriched_results[-1]
-                                mapping_keys_after_append = [k for k in last_record.keys() if k in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']]
+                                mapping_keys_after_append = [k for k in last_record.keys() if k in item_mapping_keys]
                                 logger.info(f"🔍 AFTER APPEND: last record in list has mapping keys: {mapping_keys_after_append}")
 
                         logger.info(f"Processed {len(item_records)} records from item {item.item_id}")
@@ -1875,17 +1793,23 @@ class OrderProcessor:
                 # 🔍 FINAL DEBUG: Check all_enriched_results before passing to report generation
                 logger.info(f"🔍 FINAL CHECK: all_enriched_results has {len(all_enriched_results)} records")
                 if all_enriched_results:
+                    # Collect all mapping keys from order and items
+                    all_mapping_keys = set(order.mapping_keys or [])
+                    for item in order.items:
+                        if item.mapping_keys:
+                            all_mapping_keys.update(item.mapping_keys)
+
                     # Check first, middle, and last records
                     for idx, label in [(0, "FIRST"), (len(all_enriched_results)//2, "MIDDLE"), (-1, "LAST")]:
                         if idx < len(all_enriched_results):
                             sample_record = all_enriched_results[idx]
                             all_columns = list(sample_record.keys())
-                            mapping_keys = [k for k in all_columns if k in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']]
+                            mapping_keys = [k for k in all_columns if k in all_mapping_keys]
                             logger.info(f"🔍 FINAL CHECK: {label} record mapping keys: {mapping_keys}")
 
                     # Count records with mapping data
                     records_with_mapping = sum(1 for record in all_enriched_results
-                                             if any(k in record for k in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']))
+                                             if any(k in record for k in all_mapping_keys))
                     logger.info(f"🔍 FINAL CHECK: {records_with_mapping} out of {len(all_enriched_results)} records have mapping fields")
 
                 # Generate final mapped reports
@@ -2060,7 +1984,7 @@ class OrderProcessor:
                 enriched_record['ActualFieldUsed'] = actual_field_used
 
                 # Log final enriched_record state
-                mapping_keys_in_record = [k for k in enriched_record.keys() if k in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']]
+                mapping_keys_in_record = [k for k in enriched_record.keys() if k in mapping_keys]
                 logger.info(f"🏁 ENRICHED RECORD STATE: total_fields={len(enriched_record)}")
                 logger.info(f"🏁 MAPPING KEYS IN RECORD: {mapping_keys_in_record}")
                 logger.info(f"🏁 ALL KEYS: {list(enriched_record.keys())[:20]}...")  # Show first 20 keys
@@ -2078,17 +2002,31 @@ class OrderProcessor:
     async def _generate_mapped_reports(self, order_id: int, enriched_results: List[Dict[str, Any]]):
         """Generate final mapped reports for the order"""
         try:
+            # Get order information to access mapping keys
+            with Session(engine) as db:
+                order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+
+                # Collect all mapping keys from order and items
+                all_mapping_keys = set(order.mapping_keys or [])
+                for item in order.items:
+                    if item.mapping_keys:
+                        all_mapping_keys.update(item.mapping_keys)
+
             s3_base = f"results/orders/{order_id // 1000}/mapped"
 
             # Generate mapped CSV with business-friendly format (dynamic column detection)
             import pandas as pd
 
-            # Debug columns to exclude (internal/debugging columns)
-            debug_columns = {
-                '__filename', '__item_id', '__item_name', '__company', '__doc_type',
-                'Department', 'ShopCode', 'ServiceType', 'MatchedBy', 'MatchSource',
-                'Matched', 'MatchedValue', 'MatchedKey', 'ActualFieldUsed'
+            # Internal columns to exclude (only filter fields that start with __)
+            internal_columns = {col for col in (all_columns if enriched_results else set()) if col.startswith('__')}
+
+            # Also exclude explicit internal tracking fields (not business data)
+            explicit_internal_fields = {
+                'MatchedBy', 'MatchSource', 'Matched', 'MatchedValue', 'MatchedKey', 'ActualFieldUsed'
             }
+
+            # Combined internal columns to exclude
+            debug_columns = internal_columns.union(explicit_internal_fields)
 
             # Get all available columns from ALL records (critical fix for mapping columns)
             if enriched_results:
@@ -2098,13 +2036,13 @@ class OrderProcessor:
                     all_columns.update(record.keys())
 
                 # Check for mapping columns specifically
-                mapping_cols_found = [col for col in all_columns if col in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']]
+                mapping_cols_found = [col for col in all_columns if col in all_mapping_keys]
 
                 # Filter out debug columns to get business columns
                 business_columns = [col for col in all_columns if col not in debug_columns]
 
                 # CRITICAL FIX: Ensure mapping columns are ALWAYS included even if they appear in few records
-                for mapping_col in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']:
+                for mapping_col in all_mapping_keys:
                     if mapping_col in all_columns and mapping_col not in business_columns:
                         business_columns.append(mapping_col)
                         logger.info(f"📊 FORCE-ADDED missing mapping column: {mapping_col}")
@@ -2114,23 +2052,25 @@ class OrderProcessor:
                 logger.info(f"📊 REPORT GENERATION DEBUG:")
                 logger.info(f"📊 Total enriched_results records: {len(enriched_results)}")
                 logger.info(f"📊 All columns in enriched_results: {sorted(all_columns)}")
+                logger.info(f"📊 All mapping keys: {sorted(all_mapping_keys)}")
                 logger.info(f"📊 Mapping columns found: {mapping_cols_found}")
-                logger.info(f"📊 Filtered debug columns: {sorted(debug_columns & all_columns)}")
-                logger.info(f"📊 Business columns (FIXED - includes mapping): {business_columns}")
-                logger.info(f"📊 GUARANTEED MAPPING COLUMNS IN CSV: {[col for col in business_columns if col in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']]}")
+                logger.info(f"📊 Filtered internal columns (dynamic detection): {sorted(debug_columns & all_columns)}")
+                logger.info(f"📊 Business columns (FIXED - no hardcoded assumptions): {business_columns}")
+                logger.info(f"📊 Business columns include Department, ShopCode, ServiceType: {[col for col in ['Department', 'ShopCode', 'ServiceType'] if col in business_columns]}")
+                logger.info(f"📊 GUARANTEED MAPPING COLUMNS IN CSV: {[col for col in business_columns if col in all_mapping_keys]}")
 
                 # Sample records to check mapping data (check first, middle, last)
                 sample_indices = [0, len(enriched_results)//2, -1] if len(enriched_results) > 1 else [0]
                 for idx in sample_indices:
                     if idx < len(enriched_results):
                         record = enriched_results[idx]
-                        mapping_sample = {k:v for k,v in record.items() if k in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']}
+                        mapping_sample = {k:v for k,v in record.items() if k in all_mapping_keys}
                         position = "FIRST" if idx == 0 else "MIDDLE" if idx == len(enriched_results)//2 else "LAST"
                         logger.info(f"📊 {position} record ({idx}) mapping fields: {mapping_sample}")
 
                 # Count enriched_results records with mapping data
                 report_records_with_mapping = sum(1 for record in enriched_results
-                                                if any(k in record for k in ['Shop/Department', 'Staff', 'ACCOUNT_NO', 'VENDOR', 'PHONE']))
+                                                if any(k in record for k in all_mapping_keys))
                 logger.info(f"📊 REPORT LEVEL: {report_records_with_mapping} out of {len(enriched_results)} records have mapping fields")
             else:
                 business_columns = []

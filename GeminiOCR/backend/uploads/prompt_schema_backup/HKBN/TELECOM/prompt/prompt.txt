@@ -1,0 +1,55 @@
+Please analyze the provided HKBN Statement PDF document and extract the information based on the FINAL UNIFIED SCHEMA provided.
+CRITICAL INSTRUCTION: You MUST map the extracted data to the provided JSON schema. The key names in your output MUST EXACTLY match the key names defined in the schema (e.g., use "invoice_date", "customer_name", "service_number", etc.).
+Overall Document Identification:
+* provider: Set this value to "Hong Kong Broadband Network".
+* __filename: Extract the filename of the PDF document.
+I. Page 1 - Header Section:
+1. account_number:
+   * Label: 'PPS/Account Number' or '賬戶號碼'.
+   * Value: Extract the 9-digit number.
+2. invoice_date:
+   * Label: 'Issue Date' or '印發日期'.
+   * Value: Extract the date and convert to YYYY-MM-DD format.
+3. customer_name:
+   * Location: Below account information.
+   * Value: Extract the full company name in English.
+4. payment_due_date:
+   * Label: 'Payment Due Date' or '到期繳款日'.
+   * Value: Extract date in YYYY-MM-DD format. If it says 'N/A', the value should be null.
+II. Page 1 - Bill Summary Section (billing_summary object):
+* previous_bill_amount:
+   * Label: 'Previous Charges' or '前單收費'.
+   * Value: Positive number with 2 decimal places.
+* payment_received:
+   * Label: 'Payment (Autopay)' or '繳費'.
+   * Value: Extract the number. It's often negative; preserve the sign.
+* balance_forwarded:
+   * Label: 'Previous Charges Outstanding' or '前單結欠'.
+   * Value: Number with 2 decimal places.
+* current_charges:
+   * Label: 'Total Current Charges' or '本期總收費'.
+   * Value: Number with 2 decimal places (can be negative).
+* total_amount_due:
+   * Label: 'Statement Balance' or '本期應繳賬項'.
+   * Value: Extract the final amount. If it's shown as negative (credit), preserve the negative sign.
+III. Service & Charge Details (service_details array):
+THIS IS THE MOST CRITICAL PART. HKBN has two charge formats. You MUST combine them into this single array.
+A. For "HKBN Mobile Services Charges" (usually page 3+):
+* These are grouped by phone number. For each group:
+* service_number: The 8-digit phone number.
+* subtotal: The 'Sub-total' for that phone number.
+* charge_items (array): For each line item under this phone number:
+   * description: The 'Description of Charges' (e.g., 'HKBN mobile services...').
+   * period: The 'Service Period'. Format: YYYY/MM/DD - YYYY/MM/DD.
+   * amount: The 'Charge (HK$)' value. Discounts ('Disc') are negative.
+B. For "Service Charges / Other Charges" (flat list, often refunds):
+* These are individual line items. For EACH line item:
+* Create a new object in the service_details array.
+* service_number: Parse the 8-digit phone number from the 'Description' string (e.g., from "REFUND - MOBILE#57410267...").
+* subtotal: This can be set to null as there's no subtotal for these individual items.
+* charge_items (array): Create an array with a single object containing:
+   * description: The full 'Description' string (e.g., 'REFUND - MOBILE#...').
+   * period: Parse the period from the 'Description' string. Format: YYYY/MM/DD-YYYY/MM/DD.
+   * amount: The 'Charge (HK$)' value. Refunds are always negative.
+IV. Final Validation Rule:
+The sum of all subtotal fields plus the sum of all amount fields from the "Other Charges" section should approximately equal the billing_summary.current_charges.

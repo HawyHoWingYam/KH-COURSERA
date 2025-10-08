@@ -18,13 +18,9 @@ class DynamicMappingProcessor:
     def __init__(self):
         self.mapping_data = []
         self.columns = []
-        self.ocr_to_mapping_field_map = {
-            # Default mappings - can be extended
-            'number': 'PHONE',
-            'account_number': 'ACCOUNT_NO',
-            'customer_reference': 'REFERENCE',
-            'account_no': 'ACCOUNT_NO'
-        }
+        # Default mappings - can be extended through configuration
+        self.ocr_to_mapping_field_map = {}
+        # These will be populated from database configuration
 
     def detect_file_format(self, file_content: bytes, file_path: Optional[str] = None) -> str:
         """
@@ -306,6 +302,20 @@ class DynamicMappingProcessor:
         normalized = str(identifier).strip()
         normalized = re.sub(r'[^\w]', '', normalized)
         return normalized.upper()
+
+    def load_mappings_from_config(self, cross_field_mappings: Dict[str, str] = None) -> None:
+        """
+        Load OCR to mapping field mappings from configuration.
+
+        Args:
+            cross_field_mappings: Dictionary of cross-field mappings from database config
+        """
+        if cross_field_mappings:
+            # Load from database configuration
+            self.ocr_to_mapping_field_map.update(cross_field_mappings)
+            logger.info(f"Loaded {len(cross_field_mappings)} field mappings from configuration")
+        else:
+            logger.warning("No field mappings configured - please set up cross_field_mappings in database configuration")
 
     def get_ocr_field_for_mapping_key(self, mapping_key: str) -> str:
         """

@@ -110,11 +110,11 @@ export default function OrderDetailsPage() {
   const [loadingItemHeaders, setLoadingItemHeaders] = useState<{[key: number]: boolean}>({});
   const [savingItemMapping, setSavingItemMapping] = useState<{[key: number]: boolean}>({});
 
-  // Smart Recommendations State
-  const [smartRecommendations, setSmartRecommendations] = useState<{[key: number]: any[]}>({});
-  const [loadingRecommendations, setLoadingRecommendations] = useState<{[key: number]: boolean}>({});
-  const [orderLevelSuggestions, setOrderLevelSuggestions] = useState<any[]>([]);
-  const [loadingOrderSuggestions, setLoadingOrderSuggestions] = useState(false);
+  // Smart Recommendations functionality has been removed
+  // const [smartRecommendations, setSmartRecommendations] = useState<{[key: number]: any[]}>({});
+  // const [loadingRecommendations, setLoadingRecommendations] = useState<{[key: number]: boolean}>({});
+  // const [orderLevelSuggestions, setOrderLevelSuggestions] = useState<any[]>([]);
+  // const [loadingOrderSuggestions, setLoadingOrderSuggestions] = useState(false);
 
   // Order Management State
   const [isLockingOrder, setIsLockingOrder] = useState(false);
@@ -537,8 +537,8 @@ export default function OrderDetailsPage() {
       setItemCsvHeaders(prev => ({ ...prev, [itemId]: data.csv_headers }));
       setItemMappingKeys(prev => ({ ...prev, [itemId]: data.current_mapping_keys || [] }));
 
-      // Load smart recommendations for this item
-      await loadSmartRecommendations(itemId, data.csv_headers);
+      // Smart recommendations functionality has been removed
+      // await loadSmartRecommendations(itemId, data.csv_headers);
     } catch (error) {
       console.error('Error loading item CSV headers:', error);
       setError('Failed to load CSV headers for item');
@@ -547,66 +547,21 @@ export default function OrderDetailsPage() {
     }
   };
 
+  // Smart recommendations functionality has been removed
   const loadSmartRecommendations = async (itemId: number, csvHeaders?: string[]) => {
-    if (!order?.items) return;
-
-    const item = order.items.find(item => item.item_id === itemId);
-    if (!item) return;
-
-    setLoadingRecommendations(prev => ({ ...prev, [itemId]: true }));
-    try {
-      let apiUrl = `/api/companies/${item.company_id}/document-types/${item.doc_type_id}/suggested-mapping-keys?limit=5`;
-
-      // If csvHeaders are provided, include them in the request
-      if (csvHeaders && csvHeaders.length > 0) {
-        const csvHeadersParam = csvHeaders.join(',');
-        apiUrl += `&csv_headers=${encodeURIComponent(csvHeadersParam)}`;
-      }
-
-      const response = await fetch(apiUrl);
-
-      if (!response.ok) {
-        throw new Error('Failed to fetch smart recommendations');
-      }
-
-      const data = await response.json();
-      setSmartRecommendations(prev => ({ ...prev, [itemId]: data.suggestions || [] }));
-    } catch (error) {
-      console.error('Error loading smart recommendations:', error);
-      // Don't set error state for recommendations as it's not critical
-    } finally {
-      setLoadingRecommendations(prev => ({ ...prev, [itemId]: false }));
-    }
+    // This functionality has been removed - mapping key recommender is no longer available
+    console.log('Mapping key recommender functionality has been removed');
   };
 
   const loadOrderLevelSuggestions = async () => {
-    if (!order?.items || order.items.length === 0) return;
-
-    setLoadingOrderSuggestions(true);
-    try {
-      // Use the first item's company and document type for order-level suggestions
-      const firstItem = order.items[0];
-      const response = await fetch(
-        `/api/companies/${firstItem.company_id}/document-types/${firstItem.doc_type_id}/suggested-mapping-keys?limit=3`
-      );
-
-      if (response.ok) {
-        const data = await response.json();
-        setOrderLevelSuggestions(data.suggestions || []);
-      }
-    } catch (error) {
-      console.error('Error loading order-level suggestions:', error);
-    } finally {
-      setLoadingOrderSuggestions(false);
-    }
+    // This functionality has been removed - mapping key recommender is no longer available
+    console.log('Order-level suggestions functionality has been removed');
+    // setLoadingOrderSuggestions(false); // Commented out as state is removed
   };
 
+  // Smart recommendation functionality has been removed
   const applySmartRecommendation = (itemId: number, recommendedKey: string, keyIndex: number) => {
-    setItemMappingKeys(prev => {
-      const currentKeys = [...(prev[itemId] || [])];
-      currentKeys[keyIndex] = recommendedKey;
-      return { ...prev, [itemId]: currentKeys };
-    });
+    console.log('Smart recommendation functionality has been removed');
   };
 
   const applyOrderLevelSuggestion = (keyIndex: number, suggestedKey: string) => {
@@ -1270,17 +1225,7 @@ export default function OrderDetailsPage() {
                     <div className="flex items-center justify-between mb-2">
                       <div className="text-sm font-medium text-gray-700">Item Mapping Keys:</div>
                       <div className="flex items-center gap-2">
-                        {/* Smart Recommendations Button */}
-                        {!smartRecommendations[item.item_id] && (
-                          <button
-                            onClick={() => loadSmartRecommendations(item.item_id)}
-                            disabled={loadingRecommendations[item.item_id]}
-                            className="bg-yellow-100 hover:bg-yellow-200 disabled:bg-gray-200 text-yellow-700 disabled:text-gray-500 py-1 px-3 rounded text-xs font-medium"
-                            title="Get AI-powered mapping key suggestions"
-                          >
-                            {loadingRecommendations[item.item_id] ? '🔮 Loading...' : '🔮 Smart Suggest'}
-                          </button>
-                        )}
+                        {/* Smart Recommendations functionality has been removed */}
                         {!itemCsvHeaders[item.item_id] && (
                           <button
                             onClick={() => loadItemCsvHeaders(item.item_id)}
@@ -1293,31 +1238,7 @@ export default function OrderDetailsPage() {
                       </div>
                     </div>
 
-                    {/* Smart Recommendations Display */}
-                    {smartRecommendations[item.item_id] && smartRecommendations[item.item_id].length > 0 && (
-                      <div className="bg-yellow-50 border border-yellow-200 p-3 rounded mb-3">
-                        <div className="text-sm font-medium text-yellow-800 mb-2">🔮 AI Recommendations:</div>
-                        <div className="space-y-2">
-                          {smartRecommendations[item.item_id].map((rec, index) => (
-                            <div key={index} className="flex items-center justify-between bg-white p-2 rounded border border-yellow-200">
-                              <div className="flex-1">
-                                <div className="text-sm font-medium text-gray-800">{rec.key}</div>
-                                <div className="text-xs text-gray-600">
-                                  {rec.reason} (信心度: {(rec.confidence * 100).toFixed(0)}%)
-                                </div>
-                              </div>
-                              <button
-                                onClick={() => applySmartRecommendation(item.item_id, rec.key, rec.priority - 1)}
-                                className="bg-yellow-500 hover:bg-yellow-600 text-white py-1 px-2 rounded text-xs font-medium"
-                                title={`Apply as mapping key ${rec.priority}`}
-                              >
-                                Apply Key {rec.priority}
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                    {/* Smart Recommendations functionality has been removed */}
 
                     {itemCsvHeaders[item.item_id] && (
                       <div className="bg-gray-50 p-3 rounded">
@@ -1433,49 +1354,9 @@ export default function OrderDetailsPage() {
           </div>
         )}
 
-        {/* Order-Level Smart Recommendations */}
-        {mappingHeaders && order.items.some(item => item.status === 'COMPLETED') && !orderLevelSuggestions && (
-          <div className="mb-4">
-            <button
-              onClick={() => loadOrderLevelSuggestions()}
-              disabled={loadingOrderSuggestions}
-              className="bg-green-100 hover:bg-green-200 disabled:bg-gray-200 text-green-700 disabled:text-gray-500 py-2 px-4 rounded text-sm font-medium flex items-center gap-2"
-              title="Get AI suggestions based on completed order items"
-            >
-              {loadingOrderSuggestions ? (
-                <>🔮 Loading Order Suggestions...</>
-              ) : (
-                <>🔮 Get Smart Order-Level Suggestions</>
-              )}
-            </button>
-          </div>
-        )}
+        {/* Order-Level Smart Recommendations functionality has been removed */}
 
-        {/* Display Order-Level Smart Recommendations */}
-        {orderLevelSuggestions && orderLevelSuggestions.length > 0 && (
-          <div className="bg-green-50 border border-green-200 p-4 rounded mb-4">
-            <div className="text-sm font-medium text-green-800 mb-3">🔮 Order-Level AI Recommendations:</div>
-            <div className="space-y-2 mb-4">
-              {orderLevelSuggestions.map((rec, index) => (
-                <div key={index} className="flex items-center justify-between bg-white p-2 rounded border border-green-200">
-                  <div className="flex-1">
-                    <div className="text-sm font-medium text-gray-800">{rec.key}</div>
-                    <div className="text-xs text-gray-600">
-                      {rec.reason} (信心度: {(rec.confidence * 100).toFixed(0)}%)
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => applyOrderLevelSuggestion(rec.key, rec.priority - 1)}
-                    className="bg-green-500 hover:bg-green-600 text-white py-1 px-2 rounded text-xs font-medium"
-                    title={`Apply as order mapping key ${rec.priority}`}
-                  >
-                    Apply Key {rec.priority}
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* Order-Level Smart Recommendations display functionality has been removed */}
 
         {mappingHeaders && (
           <div>

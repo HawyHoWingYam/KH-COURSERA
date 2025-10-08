@@ -5474,86 +5474,10 @@ def update_order_item_mapping_keys(
         raise HTTPException(status_code=500, detail=f"Failed to update mapping keys: {str(e)}")
 
 
-@app.get("/companies/{company_id}/document-types/{doc_type_id}/suggested-mapping-keys", response_model=dict)
-def get_suggested_mapping_keys(
-    company_id: int,
-    doc_type_id: int,
-    csv_headers: Optional[str] = None,
-    limit: int = 3,
-    db: Session = Depends(get_db)
-):
-    """Get suggested mapping keys for a company and document type"""
-    try:
-        from utils.mapping_key_recommender import MappingKeyRecommender
-
-        recommender = MappingKeyRecommender(db)
-
-        # Parse CSV headers if provided
-        headers_list = None
-        if csv_headers:
-            headers_list = [h.strip() for h in csv_headers.split(',') if h.strip()]
-
-        # Get recommendations
-        suggestions = recommender.suggest_mapping_keys(
-            company_id=company_id,
-            doc_type_id=doc_type_id,
-            csv_headers=headers_list,
-            limit=limit
-        )
-
-        return {
-            "company_id": company_id,
-            "doc_type_id": doc_type_id,
-            "suggestions": suggestions,
-            "total_suggestions": len(suggestions)
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to get suggested mapping keys: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get suggestions: {str(e)}")
+# NOTE: get_suggested_mapping_keys endpoint removed - mapping key recommendation functionality no longer needed
 
 
-@app.put("/companies/{company_id}/document-types/{doc_type_id}/default-mapping-keys", response_model=dict)
-def update_default_mapping_keys(
-    company_id: int,
-    doc_type_id: int,
-    request: dict,
-    db: Session = Depends(get_db)
-):
-    """Update default mapping keys for a company and document type"""
-    try:
-        mapping_keys = request.get('mapping_keys', [])
-
-        if not isinstance(mapping_keys, list):
-            raise HTTPException(status_code=400, detail="mapping_keys must be a list")
-
-        if len(mapping_keys) > 5:
-            raise HTTPException(status_code=400, detail="Maximum 5 mapping keys allowed")
-
-        from utils.mapping_key_recommender import MappingKeyRecommender
-
-        recommender = MappingKeyRecommender(db)
-        success = recommender.update_default_mapping_keys(
-            company_id=company_id,
-            doc_type_id=doc_type_id,
-            mapping_keys=mapping_keys
-        )
-
-        if not success:
-            raise HTTPException(status_code=404, detail="Company document config not found")
-
-        return {
-            "company_id": company_id,
-            "doc_type_id": doc_type_id,
-            "default_mapping_keys": mapping_keys,
-            "message": "Default mapping keys updated successfully"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to update default mapping keys: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to update default keys: {str(e)}")
+# NOTE: update_default_mapping_keys endpoint removed - mapping key recommendation functionality no longer needed
 
 
 # =============================================================================
@@ -5582,7 +5506,7 @@ def get_auto_mapping_config(
             "doc_type_id": doc_type_id,
             "auto_mapping_enabled": config.auto_mapping_enabled or False,
             "default_mapping_keys": config.default_mapping_keys or [],
-            "cross_field_mappings": config.cross_field_mappings or {},
+            # "cross_field_mappings": config.cross_field_mappings or {},  # Removed - cross-field mapping no longer supported
             "updated_at": config.updated_at.isoformat() if config.updated_at else None
         }
 
@@ -5614,7 +5538,7 @@ def update_auto_mapping_config(
         # Validate input
         auto_mapping_enabled = request.get('auto_mapping_enabled', False)
         default_mapping_keys = request.get('default_mapping_keys', [])
-        cross_field_mappings = request.get('cross_field_mappings', {})
+        # cross_field_mappings = request.get('cross_field_mappings', {})  # Removed - cross-field mapping no longer supported
 
         if not isinstance(auto_mapping_enabled, bool):
             raise HTTPException(status_code=400, detail="auto_mapping_enabled must be a boolean")
@@ -5625,13 +5549,13 @@ def update_auto_mapping_config(
         if len(default_mapping_keys) > 3:
             raise HTTPException(status_code=400, detail="Maximum 3 default mapping keys allowed")
 
-        if not isinstance(cross_field_mappings, dict):
-            raise HTTPException(status_code=400, detail="cross_field_mappings must be a dictionary")
+        # if not isinstance(cross_field_mappings, dict):  # Removed - cross-field mapping no longer supported
+        #     raise HTTPException(status_code=400, detail="cross_field_mappings must be a dictionary")
 
         # Update configuration
         config.auto_mapping_enabled = auto_mapping_enabled
         config.default_mapping_keys = default_mapping_keys
-        config.cross_field_mappings = cross_field_mappings
+        # config.cross_field_mappings = cross_field_mappings  # Removed - cross-field mapping no longer supported
         config.updated_at = datetime.utcnow()
 
         db.commit()
@@ -5642,7 +5566,7 @@ def update_auto_mapping_config(
             "doc_type_id": doc_type_id,
             "auto_mapping_enabled": auto_mapping_enabled,
             "default_mapping_keys": default_mapping_keys,
-            "cross_field_mappings": cross_field_mappings,
+            # "cross_field_mappings": cross_field_mappings,  # Removed - cross-field mapping no longer supported
             "message": "Auto-mapping configuration updated successfully"
         }
 
@@ -5691,18 +5615,19 @@ def test_auto_mapping_config(
         test_results = {
             "auto_mapping_enabled": config.auto_mapping_enabled,
             "default_mapping_keys": config.default_mapping_keys or [],
-            "cross_field_mappings": config.cross_field_mappings or {},
+            # "cross_field_mappings": config.cross_field_mappings or {},  # Removed - cross-field mapping no longer supported
             "sample_matches": [],
             "match_statistics": {
                 "total_ocr_records": len(sample_ocr_data),
                 "potential_matches": 0,
-                "cross_field_matches": 0
+                "cross_field_matches": 0  # Keep for compatibility but will be 0
             }
         }
 
         # Basic matching simulation
         default_keys = config.default_mapping_keys or []
-        cross_mappings = config.cross_field_mappings or {}
+        # cross_mappings = config.cross_field_mappings or {}  # Removed - cross-field mapping no longer supported
+        cross_mappings = {}  # Empty for compatibility
 
         for ocr_record in sample_ocr_data[:5]:  # Limit to first 5 for testing
             matches = []
@@ -5752,27 +5677,7 @@ def test_auto_mapping_config(
         raise HTTPException(status_code=500, detail=f"Failed to test auto-mapping config: {str(e)}")
 
 
-@app.get("/mapping-analytics", response_model=dict)
-def get_mapping_analytics(
-    company_id: Optional[int] = None,
-    db: Session = Depends(get_db)
-):
-    """Get mapping usage analytics"""
-    try:
-        from utils.mapping_key_recommender import MappingKeyRecommender
-
-        recommender = MappingKeyRecommender(db)
-        analytics = recommender.get_mapping_analytics(company_id)
-
-        return {
-            "company_id": company_id,
-            "analytics": analytics,
-            "generated_at": datetime.utcnow().isoformat()
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to get mapping analytics: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get analytics: {str(e)}")
+# NOTE: get_mapping_analytics endpoint removed - mapping key recommendation functionality no longer needed
 
 
 @app.get("/orders/{order_id}/download/mapped-csv")
@@ -6214,23 +6119,44 @@ def restart_mapping_processing(order_id: int, db: Session = Depends(get_db)):
 
         db.commit()
 
+        # Enhanced logging: Log order details before processing
+        logger.info(f"🚀 Order {order_id} mapping processing restarted - Enhanced logging enabled")
+        logger.info(f"   Order details: name='{order.order_name}', status='{order.status}', primary_doc_type_id={order.primary_doc_type_id}")
+        logger.info(f"   Mapping file: {order.mapping_file_path}")
+        logger.info(f"   Mapping keys: {order.mapping_keys}")
+        logger.info(f"   Final reports before restart: {order.final_report_paths}")
+
+        # Log template details if available
+        if order.primary_doc_type_id:
+            template_path = order.primary_doc_type.template_json_path if order.primary_doc_type else None
+            logger.info(f"   Template path: {template_path}")
+            logger.info(f"   Document type: {order.primary_doc_type.type_name if order.primary_doc_type else 'Unknown'}")
+
         # Trigger mapping processing
         from utils.order_processor import OrderProcessor
         processor = OrderProcessor()
+        logger.info(f"   OrderProcessor initialized, starting async processing...")
 
-        # Process asynchronously
+        # Process asynchronously with enhanced logging
         import asyncio
         def run_async():
+            logger.info(f"   Starting async processing for order {order_id}")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(processor.process_dynamic_mapping(order_id))
-            loop.close()
+            try:
+                loop.run_until_complete(processor.process_order_mapping_only(order_id))
+                logger.info(f"   Async processing completed for order {order_id}")
+            except Exception as e:
+                logger.error(f"   Async processing failed for order {order_id}: {str(e)}")
+                raise
+            finally:
+                loop.close()
 
         import threading
         thread = threading.Thread(target=run_async)
         thread.start()
 
-        logger.info(f"Order {order_id} mapping processing restarted")
+        logger.info(f"✅ Order {order_id} mapping processing restarted - background thread started")
         return {"message": "Mapping processing restarted successfully", "order_id": order_id, "status": "MAPPING"}
 
     except HTTPException:

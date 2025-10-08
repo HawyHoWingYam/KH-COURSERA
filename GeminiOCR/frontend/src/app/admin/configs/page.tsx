@@ -19,8 +19,7 @@ interface ConfigType {
     // Auto-mapping fields
     auto_mapping_enabled?: boolean;
     default_mapping_keys?: string[];
-    cross_field_mappings?: Record<string, string>;
-}
+    }
 // Get base URL and port from config
 const API_BASE_URL = '/api';
   
@@ -101,8 +100,7 @@ export default function ConfigsPage() {
         active: true,
         // Auto-mapping fields
         auto_mapping_enabled: false,
-        default_mapping_keys: [] as string[],
-        cross_field_mappings: {} as Record<string, string>
+        default_mapping_keys: [] as string[]
     });
 
     const [promptFile, setPromptFile] = useState<File | null>(null);
@@ -184,46 +182,7 @@ export default function ConfigsPage() {
         }));
     };
 
-    // Handle cross-field mapping changes
-    const handleCrossFieldMappingChange = (ocrField: string, mappingField: string, oldOcrField?: string) => {
-        setFormData(prev => {
-            const newMappings = { ...prev.cross_field_mappings };
-
-            // Remove old mapping if OCR field changed
-            if (oldOcrField && oldOcrField !== ocrField) {
-                delete newMappings[oldOcrField];
-            }
-
-            // Add or update mapping - keep the mapping even if mappingField is empty
-            if (ocrField) {
-                newMappings[ocrField] = mappingField || '';
-            }
-
-            return { ...prev, cross_field_mappings: newMappings };
-        });
-    };
-
-    // Add new cross-field mapping
-    const addCrossFieldMapping = () => {
-        const tempKey = `temp_${Date.now()}`;
-        setFormData(prev => ({
-            ...prev,
-            cross_field_mappings: {
-                ...prev.cross_field_mappings,
-                [tempKey]: ''
-            }
-        }));
-    };
-
-    // Remove cross-field mapping
-    const removeCrossFieldMapping = (ocrField: string) => {
-        setFormData(prev => {
-            const newMappings = { ...prev.cross_field_mappings };
-            delete newMappings[ocrField];
-            return { ...prev, cross_field_mappings: newMappings };
-        });
-    };
-
+    
     // Handle file selection
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, fileType: 'prompt' | 'schema') => {
         if (e.target.files && e.target.files[0]) {
@@ -242,8 +201,7 @@ export default function ConfigsPage() {
         // Load auto-mapping configuration
         let autoMappingData = {
             auto_mapping_enabled: false,
-            default_mapping_keys: [] as string[],
-            cross_field_mappings: {} as Record<string, string>
+            default_mapping_keys: [] as string[]
         };
 
         try {
@@ -263,65 +221,19 @@ export default function ConfigsPage() {
             active: config.active,
             // Auto-mapping fields
             auto_mapping_enabled: autoMappingData.auto_mapping_enabled || false,
-            default_mapping_keys: autoMappingData.default_mapping_keys || [],
-            cross_field_mappings: autoMappingData.cross_field_mappings || {}
+            default_mapping_keys: autoMappingData.default_mapping_keys || []
         });
         setIsCreating(false);
         setPromptFile(null);
         setSchemaFile(null);
     };
 
-    // Validate cross-field mappings before saving
-    const validateCrossFieldMappings = () => {
-        const invalidMappings: string[] = [];
-        const temporaryMappings: string[] = [];
-
-        Object.entries(formData.cross_field_mappings).forEach(([ocrField, mappingField]) => {
-            // Check for temporary keys
-            if (ocrField.startsWith('temp_')) {
-                temporaryMappings.push(ocrField);
-            }
-            // Check for empty fields
-            if (!ocrField.trim() || !mappingField.trim()) {
-                invalidMappings.push(`${ocrField || '[empty]'} → ${mappingField || '[empty]'}`);
-            }
-        });
-
-        return { invalidMappings, temporaryMappings };
-    };
-
-    // Clean cross-field mappings by removing temporary keys and empty mappings
-    const cleanCrossFieldMappings = (mappings: Record<string, string>) => {
-        const cleaned: Record<string, string> = {};
-
-        Object.entries(mappings).forEach(([ocrField, mappingField]) => {
-            // Only include mappings that are not temporary and have both fields filled
-            if (!ocrField.startsWith('temp_') && ocrField.trim() && mappingField.trim()) {
-                cleaned[ocrField.trim()] = mappingField.trim();
-            }
-        });
-
-        return cleaned;
-    };
-
+    
     // Handle form submission
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
 
         try {
-            // Validate cross-field mappings
-            const { invalidMappings, temporaryMappings } = validateCrossFieldMappings();
-
-            if (temporaryMappings.length > 0) {
-                setError('Please complete all cross-field mappings. Some fields are still incomplete.');
-                return;
-            }
-
-            if (invalidMappings.length > 0) {
-                setError(`Please complete the following cross-field mappings: ${invalidMappings.join(', ')}`);
-                return;
-            }
-
             const updatedFormData = { ...formData };
 
             // If files were uploaded, upload them first
@@ -364,12 +276,10 @@ export default function ConfigsPage() {
                     prompt_path, schema_path, active
                 });
 
-                // Update auto-mapping configuration with cleaned data
-                const cleanedCrossFieldMappings = cleanCrossFieldMappings(formData.cross_field_mappings);
+                // Update auto-mapping configuration
                 const autoMappingConfig = {
                     auto_mapping_enabled: formData.auto_mapping_enabled,
-                    default_mapping_keys: formData.default_mapping_keys,
-                    cross_field_mappings: cleanedCrossFieldMappings
+                    default_mapping_keys: formData.default_mapping_keys
                 };
 
                 const response = await fetch(`${API_BASE_URL}/companies/${editingConfig.company_id}/document-types/${editingConfig.doc_type_id}/auto-mapping-config`, {
@@ -390,12 +300,10 @@ export default function ConfigsPage() {
                 // Create new config
                 const created = await createConfig(updatedFormData);
 
-                // Set auto-mapping configuration for new config with cleaned data
-                const cleanedCrossFieldMappings = cleanCrossFieldMappings(formData.cross_field_mappings);
+                // Set auto-mapping configuration for new config
                 const autoMappingConfig = {
                     auto_mapping_enabled: formData.auto_mapping_enabled,
-                    default_mapping_keys: formData.default_mapping_keys,
-                    cross_field_mappings: cleanedCrossFieldMappings
+                    default_mapping_keys: formData.default_mapping_keys
                 };
 
                 const response = await fetch(`${API_BASE_URL}/companies/${formData.company_id}/document-types/${formData.doc_type_id}/auto-mapping-config`, {
@@ -755,8 +663,8 @@ export default function ConfigsPage() {
                                 </div>
                             )}
 
-                            {/* Cross-Field Mappings */}
-                            {formData.auto_mapping_enabled && (
+                            {/* Cross-Field Mappings functionality has been removed - system now uses only Default Mapping Keys */}
+                            {/* {formData.auto_mapping_enabled && (
                                 <div className="mb-4">
                                     <label className="block text-gray-700 mb-2">
                                         Cross-Field Mappings
@@ -822,7 +730,7 @@ export default function ConfigsPage() {
                                         </button>
                                     </div>
                                 </div>
-                            )}
+                            )} */}
                         </div>
 
                         <div className="flex items-center">

@@ -90,8 +90,13 @@ class SpecialCsvGenerator:
             elif column_type == "computed":
                 expression = definition.get("expression")
                 parsed_expression = self.expression_engine.parse_expression(expression)
+
+                # Merge standard_df with result_df to allow computed columns to reference
+                # both input columns AND previously-created template columns
+                merged_df = pd.concat([standard_df, result_df], axis=1)
+
                 result_df[column_name] = self._evaluate_computed_column(
-                    standard_df,
+                    merged_df,
                     parsed_expression,
                     default_value,
                     column_name,
@@ -141,12 +146,14 @@ class SpecialCsvGenerator:
 
     @staticmethod
     def _required_source_columns(column_definitions: Dict[str, Any]) -> List[str]:
+        """Extract columns that must exist in the INPUT DataFrame (not template-created columns)."""
         required: List[str] = []
         for definition in column_definitions.values():
+            # Only "source" type columns require input columns
             if definition.get("type") == "source" and definition.get("source_column"):
                 required.append(definition["source_column"])
-            elif definition.get("type") == "computed":
-                required.extend(extract_expression_variables(definition.get("expression")))
+            # Note: Computed columns can reference template-created columns,
+            # so we don't validate their variables against input DataFrame
         return list(dict.fromkeys(required))
 
     @staticmethod
