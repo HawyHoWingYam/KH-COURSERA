@@ -5323,18 +5323,20 @@ def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(g
         # Generate filename for download
         filename = f"order_{order_id}_item_{item_id}_{item.item_name or 'result'}.csv"
 
-        # Create temporary file to serve
+        # Create temporary file to serve with UTF-8 BOM for proper Chinese character encoding
         import tempfile
         import os
+        utf8_bom = b'\xef\xbb\xbf'
+        file_content_with_bom = utf8_bom + file_content
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
-            temp_file.write(file_content)
+            temp_file.write(file_content_with_bom)
             temp_file_path = temp_file.name
 
-        # Return file response
+        # Return file response with UTF-8 charset
         response = FileResponse(
             path=temp_file_path,
             filename=filename,
-            media_type="text/csv",
+            media_type="text/csv; charset=utf-8",
         )
 
         response.headers["X-File-Source"] = "S3"
