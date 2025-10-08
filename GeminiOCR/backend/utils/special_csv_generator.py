@@ -244,7 +244,7 @@ class SpecialCsvGenerator:
         def _compute(row: pd.Series) -> Any:
             context = row.to_dict()
             try:
-                value = self.expression_engine.evaluate(parsed_expression, context, default_value)
+                value = self.expression_engine.evaluate(parsed_expression, context, default_value, standard_df)
             except Exception as exc:
                 raise ValueError(
                     f"Failed to evaluate expression for column '{target_column}': {exc}"

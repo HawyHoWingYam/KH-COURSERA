@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union
@@ -9,6 +10,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 from simpleeval import SimpleEval
 
 from .template_service import extract_expression_variables
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -35,6 +38,10 @@ class ExpressionEngine:
             "strip": self._fn_trim,
             "if": self._fn_if,
             "iif": self._fn_if,
+            # Aggregate functions
+            "sum_matched": self._fn_sum_matched,
+            "count_matched": self._fn_count_matched,
+            "avg_matched": self._fn_avg_matched,
         }
         self.max_expression_length = max_expression_length
 
@@ -68,10 +75,14 @@ class ExpressionEngine:
         expression: Union[str, ParsedExpression],
         context: Dict[str, Any],
         default_value: Optional[Any] = None,
+        dataframe_context: Optional[Any] = None,
     ) -> Any:
         """Evaluate an expression against the provided context."""
 
         parsed = self.parse_expression(expression) if isinstance(expression, str) else expression
+
+        # Set DataFrame context for aggregate functions
+        self._current_dataframe = dataframe_context
 
         evaluator = SimpleEval()
         evaluator.names = {}
@@ -133,3 +144,73 @@ class ExpressionEngine:
     @staticmethod
     def _fn_if(condition: Any, true_value: Any, false_value: Any) -> Any:
         return true_value if condition else false_value
+
+    def _fn_sum_matched(self, column_name: str) -> float:
+        """Sum values from a column for all rows where Matched=True"""
+        # Access DataFrame from the global context set during evaluation
+        import sys
+        dataframe_context = getattr(self, '_current_dataframe', None)
+        logger.info(f"🔍 sum_matched: column={column_name}, DataFrame context available: {dataframe_context is not None}")
+
+        if dataframe_context is None:
+            logger.warning("⚠️ sum_matched: No DataFrame context available, returning 0.0")
+            return 0.0
+
+        try:
+            logger.info(f"🔍 sum_matched: DataFrame shape={dataframe_context.shape}, Matched column exists={'Matched' in dataframe_context.columns}")
+            if 'Matched' not in dataframe_context.columns:
+                logger.warning("⚠️ sum_matched: Matched column not found in DataFrame")
+                return 0.0
+
+            matched_count = (dataframe_context['Matched'] == True).sum()
+            logger.info(f"🔍 sum_matched: Found {matched_count} matched rows")
+
+            if matched_count == 0:
+                logger.warning("⚠️ sum_matched: No matched rows found, returning 0.0")
+                return 0.0
+
+            matched_rows = dataframe_context[dataframe_context['Matched'] == True]
+            logger.info(f"🔍 sum_matched: Target column '{column_name}' exists={column_name in matched_rows.columns}")
+
+            if column_name not in matched_rows.columns:
+                logger.warning(f"⚠️ sum_matched: Column '{column_name}' not found in DataFrame")
+                return 0.0
+
+            logger.info(f"🔍 sum_matched: Raw column values sample: {matched_rows[column_name].head().tolist()}")
+            column_values = matched_rows[column_name].astype(float)
+            logger.info(f"🔍 sum_matched: After conversion to float, values: {column_values.head().tolist()}")
+
+            result = column_values.sum()
+            logger.info(f"✅ sum_matched: Final result = {result}")
+            return result
+        except (KeyError, ValueError, TypeError) as e:
+            logger.error(f"❌ sum_matched: Error processing column '{column_name}': {e}")
+            return 0.0
+
+    def _fn_count_matched(self, column_name: str = None) -> int:
+        """Count rows where Matched=True (or count non-null values in specific column for matched rows)"""
+        dataframe_context = getattr(self, '_current_dataframe', None)
+        if dataframe_context is None:
+            return 0
+
+        try:
+            matched_rows = dataframe_context[dataframe_context['Matched'] == True]
+            if column_name:
+                return matched_rows[column_name].notna().sum()
+            else:
+                return len(matched_rows)
+        except (KeyError, ValueError, TypeError):
+            return 0
+
+    def _fn_avg_matched(self, column_name: str) -> float:
+        """Average values from a column for all rows where Matched=True"""
+        dataframe_context = getattr(self, '_current_dataframe', None)
+        if dataframe_context is None:
+            return 0.0
+
+        try:
+            matched_rows = dataframe_context[dataframe_context['Matched'] == True]
+            column_values = matched_rows[column_name].astype(float)
+            return column_values.mean()
+        except (KeyError, ValueError, TypeError):
+            return 0.0
