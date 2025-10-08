@@ -36,6 +36,29 @@ from config_loader import config_loader
 logger = logging.getLogger(__name__)
 
 
+def escape_excel_formulas(value: Any) -> Any:
+    """
+    Escape values that Excel might interpret as formulas.
+
+    This function prevents Excel from treating values starting with
+    formula characters (-, +, =, @) as formulas, which would cause
+    "#NAME?" errors in spreadsheet applications.
+
+    Args:
+        value: The value to check and potentially escape
+
+    Returns:
+        The original value with tab prefix if it starts with formula characters,
+        otherwise the original value unchanged
+    """
+    if isinstance(value, str) and value:
+        # Characters that Excel interprets as formula starters
+        if value.startswith(('-', '+', '=', '@')):
+            logger.debug(f"🔧 Escaping Excel formula-like value: {value}")
+            return f"\t{value}"  # Prefix with tab to prevent formula interpretation
+    return value
+
+
 class MatchingStrategy(Enum):
     """Matching strategy options for intelligent field matching"""
     EXACT = "exact"          # Exact match only
@@ -1672,9 +1695,13 @@ class OrderProcessor:
 
             logger.info(f"Special CSV generated successfully - Output shape: {special_df.shape}, columns: {list(special_df.columns)}")
 
-            # Step 4: Prepare and upload file
+            # Step 4: Apply Excel formula escaping and prepare file
+            escaped_df = special_df.copy()
+            for column in escaped_df.columns:
+                escaped_df[column] = escaped_df[column].apply(escape_excel_formulas)
+
             special_key = f"{s3_base}/order_{order_id}_special_v{template_version}.csv"
-            special_csv_content = special_df.to_csv(index=False)
+            special_csv_content = escaped_df.to_csv(index=False)
 
             logger.info(f"Uploading special CSV to S3: {special_key}")
             upload_success = self.s3_manager.upload_file(
@@ -2209,9 +2236,14 @@ class OrderProcessor:
                     order_id,
                 )
 
-            # Create CSV content with clean business format
+            # Create CSV content with Excel formula escaping
             try:
-                csv_content = df.to_csv(index=False)
+                # Apply formula escaping to prevent Excel #NAME? errors
+                escaped_df = df.copy()
+                for column in escaped_df.columns:
+                    escaped_df[column] = escaped_df[column].apply(escape_excel_formulas)
+
+                csv_content = escaped_df.to_csv(index=False)
                 csv_s3_key = f"{s3_base}/order_{order_id}_mapped.csv"
                 csv_upload_success = self.s3_manager.upload_file(csv_content.encode('utf-8'), csv_s3_key)
 

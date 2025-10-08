@@ -62,7 +62,12 @@ from utils.template_service import (
 from utils.prompt_schema_manager import get_prompt_schema_manager, load_prompt_and_schema
 from utils.company_file_manager import FileType
 from utils.force_delete_manager import ForceDeleteManager
-from utils.order_processor import start_order_processing, start_order_ocr_only_processing, start_order_mapping_only_processing
+from utils.order_processor import (
+    start_order_processing,
+    start_order_ocr_only_processing,
+    start_order_mapping_only_processing,
+    escape_excel_formulas
+)
 
 # Cost allocation imports
 from cost_allocation.dynamic_mapping_processor import process_dynamic_mapping_file
@@ -5323,11 +5328,27 @@ def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(g
         # Generate filename for download
         filename = f"order_{order_id}_item_{item_id}_{item.item_name or 'result'}.csv"
 
-        # Create temporary file to serve with UTF-8 BOM for proper Chinese character encoding
+        # Apply Excel formula escaping and create temporary file with UTF-8 BOM
         import tempfile
         import os
-        utf8_bom = b'\xef\xbb\xbf'
-        file_content_with_bom = utf8_bom + file_content
+        import pandas as pd
+        from io import StringIO
+
+        # Parse CSV, apply formula escaping, and recreate with BOM
+        try:
+            df = pd.read_csv(StringIO(file_content.decode('utf-8')))
+            for column in df.columns:
+                df[column] = df[column].apply(escape_excel_formulas)
+
+            # Recreate CSV with escaped content
+            escaped_csv_content = df.to_csv(index=False)
+            file_content_with_bom = b'\xef\xbb\xbf' + escaped_csv_content.encode('utf-8')
+        except Exception as parse_error:
+            logger.warning(f"Failed to parse CSV for formula escaping, using original: {parse_error}")
+            # Fallback to original content if parsing fails
+            utf8_bom = b'\xef\xbb\xbf'
+            file_content_with_bom = utf8_bom + file_content
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
             temp_file.write(file_content_with_bom)
             temp_file_path = temp_file.name
