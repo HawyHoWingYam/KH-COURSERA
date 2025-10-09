@@ -66,6 +66,32 @@ services:
         max-size: "5m"
         max-file: "3"
 
+  # Database migration job (runs Alembic before backend starts)
+  db-migrate:
+    build:
+      context: .
+      dockerfile: ./docker/backend.Dockerfile
+      args:
+        - BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+        - VCS_REF=$(git rev-parse --short HEAD)
+    container_name: gemini-db-migrate
+    restart: "no"
+    command: ["sh", "-c", "echo 'Running Alembic migrations...' && alembic upgrade head && echo 'Alembic migrations complete.'"]
+    volumes:
+      - ./env:/app/env:ro
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - gemini-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
   # 后端服务
   backend:
     build:
@@ -94,6 +120,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

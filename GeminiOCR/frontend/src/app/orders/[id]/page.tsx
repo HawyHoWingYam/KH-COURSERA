@@ -3,15 +3,26 @@
 import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
+import { DocumentType } from '@/lib/api';
 
 interface Company {
   company_id: number;
   company_name: string;
 }
 
-interface DocumentType {
+interface PrimaryDocTypeInfo {
   doc_type_id: number;
   type_name: string;
+  type_code: string;
+  template_json_path: string | null;
+  template_version?: string | null;
+  has_template?: boolean;
+}
+
+interface OrderFinalReportPaths {
+  mapped_csv?: string;
+  special_csv?: string;
+  [key: string]: string | undefined;
 }
 
 interface OrderItem {
@@ -43,7 +54,9 @@ interface Order {
   failed_items: number;
   mapping_file_path: string | null;
   mapping_keys: string[] | null;
-  final_report_paths: any | null;
+  primary_doc_type_id: number | null;
+  primary_doc_type: PrimaryDocTypeInfo | null;
+  final_report_paths: OrderFinalReportPaths | null;
   error_message: string | null;
   items: OrderItem[];
   created_at: string;
@@ -90,17 +103,12 @@ export default function OrderDetailsPage() {
   const [isUpdatingMappingKeys, setIsUpdatingMappingKeys] = useState(false);
   const [isStartingMapping, setIsStartingMapping] = useState(false);
 
-  // Per-item Mapping State
-  const [itemCsvHeaders, setItemCsvHeaders] = useState<{[key: number]: string[]}>({});
-  const [itemMappingKeys, setItemMappingKeys] = useState<{[key: number]: string[]}>({});
-  const [loadingItemHeaders, setLoadingItemHeaders] = useState<{[key: number]: boolean}>({});
-  const [savingItemMapping, setSavingItemMapping] = useState<{[key: number]: boolean}>({});
-
-  // Smart Recommendations State
-  const [smartRecommendations, setSmartRecommendations] = useState<{[key: number]: any[]}>({});
-  const [loadingRecommendations, setLoadingRecommendations] = useState<{[key: number]: boolean}>({});
-  const [orderLevelSuggestions, setOrderLevelSuggestions] = useState<any[]>([]);
-  const [loadingOrderSuggestions, setLoadingOrderSuggestions] = useState(false);
+  
+  // Smart Recommendations functionality has been removed
+  // const [smartRecommendations, setSmartRecommendations] = useState<{[key: number]: any[]}>({});
+  // const [loadingRecommendations, setLoadingRecommendations] = useState<{[key: number]: boolean}>({});
+  // const [orderLevelSuggestions, setOrderLevelSuggestions] = useState<any[]>([]);
+  // const [loadingOrderSuggestions, setLoadingOrderSuggestions] = useState(false);
 
   // Order Management State
   const [isLockingOrder, setIsLockingOrder] = useState(false);
@@ -116,7 +124,7 @@ export default function OrderDetailsPage() {
 
   const loadOrder = async () => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}`);
+      const response = await fetch(`/api/orders/${orderId}`);
       if (!response.ok) {
         throw new Error('Failed to fetch order');
       }
@@ -146,7 +154,7 @@ export default function OrderDetailsPage() {
 
   const loadCompanies = async () => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/companies`);
+      const response = await fetch(`/api/companies`);
       if (!response.ok) throw new Error('Failed to fetch companies');
       const data = await response.json();
       setCompanies(data);
@@ -157,7 +165,7 @@ export default function OrderDetailsPage() {
 
   const loadDocumentTypes = async () => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/document-types`);
+      const response = await fetch(`/api/document-types`);
       if (!response.ok) throw new Error('Failed to fetch document types');
       const data = await response.json();
       setDocumentTypes(data);
@@ -168,7 +176,7 @@ export default function OrderDetailsPage() {
 
   const loadMappingHeaders = async () => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/mapping-headers`);
+      const response = await fetch(`/api/orders/${orderId}/mapping-headers`);
       if (!response.ok) throw new Error('Failed to fetch mapping headers');
       const data = await response.json();
       setMappingHeaders(data.sheet_headers);
@@ -185,7 +193,7 @@ export default function OrderDetailsPage() {
 
     setIsAddingItem(true);
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items`, {
+      const response = await fetch(`/api/orders/${orderId}/items`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -226,7 +234,7 @@ export default function OrderDetailsPage() {
         formData.append('files', file);
       });
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}/files`, {
+      const response = await fetch(`/api/orders/${orderId}/items/${itemId}/files`, {
         method: 'POST',
         body: formData,
       });
@@ -257,7 +265,7 @@ export default function OrderDetailsPage() {
     setDeletingFiles(prev => ({ ...prev, [deleteKey]: true }));
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}/files/${fileId}`, {
+      const response = await fetch(`/api/orders/${orderId}/items/${itemId}/files/${fileId}`, {
         method: 'DELETE',
       });
 
@@ -286,7 +294,7 @@ export default function OrderDetailsPage() {
     setDeletingItems(prev => ({ ...prev, [itemId]: true }));
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}`, {
+      const response = await fetch(`/api/orders/${orderId}/items/${itemId}`, {
         method: 'DELETE',
       });
 
@@ -309,7 +317,7 @@ export default function OrderDetailsPage() {
     setDownloadingFiles(prev => ({ ...prev, [downloadKey]: true }));
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}/download/${format}`);
+      const response = await fetch(`/api/orders/${orderId}/items/${itemId}/download/${format}`);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -357,7 +365,7 @@ export default function OrderDetailsPage() {
       const formData = new FormData();
       formData.append('mapping_file', mappingFile);
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/mapping-file`, {
+      const response = await fetch(`/api/orders/${orderId}/mapping-file`, {
         method: 'POST',
         body: formData,
       });
@@ -386,7 +394,7 @@ export default function OrderDetailsPage() {
 
     setIsDeletingMapping(true);
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/mapping-file`, {
+      const response = await fetch(`/api/orders/${orderId}/mapping-file`, {
         method: 'DELETE',
       });
 
@@ -412,7 +420,7 @@ export default function OrderDetailsPage() {
     setIsUpdatingMappingKeys(true);
     setError('');
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}`, {
+      const response = await fetch(`/api/orders/${orderId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -447,7 +455,7 @@ export default function OrderDetailsPage() {
         await updateMappingKeys();
       }
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/submit`, {
+      const response = await fetch(`/api/orders/${orderId}/submit`, {
         method: 'POST',
       });
 
@@ -465,7 +473,7 @@ export default function OrderDetailsPage() {
 
   const startOcrOnlyProcessing = async () => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/process-ocr-only`, {
+      const response = await fetch(`/api/orders/${orderId}/process-ocr-only`, {
         method: 'POST',
       });
 
@@ -490,7 +498,7 @@ export default function OrderDetailsPage() {
         await updateMappingKeys();
       }
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/process-mapping`, {
+      const response = await fetch(`/api/orders/${orderId}/process-mapping`, {
         method: 'POST',
       });
 
@@ -512,87 +520,22 @@ export default function OrderDetailsPage() {
     }
   };
 
-  const loadItemCsvHeaders = async (itemId: number) => {
-    setLoadingItemHeaders(prev => ({ ...prev, [itemId]: true }));
-    try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}/csv-headers`);
-      if (!response.ok) {
-        throw new Error('Failed to fetch item CSV headers');
-      }
-      const data = await response.json();
-      setItemCsvHeaders(prev => ({ ...prev, [itemId]: data.csv_headers }));
-      setItemMappingKeys(prev => ({ ...prev, [itemId]: data.current_mapping_keys || [] }));
-
-      // Load smart recommendations for this item
-      await loadSmartRecommendations(itemId, data.csv_headers);
-    } catch (error) {
-      console.error('Error loading item CSV headers:', error);
-      setError('Failed to load CSV headers for item');
-    } finally {
-      setLoadingItemHeaders(prev => ({ ...prev, [itemId]: false }));
-    }
-  };
-
+  
+  // Smart recommendations functionality has been removed
   const loadSmartRecommendations = async (itemId: number, csvHeaders?: string[]) => {
-    if (!order?.items) return;
-
-    const item = order.items.find(item => item.item_id === itemId);
-    if (!item) return;
-
-    setLoadingRecommendations(prev => ({ ...prev, [itemId]: true }));
-    try {
-      let apiUrl = `${process.env.NEXT_PUBLIC_API_URL}/companies/${item.company_id}/document-types/${item.doc_type_id}/suggested-mapping-keys?limit=5`;
-
-      // If csvHeaders are provided, include them in the request
-      if (csvHeaders && csvHeaders.length > 0) {
-        const csvHeadersParam = csvHeaders.join(',');
-        apiUrl += `&csv_headers=${encodeURIComponent(csvHeadersParam)}`;
-      }
-
-      const response = await fetch(apiUrl);
-
-      if (!response.ok) {
-        throw new Error('Failed to fetch smart recommendations');
-      }
-
-      const data = await response.json();
-      setSmartRecommendations(prev => ({ ...prev, [itemId]: data.suggestions || [] }));
-    } catch (error) {
-      console.error('Error loading smart recommendations:', error);
-      // Don't set error state for recommendations as it's not critical
-    } finally {
-      setLoadingRecommendations(prev => ({ ...prev, [itemId]: false }));
-    }
+    // This functionality has been removed - mapping key recommender is no longer available
+    console.log('Mapping key recommender functionality has been removed');
   };
 
   const loadOrderLevelSuggestions = async () => {
-    if (!order?.items || order.items.length === 0) return;
-
-    setLoadingOrderSuggestions(true);
-    try {
-      // Use the first item's company and document type for order-level suggestions
-      const firstItem = order.items[0];
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/companies/${firstItem.company_id}/document-types/${firstItem.doc_type_id}/suggested-mapping-keys?limit=3`
-      );
-
-      if (response.ok) {
-        const data = await response.json();
-        setOrderLevelSuggestions(data.suggestions || []);
-      }
-    } catch (error) {
-      console.error('Error loading order-level suggestions:', error);
-    } finally {
-      setLoadingOrderSuggestions(false);
-    }
+    // This functionality has been removed - mapping key recommender is no longer available
+    console.log('Order-level suggestions functionality has been removed');
+    // setLoadingOrderSuggestions(false); // Commented out as state is removed
   };
 
+  // Smart recommendation functionality has been removed
   const applySmartRecommendation = (itemId: number, recommendedKey: string, keyIndex: number) => {
-    setItemMappingKeys(prev => {
-      const currentKeys = [...(prev[itemId] || [])];
-      currentKeys[keyIndex] = recommendedKey;
-      return { ...prev, [itemId]: currentKeys };
-    });
+    console.log('Smart recommendation functionality has been removed');
   };
 
   const applyOrderLevelSuggestion = (keyIndex: number, suggestedKey: string) => {
@@ -603,70 +546,22 @@ export default function OrderDetailsPage() {
     });
   };
 
-  const saveItemMappingKeys = async (itemId: number) => {
-    setSavingItemMapping(prev => ({ ...prev, [itemId]: true }));
-    try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/items/${itemId}/mapping-keys`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          mapping_keys: itemMappingKeys[itemId] || []
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to update item mapping keys');
-      }
-
-      // Refresh the order to show updated mapping keys
-      loadOrder();
-    } catch (error) {
-      console.error('Error saving item mapping keys:', error);
-      setError('Failed to save item mapping keys');
-    } finally {
-      setSavingItemMapping(prev => ({ ...prev, [itemId]: false }));
-    }
-  };
-
-  const updateItemMappingKey = (itemId: number, keyIndex: number, value: string) => {
-    setItemMappingKeys(prev => {
-      const currentKeys = [...(prev[itemId] || [])];
-      if (value) {
-        // Ensure we have enough slots in the array
-        while (currentKeys.length <= keyIndex) {
-          currentKeys.push('');
-        }
-        currentKeys[keyIndex] = value;
-        // Remove empty trailing elements to keep array clean
-        while (currentKeys.length > 0 && currentKeys[currentKeys.length - 1] === '') {
-          currentKeys.pop();
-        }
-      } else {
-        // Clear the value at this index
-        if (keyIndex < currentKeys.length) {
-          currentKeys[keyIndex] = '';
-          // Remove empty trailing elements
-          while (currentKeys.length > 0 && currentKeys[currentKeys.length - 1] === '') {
-            currentKeys.pop();
-          }
-        }
-      }
-      return { ...prev, [itemId]: currentKeys };
-    });
-  };
-
-  const downloadFinalMappedResults = async (format: 'csv' | 'excel') => {
-    const downloadKey = `final-${format}`;
+  
+  
+  const downloadFinalMappedResults = async (format: 'csv' | 'special-csv') => {
+    const downloadKey = format === 'special-csv' ? 'final-special-csv' : `final-${format}`;
     setDownloadingFiles(prev => ({ ...prev, [downloadKey]: true }));
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/download/mapped-${format}`);
+      const endpoint = format === 'special-csv' ? 'special-csv' : `mapped-${format}`;
+      const response = await fetch(`/api/orders/${orderId}/download/${endpoint}`);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `Failed to download final ${format.toUpperCase()} results`);
+        throw new Error(
+          errorData.detail ||
+            `Failed to download final ${format === 'special-csv' ? 'special CSV' : format.toUpperCase()} results`
+        );
       }
 
       // Create download link
@@ -677,7 +572,9 @@ export default function OrderDetailsPage() {
 
       // Get filename from response headers or create default
       const contentDisposition = response.headers.get('content-disposition');
-      let filename = `order_${orderId}_mapped_results.${format === 'excel' ? 'xlsx' : 'csv'}`;
+      let filename = format === 'special-csv'
+        ? `order_${orderId}_special.csv`
+        : `order_${orderId}_mapped_results.csv`;
 
       if (contentDisposition) {
         const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
@@ -696,7 +593,11 @@ export default function OrderDetailsPage() {
 
     } catch (error) {
       console.error(`Error downloading final ${format} results:`, error);
-      setError(error instanceof Error ? error.message : `Failed to download final ${format.toUpperCase()} results`);
+      setError(
+        error instanceof Error
+          ? error.message
+          : `Failed to download final ${format === 'special-csv' ? 'special CSV' : format.toUpperCase()} results`
+      );
     } finally {
       setDownloadingFiles(prev => ({ ...prev, [downloadKey]: false }));
     }
@@ -711,7 +612,7 @@ export default function OrderDetailsPage() {
     setIsLockingOrder(true);
     setError('');
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/lock`, {
+      const response = await fetch(`/api/orders/${orderId}/lock`, {
         method: 'POST',
       });
 
@@ -739,7 +640,7 @@ export default function OrderDetailsPage() {
     setIsUnlockingOrder(true);
     setError('');
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/unlock`, {
+      const response = await fetch(`/api/orders/${orderId}/unlock`, {
         method: 'POST',
       });
 
@@ -767,7 +668,7 @@ export default function OrderDetailsPage() {
     setIsRestartingOcr(true);
     setError('');
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/restart-ocr`, {
+      const response = await fetch(`/api/orders/${orderId}/restart-ocr`, {
         method: 'POST',
       });
 
@@ -795,7 +696,7 @@ export default function OrderDetailsPage() {
     setIsRestartingMapping(true);
     setError('');
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/orders/${orderId}/restart-mapping`, {
+      const response = await fetch(`/api/orders/${orderId}/restart-mapping`, {
         method: 'POST',
       });
 
@@ -867,6 +768,15 @@ export default function OrderDetailsPage() {
     );
   }
 
+  // Helper functions to determine processing state
+  const hasDoneOcr = (status: string) => {
+    return status === 'OCR_COMPLETED' || status === 'MAPPING' || status === 'COMPLETED' || status === 'FAILED';
+  };
+
+  const hasDoneMapping = (status: string) => {
+    return status === 'COMPLETED' || status === 'FAILED';
+  };
+
   const isLocked = order.status === 'LOCKED';
   const canEdit = order.status === 'DRAFT' && !isLocked;
   const canSubmit = order.status === 'DRAFT' && order.total_items > 0 && !isLocked;
@@ -874,12 +784,12 @@ export default function OrderDetailsPage() {
   // Use selectedMappingKeys (current user selection) if available, otherwise use saved mapping_keys
   const effectiveMappingKeys = selectedMappingKeys.length > 0 ? selectedMappingKeys : (order.mapping_keys || []);
   const canStartFullProcess = order.status === 'DRAFT' && order.total_items > 0 && order.mapping_file_path && effectiveMappingKeys.length > 0 && !isLocked;
-  const canStartMapping = (order.status === 'OCR_COMPLETED' || order.status === 'MAPPING' || order.status === 'COMPLETED') && order.mapping_file_path && effectiveMappingKeys.length > 0 && !isLocked;
+  const canStartMapping = hasDoneOcr(order.status) && order.mapping_file_path && effectiveMappingKeys.length > 0 && !isLocked && !hasDoneMapping(order.status);
   const canConfigureMapping = (order.status === 'DRAFT' || order.status === 'OCR_COMPLETED' || order.status === 'COMPLETED' || order.status === 'MAPPING') && !isLocked;
   const canLock = !isLocked && (order.status === 'COMPLETED' || order.status === 'OCR_COMPLETED' || order.status === 'FAILED');
   const canUnlock = isLocked;
-  const canRestartOcr = !isLocked && (order.status === 'OCR_COMPLETED' || order.status === 'COMPLETED' || order.status === 'FAILED');
-  const canRestartMapping = !isLocked && (order.status === 'COMPLETED' || order.status === 'FAILED') && order.mapping_file_path;
+  const canRestartOcr = !isLocked && hasDoneOcr(order.status);
+  const canRestartMapping = !isLocked && hasDoneMapping(order.status) && order.mapping_file_path;
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -960,7 +870,7 @@ export default function OrderDetailsPage() {
               className="bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded font-medium"
               title="Start OCR processing with mapping (requires mapping file and keys)"
             >
-              OCR + 映射处理
+              OCR & Mapping
             </button>
           )}
           {canStartMapping && (
@@ -975,6 +885,23 @@ export default function OrderDetailsPage() {
           )}
         </div>
       </div>
+
+      {order.primary_doc_type && (
+        <div className="mb-6 text-sm text-gray-600">
+          Primary Document Type:{' '}
+          <span className="font-medium text-gray-900">
+            {order.primary_doc_type.type_name} ({order.primary_doc_type.type_code})
+          </span>
+          {order.primary_doc_type.template_json_path ? (
+            <span className="ml-2 text-xs text-green-600">
+              Template configured
+              {order.primary_doc_type.template_version ? ` (v${order.primary_doc_type.template_version})` : ''}
+            </span>
+          ) : (
+            <span className="ml-2 text-xs text-gray-500">No template uploaded</span>
+          )}
+        </div>
+      )}
 
       {error && (
         <div className={`border-l-4 p-4 mb-6 ${
@@ -1040,6 +967,52 @@ export default function OrderDetailsPage() {
             <div className="text-2xl font-bold">
               {order.total_items > 0 ? Math.round((order.completed_items / order.total_items) * 100) : 0}%
             </div>
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-4 md:grid-cols-2">
+          <div>
+            <div className="text-sm text-gray-500">Primary Document Type</div>
+            <div className="mt-1 text-base font-medium text-gray-900">
+              {order.primary_doc_type
+                ? `${order.primary_doc_type.type_name} (${order.primary_doc_type.type_code})`
+                : 'Not selected'}
+            </div>
+            {order.primary_doc_type ? (
+              order.primary_doc_type.template_json_path ? (
+                <div className="mt-1 text-xs text-green-600">
+                  Template configured
+                  {order.primary_doc_type.template_version
+                    ? ` (v${order.primary_doc_type.template_version})`
+                    : ''}
+                </div>
+              ) : (
+                <div className="mt-1 text-xs text-gray-500">
+                  No template uploaded; special CSV export will be skipped.
+                </div>
+              )
+            ) : (
+              <div className="mt-1 text-xs text-gray-500">
+                Select a primary document type when creating an order to enable template-driven outputs.
+              </div>
+            )}
+          </div>
+          <div>
+            <div className="text-sm text-gray-500">Special CSV</div>
+            <div className="mt-1 text-base font-medium text-gray-900">
+              {order.final_report_paths?.special_csv ? 'Ready for download' : 'Not generated'}
+            </div>
+            {order.final_report_paths?.special_csv ? (
+              <div className="mt-1 text-xs text-green-600">
+                Generated using the configured template.
+              </div>
+            ) : (
+              <div className="mt-1 text-xs text-gray-500">
+                {order.primary_doc_type?.template_json_path
+                  ? 'Special CSV will become available after mapping completes.'
+                  : 'Upload a template for the primary document type to produce a special CSV.'}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1174,112 +1147,7 @@ export default function OrderDetailsPage() {
                   </div>
                 )}
 
-                {/* Per-Item Mapping Configuration - Show for completed items with CSV results */}
-                {item.status === 'COMPLETED' && item.ocr_result_csv_path && (
-                  <div className="mt-4 pt-3 border-t border-gray-200">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="text-sm font-medium text-gray-700">Item Mapping Keys:</div>
-                      <div className="flex items-center gap-2">
-                        {/* Smart Recommendations Button */}
-                        {!smartRecommendations[item.item_id] && (
-                          <button
-                            onClick={() => loadSmartRecommendations(item.item_id)}
-                            disabled={loadingRecommendations[item.item_id]}
-                            className="bg-yellow-100 hover:bg-yellow-200 disabled:bg-gray-200 text-yellow-700 disabled:text-gray-500 py-1 px-3 rounded text-xs font-medium"
-                            title="Get AI-powered mapping key suggestions"
-                          >
-                            {loadingRecommendations[item.item_id] ? '🔮 Loading...' : '🔮 Smart Suggest'}
-                          </button>
-                        )}
-                        {!itemCsvHeaders[item.item_id] && (
-                          <button
-                            onClick={() => loadItemCsvHeaders(item.item_id)}
-                            disabled={loadingItemHeaders[item.item_id]}
-                            className="bg-purple-100 hover:bg-purple-200 disabled:bg-gray-200 text-purple-700 disabled:text-gray-500 py-1 px-3 rounded text-sm font-medium"
-                          >
-                            {loadingItemHeaders[item.item_id] ? 'Loading...' : 'Configure Mapping'}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Smart Recommendations Display */}
-                    {smartRecommendations[item.item_id] && smartRecommendations[item.item_id].length > 0 && (
-                      <div className="bg-yellow-50 border border-yellow-200 p-3 rounded mb-3">
-                        <div className="text-sm font-medium text-yellow-800 mb-2">🔮 AI Recommendations:</div>
-                        <div className="space-y-2">
-                          {smartRecommendations[item.item_id].map((rec, index) => (
-                            <div key={index} className="flex items-center justify-between bg-white p-2 rounded border border-yellow-200">
-                              <div className="flex-1">
-                                <div className="text-sm font-medium text-gray-800">{rec.key}</div>
-                                <div className="text-xs text-gray-600">
-                                  {rec.reason} (信心度: {(rec.confidence * 100).toFixed(0)}%)
-                                </div>
-                              </div>
-                              <button
-                                onClick={() => applySmartRecommendation(item.item_id, rec.key, rec.priority - 1)}
-                                className="bg-yellow-500 hover:bg-yellow-600 text-white py-1 px-2 rounded text-xs font-medium"
-                                title={`Apply as mapping key ${rec.priority}`}
-                              >
-                                Apply Key {rec.priority}
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {itemCsvHeaders[item.item_id] && (
-                      <div className="bg-gray-50 p-3 rounded">
-                        <div className="text-xs text-gray-600 mb-3">
-                          Available columns: {itemCsvHeaders[item.item_id].join(', ')}
-                        </div>
-                        <div className="space-y-2">
-                          {[1, 2, 3].map((keyNum) => (
-                            <div key={keyNum} className="flex items-center gap-2">
-                              <span className="text-sm font-medium w-16">Key {keyNum}:</span>
-                              <select
-                                value={itemMappingKeys[item.item_id]?.[keyNum - 1] || ''}
-                                onChange={(e) => updateItemMappingKey(item.item_id, keyNum - 1, e.target.value)}
-                                className="border border-gray-300 rounded px-2 py-1 text-sm flex-1"
-                                disabled={!canConfigureMapping}
-                              >
-                                <option value="">Select column...</option>
-                                {itemCsvHeaders[item.item_id].map((header, index) => (
-                                  <option key={index} value={header}>{header}</option>
-                                ))}
-                              </select>
-                            </div>
-                          ))}
-                        </div>
-                        {canConfigureMapping && itemMappingKeys[item.item_id]?.some(key => key && key.trim() !== '') && (
-                          <div className="mt-3">
-                            <button
-                              onClick={() => saveItemMappingKeys(item.item_id)}
-                              disabled={savingItemMapping[item.item_id]}
-                              className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white py-1 px-3 rounded text-sm font-medium"
-                            >
-                              {savingItemMapping[item.item_id] ? 'Saving...' : 'Save Item Mapping Keys'}
-                            </button>
-                          </div>
-                        )}
-                        {item.mapping_keys && item.mapping_keys.length > 0 && (
-                          <div className="mt-2">
-                            <div className="text-xs text-gray-600">Current keys:</div>
-                            <div className="flex gap-1 mt-1">
-                              {item.mapping_keys.map((key, index) => (
-                                <span key={index} className="bg-purple-100 text-purple-800 px-2 py-1 rounded text-xs">
-                                  {index + 1}. {key}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-
+                
                 {item.error_message && (
                   <div className="mt-2 text-sm text-red-600">
                     Error: {item.error_message}
@@ -1343,49 +1211,9 @@ export default function OrderDetailsPage() {
           </div>
         )}
 
-        {/* Order-Level Smart Recommendations */}
-        {mappingHeaders && order.items.some(item => item.status === 'COMPLETED') && !orderLevelSuggestions && (
-          <div className="mb-4">
-            <button
-              onClick={() => loadOrderLevelSuggestions()}
-              disabled={loadingOrderSuggestions}
-              className="bg-green-100 hover:bg-green-200 disabled:bg-gray-200 text-green-700 disabled:text-gray-500 py-2 px-4 rounded text-sm font-medium flex items-center gap-2"
-              title="Get AI suggestions based on completed order items"
-            >
-              {loadingOrderSuggestions ? (
-                <>🔮 Loading Order Suggestions...</>
-              ) : (
-                <>🔮 Get Smart Order-Level Suggestions</>
-              )}
-            </button>
-          </div>
-        )}
+        {/* Order-Level Smart Recommendations functionality has been removed */}
 
-        {/* Display Order-Level Smart Recommendations */}
-        {orderLevelSuggestions && orderLevelSuggestions.length > 0 && (
-          <div className="bg-green-50 border border-green-200 p-4 rounded mb-4">
-            <div className="text-sm font-medium text-green-800 mb-3">🔮 Order-Level AI Recommendations:</div>
-            <div className="space-y-2 mb-4">
-              {orderLevelSuggestions.map((rec, index) => (
-                <div key={index} className="flex items-center justify-between bg-white p-2 rounded border border-green-200">
-                  <div className="flex-1">
-                    <div className="text-sm font-medium text-gray-800">{rec.key}</div>
-                    <div className="text-xs text-gray-600">
-                      {rec.reason} (信心度: {(rec.confidence * 100).toFixed(0)}%)
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => applyOrderLevelSuggestion(rec.key, rec.priority - 1)}
-                    className="bg-green-500 hover:bg-green-600 text-white py-1 px-2 rounded text-xs font-medium"
-                    title={`Apply as order mapping key ${rec.priority}`}
-                  >
-                    Apply Key {rec.priority}
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* Order-Level Smart Recommendations display functionality has been removed */}
 
         {mappingHeaders && (
           <div>
@@ -1460,7 +1288,10 @@ export default function OrderDetailsPage() {
       </div>
 
       {/* Final Mapped Results Section - Show only for completed orders with mapped results */}
-      {order.status === 'COMPLETED' && order.final_report_paths && (order.final_report_paths.mapped_csv || order.final_report_paths.mapped_excel) && (
+      {order.status === 'COMPLETED' && (
+        order.final_report_paths?.mapped_csv ||
+        order.final_report_paths?.special_csv
+      ) && (
         <div className="bg-white rounded-lg shadow p-6 mb-8">
           <div className="mb-4">
             <h2 className="text-lg font-semibold text-green-600">📊 Final Mapped Results</h2>
@@ -1484,7 +1315,7 @@ export default function OrderDetailsPage() {
             </div>
 
             <div className="flex items-center gap-3">
-              {order.final_report_paths.mapped_csv && (
+              {order.final_report_paths?.mapped_csv && (
                 <button
                   onClick={() => downloadFinalMappedResults('csv')}
                   disabled={downloadingFiles['final-csv']}
@@ -1501,26 +1332,21 @@ export default function OrderDetailsPage() {
                 </button>
               )}
 
-              {order.final_report_paths.mapped_excel && (
+        
+              {order.final_report_paths?.special_csv && (
                 <button
-                  onClick={() => downloadFinalMappedResults('excel')}
-                  disabled={downloadingFiles['final-excel']}
-                  className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white py-2 px-4 rounded font-medium flex items-center gap-2"
-                  title="Download final mapped results as Excel (includes analysis sheets)"
+                  onClick={() => downloadFinalMappedResults('special-csv')}
+                  disabled={downloadingFiles['final-special-csv']}
+                  className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white py-2 px-4 rounded font-medium flex items-center gap-2"
+                  title="Download template-driven special CSV output"
                 >
-                  {downloadingFiles['final-excel'] ? (
-                    'Downloading...'
-                  ) : (
-                    <>
-                      📈 Download Excel Report
-                    </>
-                  )}
+                  {downloadingFiles['final-special-csv'] ? 'Downloading...' : '✨ Download Special CSV'}
                 </button>
               )}
             </div>
 
             <div className="mt-3 text-xs text-green-600">
-              💡 The Excel report includes multiple sheets: Mapped Results, Matched Records, Unmatched Records, and Summary analysis.
+              💡 CSV delivers the raw mapped dataset, Excel provides analytics worksheets, and Special CSV applies template-defined formatting.
             </div>
           </div>
         </div>

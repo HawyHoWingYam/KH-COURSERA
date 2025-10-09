@@ -10,13 +10,14 @@ from fastapi import (
     Query,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse, Response
+from fastapi.responses import JSONResponse, FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
 import shutil
 import tempfile
+import io
 import zipfile
 from datetime import datetime, timedelta
 import json
@@ -50,10 +51,23 @@ from main import extract_text_from_image, extract_text_from_pdf
 from utils.excel_converter import json_to_excel, json_to_csv
 from utils.s3_storage import get_s3_manager, is_s3_enabled
 from utils.file_storage import get_file_storage
+from utils.template_service import (
+    build_template_object_name,
+    collect_computed_expressions,
+    pretty_print_template,
+    sanitize_template_version,
+    extract_template_version_from_path,
+    validate_template_payload,
+)
 from utils.prompt_schema_manager import get_prompt_schema_manager, load_prompt_and_schema
 from utils.company_file_manager import FileType
 from utils.force_delete_manager import ForceDeleteManager
-from utils.order_processor import start_order_processing, start_order_ocr_only_processing, start_order_mapping_only_processing
+from utils.order_processor import (
+    start_order_processing,
+    start_order_ocr_only_processing,
+    start_order_mapping_only_processing,
+    escape_excel_formulas
+)
 
 # Cost allocation imports
 from cost_allocation.dynamic_mapping_processor import process_dynamic_mapping_file
@@ -353,20 +367,29 @@ def delete_company(company_id: int, db: Session = Depends(get_db)):
 
 
 # Document Types API endpoints
+def _serialize_document_type(doc_type: DocumentType) -> dict:
+    """Serialize DocumentType model to API-friendly payload."""
+
+    template_path = doc_type.template_json_path
+    template_version = extract_template_version_from_path(template_path)
+
+    return {
+        "doc_type_id": doc_type.doc_type_id,
+        "type_name": doc_type.type_name,
+        "type_code": doc_type.type_code,
+        "description": doc_type.description,
+        "template_json_path": template_path,
+        "template_version": template_version,
+        "has_template": bool(template_path),
+        "created_at": doc_type.created_at.isoformat(),
+        "updated_at": doc_type.updated_at.isoformat(),
+    }
+
+
 @app.get("/document-types", response_model=List[dict])
 def get_document_types(db: Session = Depends(get_db)):
     doc_types = db.query(DocumentType).all()
-    return [
-        {
-            "doc_type_id": doc_type.doc_type_id,
-            "type_name": doc_type.type_name,
-            "type_code": doc_type.type_code,
-            "description": doc_type.description,
-            "created_at": doc_type.created_at.isoformat(),
-            "updated_at": doc_type.updated_at.isoformat(),
-        }
-        for doc_type in doc_types
-    ]
+    return [_serialize_document_type(doc_type) for doc_type in doc_types]
 
 
 @app.post("/document-types", response_model=dict)
@@ -381,14 +404,7 @@ def create_document_type(doc_type_data: dict, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(doc_type)
 
-    return {
-        "doc_type_id": doc_type.doc_type_id,
-        "type_name": doc_type.type_name,
-        "type_code": doc_type.type_code,
-        "description": doc_type.description,
-        "created_at": doc_type.created_at.isoformat(),
-        "updated_at": doc_type.updated_at.isoformat(),
-    }
+    return _serialize_document_type(doc_type)
 
 
 @app.get("/document-types/{doc_type_id}", response_model=dict)
@@ -399,14 +415,7 @@ def get_document_type(doc_type_id: int, db: Session = Depends(get_db)):
     if not doc_type:
         raise HTTPException(status_code=404, detail="Document type not found")
 
-    return {
-        "doc_type_id": doc_type.doc_type_id,
-        "type_name": doc_type.type_name,
-        "type_code": doc_type.type_code,
-        "description": doc_type.description,
-        "created_at": doc_type.created_at.isoformat(),
-        "updated_at": doc_type.updated_at.isoformat(),
-    }
+    return _serialize_document_type(doc_type)
 
 
 @app.put("/document-types/{doc_type_id}", response_model=dict)
@@ -463,6 +472,223 @@ def delete_document_type(doc_type_id: int, db: Session = Depends(get_db)):
             status_code=500,
             detail=f"Failed to delete document type: {str(e)}"
         )
+
+
+@app.post("/document-types/{doc_type_id}/template", response_model=dict)
+async def upload_document_type_template(
+    doc_type_id: int,
+    template_file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Upload and store a template.json for a document type."""
+
+    doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+    if not doc_type:
+        raise HTTPException(status_code=404, detail="Document type not found")
+
+    if not is_s3_enabled():
+        raise HTTPException(
+            status_code=400,
+            detail="S3 storage must be enabled to upload templates",
+        )
+
+    try:
+        raw_bytes = await template_file.read()
+    except Exception as exc:
+        logger.error(
+            "Failed to read uploaded template file for doc_type %s: %s",
+            doc_type_id,
+            exc,
+        )
+        raise HTTPException(status_code=400, detail="Failed to read uploaded file") from exc
+
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded template file is empty")
+
+    try:
+        template_text = raw_bytes.decode("utf-8")
+        template_json = json.loads(template_text)
+    except UnicodeDecodeError as exc:
+        logger.warning(
+            "Template upload decoding failed for doc_type %s: %s",
+            doc_type_id,
+            exc,
+        )
+        raise HTTPException(status_code=400, detail="Template must be valid UTF-8 JSON") from exc
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "Template upload JSON parsing failed for doc_type %s: %s",
+            doc_type_id,
+            exc,
+        )
+        raise HTTPException(status_code=400, detail="Template file is not valid JSON") from exc
+
+    try:
+        validate_template_payload(template_json)
+    except ValueError as exc:
+        logger.warning(
+            "Template validation failed for doc_type %s: %s | payload=%s",
+            doc_type_id,
+            exc,
+            pretty_print_template(template_json),
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    computed_expressions = collect_computed_expressions(template_json["column_definitions"])
+    logger.info(
+        "Validated template upload for doc_type %s: version=%s, computed_columns=%d",
+        doc_type_id,
+        template_json.get("version", "unspecified"),
+        len(computed_expressions),
+    )
+
+    s3_manager = get_s3_manager()
+    if not s3_manager:
+        raise HTTPException(status_code=500, detail="S3 storage manager is not configured")
+
+    safe_version = sanitize_template_version(template_json.get("version", "latest"))
+    object_key = build_template_object_name(doc_type_id, safe_version)
+
+    metadata = {
+        "doc_type_id": str(doc_type_id),
+        "template_name": str(template_json.get("template_name", ""))[:50],
+        "template_version": safe_version,
+    }
+
+    logger.info(
+        "Uploading template for doc_type %s to s3://%s/%s",
+        doc_type_id,
+        s3_manager.bucket_name,
+        f"{s3_manager.upload_prefix}{object_key}",
+    )
+
+    try:
+        upload_success = s3_manager.upload_file(
+            file_content=raw_bytes,
+            key=object_key,
+            content_type="application/json",
+            metadata=metadata,
+        )
+    except Exception as exc:
+        logger.error(
+            "Unexpected error uploading template for doc_type %s: %s",
+            doc_type_id,
+            exc,
+        )
+        raise HTTPException(status_code=500, detail="Failed to upload template to S3") from exc
+
+    if not upload_success:
+        raise HTTPException(status_code=500, detail="Failed to upload template to S3")
+
+    template_uri = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{object_key}"
+    previous_path = doc_type.template_json_path
+
+    try:
+        doc_type.template_json_path = template_uri
+        doc_type.updated_at = datetime.utcnow()
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error(
+            "Failed to persist template path for doc_type %s: %s",
+            doc_type_id,
+            exc,
+        )
+        raise HTTPException(status_code=500, detail="Failed to save template metadata") from exc
+
+    logger.info(
+        "Template uploaded for doc_type %s. Stored at %s (previous=%s)",
+        doc_type_id,
+        template_uri,
+        previous_path,
+    )
+
+    return {
+        "message": "Template uploaded successfully",
+        "template_path": template_uri,
+        "previous_template_path": previous_path,
+        "computed_columns": list(computed_expressions.keys()),
+    }
+
+
+@app.get("/document-types/{doc_type_id}/template")
+def download_document_type_template(doc_type_id: int, db: Session = Depends(get_db)):
+    """Download the stored template.json for a document type."""
+
+    doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+    if not doc_type:
+        raise HTTPException(status_code=404, detail="Document type not found")
+
+    if not doc_type.template_json_path:
+        raise HTTPException(status_code=404, detail="Document type has no template configured")
+
+    file_storage = get_file_storage()
+    template_content = file_storage.download_file(doc_type.template_json_path)
+
+    if not template_content:
+        logger.error(
+            "Template download failed for doc_type %s: file not found at %s",
+            doc_type_id,
+            doc_type.template_json_path,
+        )
+        raise HTTPException(status_code=500, detail="Failed to download template file")
+
+    file_name = doc_type.template_json_path.split("/")[-1] or f"doc_type_{doc_type_id}_template.json"
+    logger.info(
+        "Template downloaded for doc_type %s from %s",
+        doc_type_id,
+        doc_type.template_json_path,
+    )
+
+    return StreamingResponse(
+        io.BytesIO(template_content),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f"attachment; filename={file_name}",
+        },
+    )
+
+
+@app.delete("/document-types/{doc_type_id}/template", response_model=dict)
+def delete_document_type_template(doc_type_id: int, db: Session = Depends(get_db)):
+    """Delete the configured template.json for a document type."""
+
+    doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
+    if not doc_type:
+        raise HTTPException(status_code=404, detail="Document type not found")
+
+    if not doc_type.template_json_path:
+        raise HTTPException(status_code=404, detail="Document type has no template configured")
+
+    template_path = doc_type.template_json_path
+    file_storage = get_file_storage()
+
+    deletion_success = file_storage.delete_file(template_path)
+    logger.info(
+        "Template deletion for doc_type %s requested. Path=%s deleted=%s",
+        doc_type_id,
+        template_path,
+        deletion_success,
+    )
+
+    try:
+        doc_type.template_json_path = None
+        doc_type.updated_at = datetime.utcnow()
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error(
+            "Failed to clear template metadata for doc_type %s: %s",
+            doc_type_id,
+            exc,
+        )
+        raise HTTPException(status_code=500, detail="Failed to update document type") from exc
+
+    return {
+        "message": "Template removed successfully",
+        "template_path": template_path,
+        "deleted": deletion_success,
+    }
 
 
 # Dependency Management API endpoints
@@ -4030,6 +4256,7 @@ def get_config_dependencies(config_id: int, db: Session = Depends(get_db)):
 # Pydantic models for OCR Order requests/responses
 class CreateOrderRequest(BaseModel):
     order_name: Optional[str] = None
+    primary_doc_type_id: Optional[int] = None
 
 class UpdateOrderRequest(BaseModel):
     order_name: Optional[str] = None
@@ -4047,6 +4274,8 @@ class OrderResponse(BaseModel):
     total_items: int
     completed_items: int
     failed_items: int
+    primary_doc_type_id: Optional[int]
+    primary_doc_type: Optional[dict]
     mapping_file_path: Optional[str]
     mapping_keys: Optional[List[str]]
     final_report_paths: Optional[dict]
@@ -4077,22 +4306,58 @@ class OrderItemResponse(BaseModel):
     created_at: str
     updated_at: str
 
+
+def _serialize_primary_doc_type(doc_type: Optional[DocumentType]) -> Optional[dict]:
+    """Serialize primary document type details for API responses."""
+
+    if not doc_type:
+        return None
+
+    return {
+        "doc_type_id": doc_type.doc_type_id,
+        "type_name": doc_type.type_name,
+        "type_code": doc_type.type_code,
+        "template_json_path": doc_type.template_json_path,
+        "template_version": extract_template_version_from_path(doc_type.template_json_path),
+        "has_template": bool(doc_type.template_json_path),
+    }
+
+
 @app.post("/orders", response_model=dict)
 def create_order(request: CreateOrderRequest, db: Session = Depends(get_db)):
     """Create a new OCR order"""
     try:
+        primary_doc_type = None
+        if request.primary_doc_type_id is not None:
+            primary_doc_type = (
+                db.query(DocumentType)
+                .filter(DocumentType.doc_type_id == request.primary_doc_type_id)
+                .first()
+            )
+            if not primary_doc_type:
+                raise HTTPException(status_code=400, detail="Primary document type not found")
+
         order = OcrOrder(
             order_name=request.order_name,
-            status=OrderStatus.DRAFT
+            status=OrderStatus.DRAFT,
+            primary_doc_type_id=primary_doc_type.doc_type_id if primary_doc_type else None,
         )
         db.add(order)
         db.commit()
         db.refresh(order)
 
+        logger.info(
+            "Created order %s with primary_doc_type_id=%s",
+            order.order_id,
+            order.primary_doc_type_id,
+        )
+
         return {
             "order_id": order.order_id,
             "order_name": order.order_name,
             "status": order.status.value,
+            "primary_doc_type_id": order.primary_doc_type_id,
+            "primary_doc_type": _serialize_primary_doc_type(primary_doc_type),
             "message": "Order created successfully"
         }
     except Exception as e:
@@ -4126,6 +4391,8 @@ def list_orders(
                 "order_id": order.order_id,
                 "order_name": order.order_name,
                 "status": order.status.value,
+                "primary_doc_type_id": order.primary_doc_type_id,
+                "primary_doc_type": _serialize_primary_doc_type(order.primary_doc_type),
                 "total_items": order.total_items,
                 "completed_items": order.completed_items,
                 "failed_items": order.failed_items,
@@ -4207,6 +4474,8 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
             "order_id": order.order_id,
             "order_name": order.order_name,
             "status": order.status.value,
+            "primary_doc_type_id": order.primary_doc_type_id,
+            "primary_doc_type": _serialize_primary_doc_type(order.primary_doc_type),
             "total_items": order.total_items,
             "completed_items": order.completed_items,
             "failed_items": order.failed_items,
@@ -5059,18 +5328,36 @@ def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(g
         # Generate filename for download
         filename = f"order_{order_id}_item_{item_id}_{item.item_name or 'result'}.csv"
 
-        # Create temporary file to serve
+        # Apply Excel formula escaping and create temporary file with UTF-8 BOM
         import tempfile
         import os
+        import pandas as pd
+        from io import StringIO
+
+        # Parse CSV, apply formula escaping, and recreate with BOM
+        try:
+            df = pd.read_csv(StringIO(file_content.decode('utf-8')))
+            for column in df.columns:
+                df[column] = df[column].apply(escape_excel_formulas)
+
+            # Recreate CSV with escaped content
+            escaped_csv_content = df.to_csv(index=False)
+            file_content_with_bom = b'\xef\xbb\xbf' + escaped_csv_content.encode('utf-8')
+        except Exception as parse_error:
+            logger.warning(f"Failed to parse CSV for formula escaping, using original: {parse_error}")
+            # Fallback to original content if parsing fails
+            utf8_bom = b'\xef\xbb\xbf'
+            file_content_with_bom = utf8_bom + file_content
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
-            temp_file.write(file_content)
+            temp_file.write(file_content_with_bom)
             temp_file_path = temp_file.name
 
-        # Return file response
+        # Return file response with UTF-8 charset
         response = FileResponse(
             path=temp_file_path,
             filename=filename,
-            media_type="text/csv",
+            media_type="text/csv; charset=utf-8",
         )
 
         response.headers["X-File-Source"] = "S3"
@@ -5082,214 +5369,12 @@ def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(g
         logger.error(f"Failed to download order item CSV {item_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to download CSV file: {str(e)}")
 
-@app.get("/orders/{order_id}/items/{item_id}/csv-headers", response_model=dict)
-def get_order_item_csv_headers(order_id: int, item_id: int, db: Session = Depends(get_db)):
-    """Get CSV headers from a completed order item for mapping key selection"""
-    try:
-        # Verify order exists
-        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
-        if not order:
-            raise HTTPException(status_code=404, detail="Order not found")
-
-        # Verify item exists and belongs to the order
-        item = db.query(OcrOrderItem).filter(
-            OcrOrderItem.item_id == item_id,
-            OcrOrderItem.order_id == order_id
-        ).first()
-        if not item:
-            raise HTTPException(status_code=404, detail="Order item not found")
-
-        # Check if item is completed and has CSV results
-        if item.status != OrderItemStatus.COMPLETED:
-            raise HTTPException(status_code=400, detail="Order item must be completed to get CSV headers")
-
-        if not item.ocr_result_csv_path:
-            raise HTTPException(status_code=404, detail="No CSV results found for this item")
-
-        # Download CSV file and parse headers
-        file_storage = get_file_storage()
-
-        try:
-            import pandas as pd
-            import tempfile
-            import os
-
-            # Download CSV content
-            csv_content = file_storage.download_file(item.ocr_result_csv_path)
-            if not csv_content:
-                raise HTTPException(status_code=500, detail="Failed to download CSV file from storage")
-
-            # Create temporary CSV file
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.csv', mode='wb') as temp_file:
-                temp_file.write(csv_content)
-                temp_file_path = temp_file.name
-
-            try:
-                # Read CSV headers (first row only)
-                df = pd.read_csv(temp_file_path, nrows=0)
-                headers = list(df.columns)
-
-                return {
-                    "item_id": item_id,
-                    "order_id": order_id,
-                    "item_name": item.item_name,
-                    "csv_headers": headers,
-                    "current_mapping_keys": item.mapping_keys or [],
-                    "header_count": len(headers)
-                }
-
-            finally:
-                # Clean up temp file
-                os.unlink(temp_file_path)
-
-        except Exception as e:
-            logger.error(f"Failed to parse CSV headers for item {item_id}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to parse CSV headers: {str(e)}")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get CSV headers for item {item_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get CSV headers: {str(e)}")
-
-@app.put("/orders/{order_id}/items/{item_id}/mapping-keys", response_model=dict)
-def update_order_item_mapping_keys(
-    order_id: int,
-    item_id: int,
-    request: dict,
-    db: Session = Depends(get_db)
-):
-    """Update mapping keys for a specific order item"""
-    try:
-        # Verify order exists and is in DRAFT status
-        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
-        if not order:
-            raise HTTPException(status_code=404, detail="Order not found")
-
-        if order.status not in [OrderStatus.DRAFT, OrderStatus.OCR_COMPLETED, OrderStatus.COMPLETED, OrderStatus.MAPPING]:
-            raise HTTPException(status_code=400, detail="Can only update mapping keys for orders in DRAFT, OCR_COMPLETED, COMPLETED, or MAPPING status")
-
-        # Verify item exists and belongs to the order
-        item = db.query(OcrOrderItem).filter(
-            OcrOrderItem.item_id == item_id,
-            OcrOrderItem.order_id == order_id
-        ).first()
-        if not item:
-            raise HTTPException(status_code=404, detail="Order item not found")
-
-        # Extract mapping keys from request
-        mapping_keys = request.get('mapping_keys', [])
-        if not isinstance(mapping_keys, list):
-            raise HTTPException(status_code=400, detail="mapping_keys must be an array")
-
-        # Limit to maximum 3 keys
-        if len(mapping_keys) > 3:
-            raise HTTPException(status_code=400, detail="Maximum 3 mapping keys allowed per item")
-
-        # Filter out empty strings
-        mapping_keys = [key.strip() for key in mapping_keys if key and key.strip()]
-
-        # Update item mapping keys
-        item.mapping_keys = mapping_keys if mapping_keys else None
-        item.updated_at = datetime.utcnow()
-
-        db.commit()
-
-        return {
-            "item_id": item_id,
-            "order_id": order_id,
-            "mapping_keys": mapping_keys,
-            "message": "Order item mapping keys updated successfully"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to update mapping keys for item {item_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to update mapping keys: {str(e)}")
 
 
-@app.get("/companies/{company_id}/document-types/{doc_type_id}/suggested-mapping-keys", response_model=dict)
-def get_suggested_mapping_keys(
-    company_id: int,
-    doc_type_id: int,
-    csv_headers: Optional[str] = None,
-    limit: int = 3,
-    db: Session = Depends(get_db)
-):
-    """Get suggested mapping keys for a company and document type"""
-    try:
-        from utils.mapping_key_recommender import MappingKeyRecommender
-
-        recommender = MappingKeyRecommender(db)
-
-        # Parse CSV headers if provided
-        headers_list = None
-        if csv_headers:
-            headers_list = [h.strip() for h in csv_headers.split(',') if h.strip()]
-
-        # Get recommendations
-        suggestions = recommender.suggest_mapping_keys(
-            company_id=company_id,
-            doc_type_id=doc_type_id,
-            csv_headers=headers_list,
-            limit=limit
-        )
-
-        return {
-            "company_id": company_id,
-            "doc_type_id": doc_type_id,
-            "suggestions": suggestions,
-            "total_suggestions": len(suggestions)
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to get suggested mapping keys: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get suggestions: {str(e)}")
+# NOTE: get_suggested_mapping_keys endpoint removed - mapping key recommendation functionality no longer needed
 
 
-@app.put("/companies/{company_id}/document-types/{doc_type_id}/default-mapping-keys", response_model=dict)
-def update_default_mapping_keys(
-    company_id: int,
-    doc_type_id: int,
-    request: dict,
-    db: Session = Depends(get_db)
-):
-    """Update default mapping keys for a company and document type"""
-    try:
-        mapping_keys = request.get('mapping_keys', [])
-
-        if not isinstance(mapping_keys, list):
-            raise HTTPException(status_code=400, detail="mapping_keys must be a list")
-
-        if len(mapping_keys) > 5:
-            raise HTTPException(status_code=400, detail="Maximum 5 mapping keys allowed")
-
-        from utils.mapping_key_recommender import MappingKeyRecommender
-
-        recommender = MappingKeyRecommender(db)
-        success = recommender.update_default_mapping_keys(
-            company_id=company_id,
-            doc_type_id=doc_type_id,
-            mapping_keys=mapping_keys
-        )
-
-        if not success:
-            raise HTTPException(status_code=404, detail="Company document config not found")
-
-        return {
-            "company_id": company_id,
-            "doc_type_id": doc_type_id,
-            "default_mapping_keys": mapping_keys,
-            "message": "Default mapping keys updated successfully"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to update default mapping keys: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to update default keys: {str(e)}")
+# NOTE: update_default_mapping_keys endpoint removed - mapping key recommendation functionality no longer needed
 
 
 # =============================================================================
@@ -5318,7 +5403,7 @@ def get_auto_mapping_config(
             "doc_type_id": doc_type_id,
             "auto_mapping_enabled": config.auto_mapping_enabled or False,
             "default_mapping_keys": config.default_mapping_keys or [],
-            "cross_field_mappings": config.cross_field_mappings or {},
+            # "cross_field_mappings": config.cross_field_mappings or {},  # Removed - cross-field mapping no longer supported
             "updated_at": config.updated_at.isoformat() if config.updated_at else None
         }
 
@@ -5350,7 +5435,7 @@ def update_auto_mapping_config(
         # Validate input
         auto_mapping_enabled = request.get('auto_mapping_enabled', False)
         default_mapping_keys = request.get('default_mapping_keys', [])
-        cross_field_mappings = request.get('cross_field_mappings', {})
+        # cross_field_mappings = request.get('cross_field_mappings', {})  # Removed - cross-field mapping no longer supported
 
         if not isinstance(auto_mapping_enabled, bool):
             raise HTTPException(status_code=400, detail="auto_mapping_enabled must be a boolean")
@@ -5361,13 +5446,13 @@ def update_auto_mapping_config(
         if len(default_mapping_keys) > 3:
             raise HTTPException(status_code=400, detail="Maximum 3 default mapping keys allowed")
 
-        if not isinstance(cross_field_mappings, dict):
-            raise HTTPException(status_code=400, detail="cross_field_mappings must be a dictionary")
+        # if not isinstance(cross_field_mappings, dict):  # Removed - cross-field mapping no longer supported
+        #     raise HTTPException(status_code=400, detail="cross_field_mappings must be a dictionary")
 
         # Update configuration
         config.auto_mapping_enabled = auto_mapping_enabled
         config.default_mapping_keys = default_mapping_keys
-        config.cross_field_mappings = cross_field_mappings
+        # config.cross_field_mappings = cross_field_mappings  # Removed - cross-field mapping no longer supported
         config.updated_at = datetime.utcnow()
 
         db.commit()
@@ -5378,7 +5463,7 @@ def update_auto_mapping_config(
             "doc_type_id": doc_type_id,
             "auto_mapping_enabled": auto_mapping_enabled,
             "default_mapping_keys": default_mapping_keys,
-            "cross_field_mappings": cross_field_mappings,
+            # "cross_field_mappings": cross_field_mappings,  # Removed - cross-field mapping no longer supported
             "message": "Auto-mapping configuration updated successfully"
         }
 
@@ -5427,18 +5512,19 @@ def test_auto_mapping_config(
         test_results = {
             "auto_mapping_enabled": config.auto_mapping_enabled,
             "default_mapping_keys": config.default_mapping_keys or [],
-            "cross_field_mappings": config.cross_field_mappings or {},
+            # "cross_field_mappings": config.cross_field_mappings or {},  # Removed - cross-field mapping no longer supported
             "sample_matches": [],
             "match_statistics": {
                 "total_ocr_records": len(sample_ocr_data),
                 "potential_matches": 0,
-                "cross_field_matches": 0
+                "cross_field_matches": 0  # Keep for compatibility but will be 0
             }
         }
 
         # Basic matching simulation
         default_keys = config.default_mapping_keys or []
-        cross_mappings = config.cross_field_mappings or {}
+        # cross_mappings = config.cross_field_mappings or {}  # Removed - cross-field mapping no longer supported
+        cross_mappings = {}  # Empty for compatibility
 
         for ocr_record in sample_ocr_data[:5]:  # Limit to first 5 for testing
             matches = []
@@ -5488,27 +5574,7 @@ def test_auto_mapping_config(
         raise HTTPException(status_code=500, detail=f"Failed to test auto-mapping config: {str(e)}")
 
 
-@app.get("/mapping-analytics", response_model=dict)
-def get_mapping_analytics(
-    company_id: Optional[int] = None,
-    db: Session = Depends(get_db)
-):
-    """Get mapping usage analytics"""
-    try:
-        from utils.mapping_key_recommender import MappingKeyRecommender
-
-        recommender = MappingKeyRecommender(db)
-        analytics = recommender.get_mapping_analytics(company_id)
-
-        return {
-            "company_id": company_id,
-            "analytics": analytics,
-            "generated_at": datetime.utcnow().isoformat()
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to get mapping analytics: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get analytics: {str(e)}")
+# NOTE: get_mapping_analytics endpoint removed - mapping key recommendation functionality no longer needed
 
 
 @app.get("/orders/{order_id}/download/mapped-csv")
@@ -5538,11 +5604,13 @@ def download_order_mapped_csv(order_id: int, db: Session = Depends(get_db)):
         if not file_content:
             raise HTTPException(status_code=500, detail="Failed to download mapped CSV file from storage")
 
-        # Create response
+        # Create response with UTF-8 BOM to ensure proper Chinese character encoding
+        utf8_bom = b'\xef\xbb\xbf'
+        file_content_with_bom = utf8_bom + file_content
         filename = f"order_{order_id}_mapped_results.csv"
         response = Response(
-            content=file_content,
-            media_type="text/csv",
+            content=file_content_with_bom,
+            media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
 
@@ -5554,6 +5622,51 @@ def download_order_mapped_csv(order_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Failed to download order mapped CSV {order_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to download mapped CSV file: {str(e)}")
+
+
+@app.get("/orders/{order_id}/download/special-csv")
+def download_order_special_csv(order_id: int, db: Session = Depends(get_db)):
+    """Download special CSV generated from template for an order"""
+
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Order must be completed to download special CSV")
+
+        if not order.final_report_paths or 'special_csv' not in order.final_report_paths:
+            raise HTTPException(status_code=404, detail="No special CSV available for this order")
+
+        special_csv_path = order.final_report_paths['special_csv']
+        if not special_csv_path:
+            raise HTTPException(status_code=404, detail="Special CSV path is empty")
+
+        file_storage = get_file_storage()
+        file_content = file_storage.download_file(special_csv_path)
+
+        if not file_content:
+            raise HTTPException(status_code=500, detail="Failed to download special CSV from storage")
+
+        # Create response with UTF-8 BOM to ensure proper Chinese character encoding
+        utf8_bom = b'\xef\xbb\xbf'
+        file_content_with_bom = utf8_bom + file_content
+        filename = f"order_{order_id}_special.csv"
+        response = Response(
+            content=file_content_with_bom,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+        response.headers["X-File-Source"] = "S3"
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download order special CSV {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download special CSV file: {str(e)}")
+
 
 @app.get("/orders/{order_id}/download/mapped-excel")
 def download_order_mapped_excel(order_id: int, db: Session = Depends(get_db)):
@@ -5908,23 +6021,44 @@ def restart_mapping_processing(order_id: int, db: Session = Depends(get_db)):
 
         db.commit()
 
+        # Enhanced logging: Log order details before processing
+        logger.info(f"🚀 Order {order_id} mapping processing restarted - Enhanced logging enabled")
+        logger.info(f"   Order details: name='{order.order_name}', status='{order.status}', primary_doc_type_id={order.primary_doc_type_id}")
+        logger.info(f"   Mapping file: {order.mapping_file_path}")
+        logger.info(f"   Mapping keys: {order.mapping_keys}")
+        logger.info(f"   Final reports before restart: {order.final_report_paths}")
+
+        # Log template details if available
+        if order.primary_doc_type_id:
+            template_path = order.primary_doc_type.template_json_path if order.primary_doc_type else None
+            logger.info(f"   Template path: {template_path}")
+            logger.info(f"   Document type: {order.primary_doc_type.type_name if order.primary_doc_type else 'Unknown'}")
+
         # Trigger mapping processing
         from utils.order_processor import OrderProcessor
         processor = OrderProcessor()
+        logger.info(f"   OrderProcessor initialized, starting async processing...")
 
-        # Process asynchronously
+        # Process asynchronously with enhanced logging
         import asyncio
         def run_async():
+            logger.info(f"   Starting async processing for order {order_id}")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(processor.process_dynamic_mapping(order_id))
-            loop.close()
+            try:
+                loop.run_until_complete(processor.process_order_mapping_only(order_id))
+                logger.info(f"   Async processing completed for order {order_id}")
+            except Exception as e:
+                logger.error(f"   Async processing failed for order {order_id}: {str(e)}")
+                raise
+            finally:
+                loop.close()
 
         import threading
         thread = threading.Thread(target=run_async)
         thread.start()
 
-        logger.info(f"Order {order_id} mapping processing restarted")
+        logger.info(f"✅ Order {order_id} mapping processing restarted - background thread started")
         return {"message": "Mapping processing restarted successfully", "order_id": order_id, "status": "MAPPING"}
 
     except HTTPException:

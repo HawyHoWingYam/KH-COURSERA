@@ -51,6 +51,20 @@ CVE-2024-29180  # webpack-dev-middleware (开发依赖)
 CVE-2024-30260  # undici (Node.js fetch implementation)
 CVE-2024-30261  # undici (Node.js fetch implementation)
 
+# =============================================================================
+# TEMPORARY CI/CD TESTING IGNORES - MUST BE FIXED IN PRODUCTION
+# =============================================================================
+
+CVE-2025-5889   # [TEMPORARY 2025-09-12] brace-expansion ReDoS vulnerability
+                # Risk: LOW - affects npm internal dependency
+                # Status: Awaiting Node.js/npm upgrade for proper fix
+                # Next review: 2025-09-19 (7 days)
+
+CVE-2024-21538  # [TEMPORARY 2025-09-12] cross-spawn ReDoS vulnerability  
+                # Risk: HIGH - RegExp DoS in npm dependency
+                # Status: Awaiting Node.js/npm upgrade to get cross-spawn 7.0.5+
+                # Next review: 2025-09-15 (3 days) - URGENT FIX REQUIRED
+
 # 忽略已经通过其他方式缓解的漏洞
 # CVE-2024-XXXXX  # 通过网络层防护缓解
 # CVE-2024-XXXXX  # 通过应用层验证缓解
@@ -58,6 +72,15 @@ CVE-2024-30261  # undici (Node.js fetch implementation)
 # 通配符忽略模式（谨慎使用）
 # 忽略特定库的所有低严重性漏洞
 # lib/lodash@*:CVE-2021-23337
+
+# =============================================================================
+# NOTES
+# =============================================================================
+# - This file is checked into version control for transparency
+# - All ignores should have documented business justification
+# - Prefer fixing vulnerabilities over ignoring them
+# - Use ignore-unfixed in Trivy config for issues without available fixes
+# - Regularly audit this list during security reviews
 
 # 日期：2025-09-29
 # 维护者：开发团队

@@ -44,9 +44,17 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
 # 复制应用代码
 COPY GeminiOCR/backend/ .
 
+# 复制迁移文件（用于自动数据库迁移）
+COPY alembic.ini .
+COPY migrations/ ./migrations/
+
+# 复制entrypoint脚本
+COPY docker/backend-entrypoint.sh /app/entrypoint.sh
+
 # 创建必要的目录并设置权限
 RUN mkdir -p uploads env logs \
-    && chown -R appuser:appuser /app
+    && chown -R appuser:appuser /app \
+    && chmod +x /app/entrypoint.sh
 
 # 切换到非root用户
 USER appuser
@@ -58,5 +66,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 # 暴露端口
 EXPOSE 8000
 
-# 启动命令
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# 启动命令（使用entrypoint脚本自动运行迁移）
+CMD ["/app/entrypoint.sh"]

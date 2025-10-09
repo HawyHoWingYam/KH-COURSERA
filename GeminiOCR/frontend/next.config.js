@@ -14,8 +14,13 @@ const nextConfig = {
 
   // Allow cross-origin requests to our API
   async rewrites() {
-    // Use environment variable or fallback to EC2 IP for development
-    const apiHost = process.env.NEXT_PUBLIC_API_URL || 'http://18.142.68.48:8000';
+    // Use Docker service name for environment-independent deployment
+    const apiHost = process.env.NEXT_PUBLIC_API_URL || 'http://backend:8000';
+
+    console.log("=== next.config.js Debug ===");
+    console.log("NEXT_PUBLIC_API_URL:", process.env.NEXT_PUBLIC_API_URL);
+    console.log("Resolved apiHost:", apiHost);
+    console.log("===========================");
 
     return [
       {

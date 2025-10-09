@@ -42,6 +42,28 @@ services:
     networks:
       - gemini-dev-network
 
+  # 运行 Alembic 迁移，确保开发数据库 schema 最新
+  db-migrate:
+    build:
+      context: .
+      dockerfile: ./docker/backend.Dockerfile
+      target: base
+    container_name: gemini-db-migrate-dev
+    restart: "no"
+    command:
+      - sh
+      - -c
+      - echo 'Running Alembic migrations (dev)...' && alembic upgrade head && echo 'Alembic migrations complete (dev).'
+    volumes:
+      - ./env:/app/env:ro
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-gemini_user}:${POSTGRES_PASSWORD:-dev_password}@db:5432/${POSTGRES_DB:-gemini_dev}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - gemini-dev-network
+
   # 后端服务 (开发模式)
   backend:
     build:
@@ -75,6 +97,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     networks:
       - gemini-dev-network
 

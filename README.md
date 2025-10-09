@@ -107,7 +107,6 @@ DEPLOY_VERSION=v1.0.0 docker/deploy.sh blue-green hub
 - **`develop`** → 推送到 sandbox 仓库，UAT 部署
 - **`main`** → 推送到 production 仓库
 - **`v*.*.*`** → 版本发布到 production 仓库，创建 GitHub Release
-
 ### 🏷️ 镜像标签规范
 **Sandbox 仓库**:
 - `karasho62/hya-ocr-sandbox:backend-develop`

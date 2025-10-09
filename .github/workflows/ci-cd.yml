@@ -59,6 +59,8 @@ jobs:
         tags: |
           ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-latest
           ${{ env.DOCKER_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}
+        build-args: |
+          CACHE_BUST=${{ github.run_number }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
         platforms: linux/amd64

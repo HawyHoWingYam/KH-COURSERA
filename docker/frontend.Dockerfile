@@ -13,8 +13,27 @@ COPY GeminiOCR/frontend/package.json GeminiOCR/frontend/package-lock.json ./
 # 安装依赖 (Phase 2.1 security fix: cross-spawn ^7.0.5 override)
 RUN npm ci --production=false && npm cache clean --force
 
-# 复制源代码
+# 复制源代码（排除.env文件避免构建时污染）
 COPY GeminiOCR/frontend/ .
+
+# Debug: 显示复制后的.env文件
+RUN echo "=== Files before cleanup ===" && \
+    ls -la | grep -E "\.env" || echo "No .env files found" && \
+    echo "=== Content of .env.local if exists ===" && \
+    cat .env.local 2>/dev/null || echo "No .env.local" && \
+    echo "=== Content of .env if exists ===" && \
+    cat .env 2>/dev/null || echo "No .env" && \
+    echo "==========================="
+
+# 删除所有.env文件
+RUN rm -f .env .env.local .env.*.local && \
+    echo "=== Files after cleanup ===" && \
+    ls -la | grep -E "\.env" || echo "All .env files removed" && \
+    echo "==========================="
+
+# Cache bust layer - increment this to force rebuild
+ARG CACHE_BUST=1
+RUN echo "Cache bust: $CACHE_BUST"
 
 # 构建应用
 RUN npm run build
