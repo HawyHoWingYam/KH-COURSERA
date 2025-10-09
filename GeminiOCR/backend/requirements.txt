@@ -31,6 +31,9 @@ urllib3==2.5.0
 # Configuration management
 python-dotenv==1.0.0
 
+# JSON logging for CloudWatch
+python-json-logger==2.0.7
+
 # HTTP client
 httpx==0.25.2
 

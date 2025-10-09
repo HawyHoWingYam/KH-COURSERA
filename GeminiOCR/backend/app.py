@@ -29,6 +29,9 @@ import time
 # 導入配置管理器
 from config_loader import config_loader, get_api_key_manager, validate_and_log_config
 
+# 導入CloudWatch日志配置 / Import CloudWatch logging configuration
+from utils.logger_config import setup_logger, get_logger, CloudWatchMiddleware
+
 from db.database import get_db, engine, get_database_info
 from db.models import (
     Base,
@@ -75,31 +78,30 @@ from cost_allocation.matcher import enrich_ocr_data
 from cost_allocation.netsuite_formatter import generate_netsuite_csv
 from cost_allocation.report_generator import generate_matching_report, generate_summary_report
 
-# 獲取應用配置
+# 獲取應用配置 / Get application configuration
 try:
     app_config = config_loader.get_app_config()
-    logger = logging.getLogger(__name__)
-
-    # 驗證配置
+    # 驗證配置 / Validate configuration
     validate_and_log_config()
 
 except Exception as e:
-    logging.error(f"Failed to load configuration: {e}")
+    # Use get_logger here since our logger might not be initialized yet
+    get_logger("geminiocr.config").error(f"Failed to load configuration: {e}")
     raise
 
 # Create tables only in development/test environments; rely on Alembic elsewhere
 try:
-    env = app_config.get("environment", "development") if 'app_config' in globals() else os.getenv("ENVIRONMENT", "development")
+    env = app_config.get("environment", "development")
     if env in {"development", "test"}:
         if engine:
             Base.metadata.create_all(bind=engine)
-            logger.info("✅ Database tables created/verified (dev/test mode)")
+            get_logger("geminiocr.database").info("✅ Database tables created/verified (dev/test mode)")
         else:
-            logger.warning("⚠️  Database engine not initialized, tables not created")
+            get_logger("geminiocr.database").warning("⚠️  Database engine not initialized, tables not created")
     else:
-        logger.info("ℹ️ Skipping Base.metadata.create_all outside dev/test (use Alembic)")
+        get_logger("geminiocr.database").info("ℹ️ Skipping Base.metadata.create_all outside dev/test (use Alembic)")
 except Exception as e:
-    logger.error(f"❌ Failed during table initialization: {e}")
+    get_logger("geminiocr.database").error(f"❌ Failed during table initialization: {e}")
 
 app = FastAPI(title="Document Processing API")
 
@@ -119,10 +121,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+# Add CloudWatch logging middleware / 添加CloudWatch日志中间件
+app.add_middleware(CloudWatchMiddleware, logger_name="geminiocr.backend.http")
+
+# Configure CloudWatch-enabled logging / 配置CloudWatch日志
+logger = setup_logger(
+    name="geminiocr.backend",
+    level="INFO",
+    enable_cloudwatch=None,  # Auto-detect based on environment
+    log_group_name=f"/aws/ecs/geminiocr-{os.getenv('ENVIRONMENT', 'development')}",
+    log_stream_name=f"backend-{os.getenv('HOSTNAME', 'local')}"
 )
 
 # WebSocket connections store
