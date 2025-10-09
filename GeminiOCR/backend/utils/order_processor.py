@@ -1076,11 +1076,11 @@ class OrderProcessor:
                     csv_content, standard_df = self._generate_mapped_csv(joined_results, mapping_columns)
 
                     # DataFrame logging for debugging (show first 5 rows after mapping completion)
-                    logger.info(f"🔍 DataFrame Debug - Order {order_id} after mapping completion:")
-                    logger.info(f"   DataFrame shape: {standard_df.shape}")
-                    logger.info(f"   DataFrame columns: {list(standard_df.columns)}")
-                    logger.info(f"   First 5 rows sample:")
-                    logger.info(f"{standard_df.head().to_dict('records')}")
+                    # logger.info(f"🔍 DataFrame Debug - Order {order_id} after mapping completion:")
+                    # logger.info(f"   DataFrame shape: {standard_df.shape}")
+                    # logger.info(f"   DataFrame columns: {list(standard_df.columns)}")
+                    # logger.info(f"   First 5 rows sample:")
+                    # logger.info(f"{standard_df.head().to_dict('records')}")
 
                     # Save final results to S3 - using consistent path format
                     s3_base = f"results/orders/{order_id // 1000}/mapped"
@@ -1088,7 +1088,7 @@ class OrderProcessor:
                     success = self.s3_manager.upload_file(csv_content.encode('utf-8'), final_key)
 
                     if success:
-                        logger.info(f"Final mapped results saved to S3: {final_key}")
+                        # logger.info(f"Final mapped results saved to S3: {final_key}")
 
                         # Update order status to COMPLETED and set final_report_paths
                         order.status = OrderStatus.COMPLETED
@@ -1404,14 +1404,14 @@ class OrderProcessor:
                                         best_mapping_record = mapping_record
 
                                         # Log detailed match information
-                                        logger.info(f"🎯 Row {i}: Intelligent match found!")
-                                        logger.info(f"   Strategy: {match_result.strategy.value}")
-                                        logger.info(f"   OCR field '{ocr_field}': '{ocr_value}'")
-                                        logger.info(f"   Mapping field '{user_key}': '{mapping_value}'")
-                                        logger.info(f"   Similarity: {match_result.similarity_score:.3f}")
-                                        logger.info(f"   Reason: {match_result.match_reason}")
-                                        if match_result.extracted_parts:
-                                            logger.info(f"   Extracted parts: {match_result.extracted_parts}")
+                                        # logger.info(f"🎯 Row {i}: Intelligent match found!")
+                                        # logger.info(f"   Strategy: {match_result.strategy.value}")
+                                        # logger.info(f"   OCR field '{ocr_field}': '{ocr_value}'")
+                                        # logger.info(f"   Mapping field '{user_key}': '{mapping_value}'")
+                                        # logger.info(f"   Similarity: {match_result.similarity_score:.3f}")
+                                        # logger.info(f"   Reason: {match_result.match_reason}")
+                                        # if match_result.extracted_parts:
+                                        #     logger.info(f"   Extracted parts: {match_result.extracted_parts}")
 
                 if best_match_result and best_mapping_record:
                     # Use the best intelligent match found
@@ -1423,7 +1423,7 @@ class OrderProcessor:
                     match_info["similarity_score"] = best_match_result.similarity_score
                     match_info["match_reason"] = best_match_result.match_reason
 
-                    logger.info(f"✓ Row {i}: Intelligent match success - {best_match_result.match_reason}")
+                    # logger.info(f"✓ Row {i}: Intelligent match success - {best_match_result.match_reason}")
                 else:
                     # No intelligent match found either
                     match_info["unmatched_reason"] = "No match found using exact or intelligent strategies"
