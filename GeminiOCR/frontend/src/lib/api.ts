@@ -528,16 +528,59 @@ export const forceDeleteApi = {
     fetchApi(`/companies/${companyId}/force-delete`, {
       method: 'DELETE',
     }),
-  
-  // Force delete document type and all its dependencies  
+
+  // Force delete document type and all its dependencies
   deleteDocumentTypeWithDependencies: (docTypeId: number): Promise<any> =>
     fetchApi(`/document-types/${docTypeId}/force-delete`, {
       method: 'DELETE',
     }),
-  
+
   // Force delete configuration and its related files
   deleteConfigWithDependencies: (configId: number): Promise<any> =>
     fetchApi(`/configs/${configId}/force-delete`, {
       method: 'DELETE',
+    }),
+};
+
+// AWB Processing API
+export interface OneDriveSyncRecord {
+  sync_id: number;
+  last_sync_time: string;
+  sync_status: string;
+  files_processed: number;
+  files_failed: number;
+  error_message?: string;
+  created_at: string;
+  metadata?: Record<string, any>;
+}
+
+export interface OneDriveSyncResponse {
+  success: boolean;
+  syncs: OneDriveSyncRecord[];
+}
+
+export interface AWBProcessResponse {
+  success: boolean;
+  batch_id: number;
+  message: string;
+  status_url: string;
+}
+
+export const awbApi = {
+  // Process monthly AWB files
+  processMonthly: (formData: FormData): Promise<AWBProcessResponse> =>
+    fetchApi<AWBProcessResponse>('/awb/process-monthly', {
+      method: 'POST',
+      body: formData,
+    }),
+
+  // Get OneDrive sync status
+  getSyncStatus: (limit: number = 10): Promise<OneDriveSyncResponse> =>
+    fetchApi<OneDriveSyncResponse>(`/awb/sync-status?limit=${limit}`),
+
+  // Trigger manual OneDrive sync
+  triggerSync: (): Promise<{ success: boolean; message: string }> =>
+    fetchApi<{ success: boolean; message: string }>('/awb/trigger-sync', {
+      method: 'POST',
     }),
 };

@@ -160,6 +160,9 @@ class File(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     s3_bucket = Column(String(255), nullable=True)
     s3_key = Column(String(255), nullable=True)
+    source_system = Column(String(50), nullable=True, default='upload', comment='Source system: upload, onedrive, s3')
+    source_path = Column(String(500), nullable=True, comment='Original source path for deduplication (e.g., onedrive://{drive_id}/{item_id})')
+    source_metadata = Column(JSON, nullable=True, comment='Metadata from source system (e.g., OneDrive item metadata)')
 
     document_files = relationship("DocumentFile", back_populates="file")
 
@@ -232,6 +235,7 @@ class UploadType(enum.Enum):
     multiple_files = "multiple_files"
     zip_file = "zip_file"
     mixed = "mixed"
+    awb_monthly = "awb_monthly"
 
 
 class BatchJob(Base):
@@ -366,3 +370,19 @@ class OrderItemFile(Base):
     # Relationships
     order_item = relationship("OcrOrderItem", back_populates="files")
     file = relationship("File")
+
+
+# OneDrive Sync Tracking
+
+class OneDriveSync(Base):
+    """Track OneDrive sync history and status"""
+    __tablename__ = "onedrive_sync"
+
+    sync_id = Column(Integer, primary_key=True)
+    last_sync_time = Column(DateTime, nullable=False, comment='Timestamp of last sync')
+    sync_status = Column(String(50), nullable=False, comment='Status: success, failed, in_progress')
+    files_processed = Column(Integer, default=0, comment='Number of files successfully processed')
+    files_failed = Column(Integer, default=0, comment='Number of files that failed')
+    error_message = Column(Text, nullable=True, comment='Error message if sync failed')
+    sync_metadata = Column(JSON, nullable=True, comment='Additional sync metadata (s3_prefix, folder paths, etc.)')
+    created_at = Column(DateTime, default=datetime.utcnow)

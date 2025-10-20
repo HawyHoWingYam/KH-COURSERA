@@ -26,10 +26,20 @@ import asyncio
 from sqlalchemy import func
 import time
 
+# Optional APScheduler imports with graceful fallback
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from apscheduler.triggers.cron import CronTrigger
+    APSCHEDULER_AVAILABLE = True
+except ImportError:
+    BackgroundScheduler = None
+    CronTrigger = None
+    APSCHEDULER_AVAILABLE = False
+
 # 導入配置管理器
 from config_loader import config_loader, get_api_key_manager, validate_and_log_config
 
-from db.database import get_db, engine, get_database_info
+from db.database import get_db, engine, get_database_info, SessionLocal
 from db.models import (
     Base,
     Company,
@@ -46,6 +56,7 @@ from db.models import (
     OrderItemFile,
     OrderStatus,
     OrderItemStatus,
+    OneDriveSync,
 )
 from main import extract_text_from_image, extract_text_from_pdf
 from utils.excel_converter import json_to_excel, json_to_csv
@@ -127,6 +138,20 @@ logging.basicConfig(
 
 # WebSocket connections store
 active_connections = {}
+
+# Background Scheduler for OneDrive Sync
+# Initialize only if APScheduler is available
+scheduler = BackgroundScheduler() if APSCHEDULER_AVAILABLE else None
+
+
+def run_onedrive_sync():
+    """Wrapper for OneDrive sync task"""
+    try:
+        logger.info("🔄 Running scheduled OneDrive sync...")
+        from scripts.onedrive_ingest import run_onedrive_sync as sync_func
+        sync_func()
+    except Exception as e:
+        logger.error(f"❌ Scheduled sync failed: {str(e)}")
 
 
 # Health check endpoint
@@ -257,6 +282,51 @@ def health_check():
         status_code = 200  # 對於降級服務仍返回 200
 
     return JSONResponse(content=health_status, status_code=status_code)
+
+
+# Startup and Shutdown Events for Scheduler
+@app.on_event("startup")
+async def startup_event():
+    """Initialize scheduler on startup"""
+    try:
+        # Check if OneDrive sync is enabled
+        onedrive_enabled = os.getenv('ONEDRIVE_SYNC_ENABLED', 'false').lower() == 'true'
+
+        if onedrive_enabled:
+            # Check if APScheduler is available
+            if not APSCHEDULER_AVAILABLE:
+                logger.error("❌ APScheduler not installed! OneDrive sync requires: pip install -r GeminiOCR/backend/requirements.txt")
+                return
+
+            # Schedule OneDrive sync daily at 2 AM
+            scheduler.add_job(
+                run_onedrive_sync,
+                CronTrigger(hour=2, minute=0),
+                id='onedrive_daily_sync',
+                name='OneDrive Daily Sync',
+                replace_existing=True
+            )
+            scheduler.start()
+            logger.info("✅ APScheduler started - OneDrive sync scheduled for 2:00 AM daily")
+        else:
+            if not APSCHEDULER_AVAILABLE:
+                logger.warning("⚠️ APScheduler not installed. OneDrive sync is disabled. Install with: pip install -r GeminiOCR/backend/requirements.txt")
+            else:
+                logger.info("ℹ️ OneDrive sync disabled (ONEDRIVE_SYNC_ENABLED not set to 'true')")
+
+    except Exception as e:
+        logger.error(f"❌ Failed to start scheduler: {str(e)}")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up scheduler on shutdown"""
+    try:
+        if APSCHEDULER_AVAILABLE and scheduler is not None and scheduler.running:
+            scheduler.shutdown()
+            logger.info("✅ APScheduler shut down gracefully")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down scheduler: {str(e)}")
 
 
 # Companies API endpoints
@@ -6623,6 +6693,209 @@ async def get_analysis_dashboard(db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Failed to get analysis dashboard: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get analysis dashboard: {str(e)}")
+
+
+# ===== AWB Processing Endpoints =====
+
+@app.post("/api/awb/process-monthly")
+async def process_monthly_awb(
+    company_id: int = Form(...),
+    month: str = Form(...),
+    summary_pdf: UploadFile = File(...),
+    employees_csv: UploadFile = File(...),
+    s3_prefix: str = Form("upload/onedrive/airway-bills"),
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db)
+):
+    """Process monthly AWB files - OCR + 3-layer matching"""
+    try:
+        # Validate inputs
+        if not month or '-' not in month:
+            raise HTTPException(status_code=400, detail="Month must be in YYYY-MM format")
+
+        # Verify company exists
+        company = db.query(Company).filter(Company.company_id == company_id).first()
+        if not company:
+            raise HTTPException(status_code=404, detail=f"Company {company_id} not found")
+
+        # Upload files to S3
+        s3_manager = get_s3_manager()
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+
+        # Upload summary PDF
+        summary_content = await summary_pdf.read()
+        summary_s3_key = f"upload/awb/monthly/{month}/summary_{timestamp}.pdf"
+        s3_manager.put_object(summary_s3_key, summary_content, content_type='application/pdf')
+        logger.info(f"✅ Uploaded summary PDF: {summary_s3_key}")
+
+        # Upload employees CSV
+        employees_content = await employees_csv.read()
+        employees_s3_key = f"upload/awb/monthly/{month}/employees_{timestamp}.csv"
+        s3_manager.put_object(employees_s3_key, employees_content, content_type='text/csv')
+        logger.info(f"✅ Uploaded employees CSV: {employees_s3_key}")
+
+        # Create batch job
+        batch_job = BatchJob(
+            company_id=company_id,
+            upload_type=UploadType.awb_monthly,
+            status="processing",
+            total_files=1,
+            s3_upload_path=f"upload/awb/monthly/{month}",
+            upload_description=f"AWB Monthly Processing: {month}"
+        )
+        db.add(batch_job)
+        db.commit()
+        db.refresh(batch_job)
+        batch_id = batch_job.batch_id
+
+        logger.info(f"✅ Created BatchJob {batch_id} for AWB processing")
+
+        # Process in background
+        if background_tasks:
+            background_tasks.add_task(
+                process_awb_background,
+                batch_id,
+                month,
+                summary_s3_key,
+                employees_s3_key,
+                s3_prefix
+            )
+        else:
+            # Synchronous processing fallback
+            process_awb_background(batch_id, month, summary_s3_key, employees_s3_key, s3_prefix)
+
+        return {
+            "success": True,
+            "batch_id": batch_id,
+            "message": f"AWB processing started for {month}",
+            "status_url": f"/batch-jobs/{batch_id}"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error in AWB processing: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def process_awb_background(batch_id: int, month: str, summary_s3_key: str, employees_s3_key: str, s3_prefix: str):
+    """Background task for AWB processing"""
+    db = SessionLocal()
+    try:
+        from utils.awb_processor import AWBProcessor
+        from sqlalchemy.orm import sessionmaker
+        from db.database import engine
+
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        db = SessionLocal()
+
+        logger.info(f"🔄 Processing AWB batch {batch_id}...")
+
+        # Initialize processor
+        processor = AWBProcessor()
+
+        # Process month
+        success, output_data, error_msg = processor.process_monthly_awb(
+            company_id=None,  # Would need to fetch from batch_id
+            month=month,
+            summary_pdf_path=summary_s3_key,
+            employees_csv_path=employees_s3_key,
+            db_session=db
+        )
+
+        # Update batch job
+        batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
+
+        if success and output_data:
+            # Generate output files
+            outputs = processor.generate_outputs(output_data['records'], month)
+
+            # Update batch job with results
+            batch_job.status = "completed"
+            batch_job.processed_files = output_data['total_count']
+            batch_job.successful_files = output_data['total_count']
+            batch_job.unmatched_count = output_data['unmatched_count']
+            batch_job.json_output_path = outputs.get('json_path')
+            batch_job.excel_output_path = outputs.get('excel_path')
+            batch_job.csv_output_path = outputs.get('csv_path')
+
+            logger.info(f"✅ Batch {batch_id} completed successfully")
+        else:
+            batch_job.status = "failed"
+            batch_job.error_message = error_msg
+            logger.error(f"❌ Batch {batch_id} failed: {error_msg}")
+
+        db.commit()
+
+    except Exception as e:
+        logger.error(f"❌ Background processing error for batch {batch_id}: {str(e)}")
+        batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
+        if batch_job:
+            batch_job.status = "failed"
+            batch_job.error_message = str(e)
+            db.commit()
+
+    finally:
+        db.close()
+
+
+# ===== OneDrive/AWB Sync Endpoints =====
+
+@app.get("/api/awb/sync-status")
+def get_onedrive_sync_status(limit: int = Query(10, ge=1, le=100), db: Session = Depends(get_db)):
+    """Get OneDrive sync history"""
+    try:
+        syncs = db.query(OneDriveSync).order_by(
+            OneDriveSync.created_at.desc()
+        ).limit(limit).all()
+
+        return {
+            "success": True,
+            "syncs": [
+                {
+                    "sync_id": s.sync_id,
+                    "last_sync_time": s.last_sync_time.isoformat() if s.last_sync_time else None,
+                    "sync_status": s.sync_status,
+                    "files_processed": s.files_processed,
+                    "files_failed": s.files_failed,
+                    "error_message": s.error_message,
+                    "created_at": s.created_at.isoformat() if s.created_at else None,
+                    "metadata": s.sync_metadata
+                }
+                for s in syncs
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Error fetching sync status: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/awb/trigger-sync")
+def trigger_onedrive_sync(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Manually trigger OneDrive sync"""
+    try:
+        # Check if sync is enabled
+        onedrive_enabled = os.getenv('ONEDRIVE_SYNC_ENABLED', 'false').lower() == 'true'
+
+        if not onedrive_enabled:
+            return {
+                "success": False,
+                "message": "OneDrive sync is disabled (ONEDRIVE_SYNC_ENABLED not set to 'true')"
+            }
+
+        # Queue background task
+        from scripts.onedrive_ingest import run_onedrive_sync as sync_func
+        background_tasks.add_task(sync_func)
+
+        return {
+            "success": True,
+            "message": "OneDrive sync triggered in background"
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Error triggering sync: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

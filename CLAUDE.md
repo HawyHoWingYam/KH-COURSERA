@@ -239,7 +239,68 @@ npm run build       # TypeScript compilation check
 ```bash
 cd GeminiOCR/backend
 python check_db.py  # Database connectivity test
-# No formal test suite - validate with health endpoints
+
+# Run tests (including APScheduler robustness tests)
+pytest tests/test_awb_processor.py -v
+pytest tests/test_app_boot_without_scheduler.py -v
+```
+
+## Optional Dependencies and Features
+
+### APScheduler Integration (Optional)
+
+**Purpose**: Enables automated OneDrive sync scheduling for AWB (Air Waybill) files.
+
+**Included in**: `GeminiOCR/backend/requirements.txt`
+
+**Setup**:
+```bash
+cd /home/ubuntu/KH-COURSERA/GeminiOCR/backend
+pip install -r requirements.txt
+```
+
+**Configuration**:
+```bash
+# Enable OneDrive sync in .env file
+ONEDRIVE_SYNC_ENABLED=true
+
+# Optional: Configure sync time (default: 2:00 AM)
+# Schedule format: Hour (0-23) and Minute (0-59)
+ONEDRIVE_SYNC_HOUR=2
+ONEDRIVE_SYNC_MINUTE=0
+```
+
+**Graceful Degradation**:
+- If APScheduler is not installed but `ONEDRIVE_SYNC_ENABLED=true`, the app logs an error and skips scheduler initialization
+- If APScheduler is not installed and `ONEDRIVE_SYNC_ENABLED=false` (or not set), the app logs a warning and continues normally
+- The application always boots successfully regardless of APScheduler availability
+
+**Verification**:
+```bash
+# Check if APScheduler is installed
+python -c "import apscheduler; print('APScheduler installed')" || echo "APScheduler not installed"
+
+# Check app boot logs for scheduler status
+# Look for: "✅ APScheduler started" or "⚠️ APScheduler not installed"
+```
+
+### OneDrive Integration
+
+**Prerequisites**:
+- Azure AD application registration with O365 library access
+- Azure credentials configured in `.env` file
+
+**Features**:
+- Automated daily file sync from OneDrive to S3
+- Duplicate prevention via source path tracking
+- File movement to "已处理" (processed) folder after sync
+- Integration with AWB monthly processing workflow
+
+**API Endpoints**:
+```
+POST /api/awb/process-monthly   # Start AWB processing
+GET  /api/awb/sync-status       # Check OneDrive sync history
+POST /api/awb/trigger-sync      # Manually trigger sync
 ```
 
 ## Important File Locations & URLs
