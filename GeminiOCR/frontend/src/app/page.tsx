@@ -14,9 +14,31 @@ export default function Home() {
         <div className="flex flex-col gap-4 mt-8">
           <Link
             href="/orders"
-            className="bg-blue-600 text-white py-3 px-6 rounded-lg text-center font-medium hover:bg-blue-200 transition-colors"
+            className="bg-blue-600 text-white py-3 px-6 rounded-lg text-center font-medium hover:bg-blue-700 transition-colors"
           >
-            OCR Orders
+            📦 OCR Orders
+          </Link>
+
+          {/* AWB Processing Section */}
+          <Link
+            href="/awb/sync"
+            className="bg-green-600 text-white py-3 px-6 rounded-lg text-center font-medium hover:bg-green-700 transition-colors"
+          >
+            📁 OneDrive 同步管理
+          </Link>
+
+          <Link
+            href="/awb/monthly"
+            className="bg-purple-600 text-white py-3 px-6 rounded-lg text-center font-medium hover:bg-purple-700 transition-colors"
+          >
+            📄 AWB 月度處理
+          </Link>
+
+          <Link
+            href="/batch-jobs"
+            className="bg-slate-200 text-slate-800 py-3 px-6 rounded-lg text-center font-medium hover:bg-slate-300 transition-colors"
+          >
+            📋 批次任務列表
           </Link>
 
           {/* <Link
@@ -35,9 +57,9 @@ export default function Home() {
 
           <Link
             href="/admin"
-            className="bg-blue-600 text-white py-3 px-6 rounded-lg text-center font-medium hover:bg-blue-200 transition-colors"
+            className="bg-slate-600 text-white py-3 px-6 rounded-lg text-center font-medium hover:bg-slate-700 transition-colors"
           >
-            Admin Page
+            ⚙️ Admin Page
           </Link>
         </div>
       </div>

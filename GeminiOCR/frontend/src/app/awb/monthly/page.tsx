@@ -1,8 +1,10 @@
 'use client'
 
-import { useState, ChangeEvent, FormEvent } from 'react'
+import { useState, ChangeEvent, FormEvent, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { companiesApi, Company } from '@/lib/api'
+import { AWBNavigation } from '@/components/AWBNavigation'
 
 interface FormData {
   company_id: string
@@ -22,8 +24,25 @@ export default function AWBMonthlyPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  const [companies, setCompanies] = useState<Company[]>([])
+  const [companiesLoading, setCompaniesLoading] = useState(true)
 
-  const handleInputChange = (e: ChangeEvent<HTMLInputElement>) => {
+  // Fetch companies on component mount
+  useEffect(() => {
+    async function fetchCompanies() {
+      try {
+        const data = await companiesApi.getAll()
+        setCompanies(data)
+      } catch (err) {
+        console.error('Failed to fetch companies:', err)
+      } finally {
+        setCompaniesLoading(false)
+      }
+    }
+    fetchCompanies()
+  }, [])
+
+  const handleInputChange = (e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target
     setFormData((prev) => ({
       ...prev,
@@ -126,6 +145,9 @@ export default function AWBMonthlyPage() {
           </CardHeader>
 
           <CardContent>
+            {/* Quick Navigation */}
+            <AWBNavigation />
+
             <form onSubmit={handleSubmit} className="space-y-6">
               {/* Error Alert */}
               {error && (
@@ -146,16 +168,23 @@ export default function AWBMonthlyPage() {
                 <label htmlFor="company_id" className="block text-sm font-medium text-slate-700">
                   Company <span className="text-red-500">*</span>
                 </label>
-                <input
-                  type="number"
+                <select
                   id="company_id"
                   name="company_id"
                   value={formData.company_id}
                   onChange={handleInputChange}
-                  placeholder="Enter company ID"
                   className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  disabled={isLoading}
-                />
+                  disabled={isLoading || companiesLoading}
+                  required
+                >
+                  <option value="">選擇公司...</option>
+                  {companies.map((company) => (
+                    <option key={company.company_id} value={company.company_id}>
+                      {company.company_name} ({company.company_code})
+                    </option>
+                  ))}
+                </select>
+                {companiesLoading && <p className="text-xs text-slate-500">加載公司列表中...</p>}
               </div>
 
               {/* Month Selection */}
@@ -173,6 +202,11 @@ export default function AWBMonthlyPage() {
                   disabled={isLoading}
                 />
                 <p className="text-xs text-slate-500">Format: YYYY-MM (e.g., 2025-10)</p>
+                {formData.month && (
+                  <p className="text-xs text-blue-600 font-medium">
+                    📁 OneDrive folder: HYA-OCR/{formData.month.replace('-', '')}
+                  </p>
+                )}
               </div>
 
               {/* Summary PDF Upload */}

@@ -12,9 +12,11 @@ const nextConfig = {
   },
 
 
-  // Allow cross-origin requests to our API
+  // Proxy frontend '/api/*' calls to the backend.
+  // Note: The backend mixes routes: most are mounted at '/', but some are under '/api' (e.g. awb, admin/usage).
+  // We special‑case those first, then fall back to '/' for the rest to avoid widespread 404s.
   async rewrites() {
-    // Use Docker service name for environment-independent deployment
+    // Use Docker service name for container envs or explicit public URL when provided
     const apiHost = process.env.NEXT_PUBLIC_API_URL || 'http://backend:8000';
 
     console.log("=== next.config.js Debug ===");
@@ -23,14 +25,15 @@ const nextConfig = {
     console.log("===========================");
 
     return [
-      {
-        source: '/api/:path*',
-        destination: `${apiHost}/:path*`,
-      },
-      {
-        source: '/files/:fileId/preview',
-        destination: `${apiHost}/files/:fileId`,
-      }
+      // Keep backend endpoints that are already under /api working
+      { source: '/api/awb/:path*', destination: `${apiHost}/api/awb/:path*` },
+      { source: '/api/admin/:path*', destination: `${apiHost}/api/admin/:path*` },
+
+      // Map remaining '/api/*' calls to backend root-mounted routes (e.g., /orders, /document-types, /jobs, ...)
+      { source: '/api/:path*', destination: `${apiHost}/:path*` },
+
+      // File preview passthrough (non-API)
+      { source: '/files/:fileId/preview', destination: `${apiHost}/files/:fileId` },
     ];
   },
 
