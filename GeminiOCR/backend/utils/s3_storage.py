@@ -1176,6 +1176,80 @@ class S3StorageManager:
                 "error": str(e),
             }
 
+    def list_awb_invoices_for_month(self, month: str) -> list:
+        """List invoice PDFs for given month from canonical and fallback S3 prefixes.
+
+        Args:
+            month: Month in YYYY-MM format (e.g., "2025-10")
+
+        Returns:
+            list: List of dictionaries with keys: key, full_key, size, last_modified
+        """
+        try:
+            year, mm = month.split('-')
+
+            # Canonical and fallback prefixes for AWB invoices
+            prefixes = [
+                f"upload/onedrive/airway-bills/{year}/{mm}/",
+                f"uploads/onedrive/airway-bills/{year}/{mm}/",
+                f"upload/upload/onedrive/airway-bills/{year}/{mm}/",
+            ]
+
+            # Get minimum file size from env (default 10KB)
+            min_size = int(os.getenv("AWB_S3_MIN_FILE_SIZE_BYTES", "10240"))
+
+            all_files = []
+
+            for prefix in prefixes:
+                logger.info(f"🔍 Scanning S3 prefix for invoices: {prefix}")
+                try:
+                    paginator = self.s3_client.get_paginator("list_objects_v2")
+                    pages = paginator.paginate(Bucket=self.bucket_name, Prefix=prefix)
+
+                    for page in pages:
+                        if "Contents" not in page:
+                            continue
+
+                        for obj in page["Contents"]:
+                            # Filter for PDF files only
+                            if not obj["Key"].lower().endswith('.pdf'):
+                                continue
+
+                            # Filter by minimum size
+                            if obj["Size"] < min_size:
+                                logger.debug(f"⊘ Skipping {obj['Key']} - size {obj['Size']} < {min_size}")
+                                continue
+
+                            all_files.append({
+                                "key": os.path.basename(obj["Key"]),
+                                "full_key": obj["Key"],
+                                "size": obj["Size"],
+                                "last_modified": obj["LastModified"],
+                                "prefix_source": prefix,
+                            })
+
+                except ClientError as e:
+                    if e.response["Error"]["Code"] != "NoSuchKey":
+                        logger.warning(f"⚠️ Error scanning prefix {prefix}: {e}")
+
+            # Deduplicate by filename, prefer latest LastModified
+            seen = {}
+            for f in all_files:
+                name = f["key"]
+                if name not in seen or f["last_modified"] > seen[name]["last_modified"]:
+                    seen[name] = f
+
+            result = list(seen.values())
+            logger.info(f"✅ Found {len(result)} unique invoice PDFs for month {month}")
+            return result
+
+        except ValueError:
+            logger.error(f"❌ Invalid month format: {month}. Expected YYYY-MM")
+            return []
+        except Exception as e:
+            logger.error(f"❌ Error listing AWB invoices for {month}: {e}")
+            return []
+
     # ========================================
     # NEW ID-BASED METHODS FOR FILE MANAGEMENT
     # ========================================

@@ -1,0 +1,54 @@
+Please analyze the provided CSL / 1010 eBill PDF document and extract the information based on the FINAL UNIFIED SCHEMA provided.
+CRITICAL INSTRUCTION: You MUST map the extracted data to the provided JSON schema. The key names in your output MUST EXACTLY match the key names defined in the schema (e.g., use "invoice_date", "customer_name", "service_number", etc.).
+Overall Document Identification:
+* provider: Set this value to "CSL".
+* __filename: Extract the filename of the PDF document.
+I. Header Section:
+1. customer_name:
+   * Location: Top left area of the bill.
+   * Value: Extract the full company name (e.g., "HYAKUNOUSHA INTERNATIONAL LTD").
+2. account_number:
+   * Label: 'Account No.'.
+   * Value: Extract the full account number string, including hyphens.
+3. invoice_date:
+   * Label: 'Bill Cut Date'.
+   * Value: Extract the date and convert it to YYYY-MM-DD format.
+II. Payment Summary Section:
+1. total_amount_due:
+   * Label: 'Please Pay'.
+   * Value: This will be the value for billing_summary.total_amount_due.
+2. payment_due_date:
+   * Label: 'Due Date'.
+   * Value: Extract the date and convert it to YYYY-MM-DD format.
+III. Billing Summary Section (billing_summary object):
+* previous_bill_amount:
+   * Label: 'Previous Balance'.
+   * Value: Positive number with 2 decimal places.
+* payment_received:
+   * Label: 'Payment Received Thank You'.
+   * Value: Negative number with 2 decimal places.
+* balance_forwarded:
+   * Label: 'Balance Brought Forward'.
+   * Value: Number with 2 decimal places.
+* current_charges:
+   * Label: 'Current Charges Sub-Total'.
+   * Value: Number with 2 decimal places.
+* total_amount_due:
+   * Use the value extracted from the 'Please Pay' field.
+IV. Service & Charge Details (service_details array):
+CRITICAL STRUCTURE INSTRUCTION: The CSL bill has one main mobile number. You MUST create a service_details array containing A SINGLE OBJECT that holds all the charge details for this bill.
+1. Create the Single Object in the array and populate it:
+   * service_number:
+      * Label: 'Mobile No.'.
+      * Value: Extract the 8-digit mobile number from the header.
+   * subtotal:
+      * Label: 'Current Charges Sub-Total'.
+      * Value: Use the same value as billing_summary.current_charges.
+   * charge_items (array):
+      * Location: All line items under the 'Current Charges' section.
+      * For EACH line item, extract:
+         * description: The English text description (e.g., 'Monthly Mobile Service Fee', 'Monthly Incentive').
+         * period: The date range next to the description. Convert to 'YYYY/MM/DD - YYYY/MM/DD' format. If not present, the value should be null.
+         * amount: The numeric value on the far right. CRITICAL: Preserve the sign. Positive for charges, negative for incentives (e.g., -480.00).
+V. Final Validation Rule:
+The sum of all amount fields in the charge_items array should equal the subtotal and billing_summary.current_charges.

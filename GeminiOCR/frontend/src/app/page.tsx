@@ -19,14 +19,6 @@ export default function Home() {
             📦 OCR Orders
           </Link>
 
-          {/* AWB Processing Section */}
-          <Link
-            href="/awb/sync"
-            className="bg-green-600 text-white py-3 px-6 rounded-lg text-center font-medium hover:bg-green-700 transition-colors"
-          >
-            📁 OneDrive 同步管理
-          </Link>
-
           <Link
             href="/awb/monthly"
             className="bg-purple-600 text-white py-3 px-6 rounded-lg text-center font-medium hover:bg-purple-700 transition-colors"

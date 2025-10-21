@@ -23,18 +23,18 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
 
+  // Proxy frontend '/api/*' calls to the backend, preserving existing '/api' namespaces used by the backend.
   async rewrites() {
     const rules = [
-      {
-        // Proxy API calls to the FastAPI backend
-        source: "/api/:path*",
-        destination: `${apiBase}/:path*`,
-      },
-      {
-        // File previews route (kept for clarity; proxies through /api rule above)
-        source: "/files/:fileId/preview",
-        destination: "/api/files/:fileId/preview",
-      },
+      // Keep backend endpoints that are already under /api working
+      { source: "/api/awb/:path*", destination: `${apiBase}/api/awb/:path*` },
+      { source: "/api/admin/:path*", destination: `${apiBase}/api/admin/:path*` },
+
+      // Map remaining '/api/*' calls to backend root-mounted routes
+      { source: "/api/:path*", destination: `${apiBase}/:path*` },
+
+      // File preview passthrough (non-API)
+      { source: "/files/:fileId/preview", destination: `${apiBase}/files/:fileId` },
     ];
 
     console.log("=== Rewrites Configuration ===");
@@ -42,6 +42,18 @@ const nextConfig: NextConfig = {
     console.log("=============================");
 
     return rules;
+  },
+
+  // Add redirects for reorganized routes
+  async redirects() {
+    return [
+      // Move OneDrive Sync under Admin
+      {
+        source: "/awb/sync",
+        destination: "/admin/awb/sync",
+        permanent: true,
+      },
+    ];
   },
 };
 

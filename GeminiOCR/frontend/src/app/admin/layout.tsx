@@ -31,11 +31,17 @@ export default function AdminLayout({
           >
             Configurations
           </Link>
-          <Link 
-            href="/admin/usage" 
+          <Link
+            href="/admin/usage"
             className="block py-2 px-4 rounded hover:bg-slate-700"
           >
             API Usage
+          </Link>
+          <Link
+            href="/admin/awb/sync"
+            className="block py-2 px-4 rounded hover:bg-slate-700"
+          >
+            OneDrive Sync
           </Link>
           <div className="pt-4 mt-4 border-t border-slate-600">
             <Link 

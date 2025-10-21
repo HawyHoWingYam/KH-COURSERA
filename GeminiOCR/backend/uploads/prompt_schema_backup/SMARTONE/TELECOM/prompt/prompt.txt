@@ -1,0 +1,54 @@
+﻿Please analyze the provided SmarTone Statement PDF document and extract the information based on the FINAL UNIFIED SCHEMA provided.
+CRITICAL INSTRUCTION: You MUST map the extracted data to the provided JSON schema. The key names in your output MUST EXACTLY match the key names defined in the schema (e.g., use "invoice_date", "customer_name", "service_number", etc.).
+Global Rules:
+* Language: Prioritize extracting the Chinese text for charge descriptions ("項目內容").
+* Amounts with "CR": Any amount followed by "CR" MUST be converted to a NEGATIVE number. All other amounts are positive.
+Overall Document Identification:
+* provider: Set this value to "SmarTone".
+* __filename: Extract the filename of the PDF document.
+I. Page 1 - Header & Account Summary:
+1. customer_name:
+   * Location: Top-left corner of the first page.
+   * Value: Extract the full company name (e.g., "HYAKUNOUSHA INTERNATIONAL LIMITED").
+2. account_number:
+   * Label: '賬戶號碼'.
+   * Value: Extract the 8-digit number that follows.
+3. invoice_date:
+   * Label: '發單日期'.
+   * Value: Extract the date and convert it to YYYY-MM-DD format.
+4. payment_due_date:
+   * Label: '自動轉賬' date.
+   * Value: Look for the date associated with the autopay transaction and convert it to YYYY-MM-DD format. If not available, set to null.
+II. Page 1 - Billing Summary (billing_summary object):
+* previous_bill_amount:
+   * Label: '前單總額' under '上月結餘'.
+   * Value: The total amount from the previous bill.
+* payment_received:
+   * Label: '自動轉賬' under '上月結餘'.
+   * Value: The amount marked with "CR". MUST be a negative number.
+* balance_forwarded:
+   * Label: '戶口結餘'.
+   * Value: The balance after the payment was applied.
+* total_amount_due:
+   * Label: '本月收費總額'.
+   * Value: The total amount due for the current billing period.
+* current_charges:
+   * Use the same value as total_amount_due. SmarTone bills often equate these two.
+III. Service & Charge Details (service_details array):
+CRITICAL: The details are broken down by mobile number across multiple pages. Iterate through each number's section.
+For EACH mobile number block:
+1. Create a new object in the service_details array and populate it:
+   * service_number:
+      * Label: '流動電話/服務 號碼'.
+      * Value: Extract the 8-digit phone number.
+   * subtotal:
+      * Label: '項目總額'.
+      * Value: The subtotal amount for that specific phone number.
+   * charge_items (array):
+      * Location: All line items listed under the service number.
+      * For EACH line item, extract:
+         * description: The Chinese text from the '項目內容' column.
+         * period: The date or date range from the '日期' column. Convert to 'YYYY-MM-DD' or 'YYYY-MM-DD - YYYY-MM-DD' format. If blank, the value should be null.
+         * amount: The numeric value from the '收費(HK$)' column. REMINDER: Convert values with "CR" to negative numbers.
+IV. Final Validation Rule:
+The sum of all subtotal fields from the service_details array should approximately equal the billing_summary.total_amount_due.

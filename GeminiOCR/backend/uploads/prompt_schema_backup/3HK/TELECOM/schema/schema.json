@@ -1,0 +1,129 @@
+{
+  "description": "Schema for data extracted from a 3HK monthly consolidated bill (Final Unified Schema). This schema forces a single, standardized structure, including nested keys, to ensure consistent CSV output.",
+  "type": "object",
+  "properties": {
+    "provider": {
+      "description": "Name of the telecom provider. MUST be '3HK'.",
+      "type": "string"
+    },
+    "__filename": {
+      "description": "The filename of the source PDF document.",
+      "type": "string"
+    },
+    "customer_name": {
+      "description": "The standardized key for the company name being billed.",
+      "type": "string"
+    },
+    "account_number": {
+      "description": "The standardized key for the customer's account number. Corresponds to 'Account No.'.",
+      "type": "string"
+    },
+    "invoice_number": {
+      "description": "The standardized key for the invoice number. 3HK bills do not have this, so the value should be null.",
+      "type": "string"
+    },
+    "invoice_date": {
+      "description": "The standardized key for the bill issue date, in YYYY-MM-DD format. Corresponds to 'Bill Date'.",
+      "type": "string"
+    },
+    "payment_due_date": {
+      "description": "The standardized key for the payment due date, in YYYY-MM-DD format. Corresponds to 'Payment Due Date'.",
+      "type": "string"
+    },
+    "billing_summary": {
+      "description": "A standardized object for the summary of charges, payments, and balances.",
+      "type": "object",
+      "properties": {
+        "previous_bill_amount": {
+          "description": "Standardized key. Not explicitly available on the bill, should be set to 0.0.",
+          "type": "number"
+        },
+        "payment_received": {
+          "description": "Standardized key. Not explicitly available on the bill, should be set to 0.0.",
+          "type": "number"
+        },
+        "balance_forwarded": {
+          "description": "Standardized key. Corresponds to 'Balance Brought Forward'.",
+          "type": "number"
+        },
+        "current_charges": {
+          "description": "Standardized key. Corresponds to 'Current Due'.",
+          "type": "number"
+        },
+        "total_amount_due": {
+          "description": "Standardized key. Corresponds to 'Total Amount Due'.",
+          "type": "number"
+        }
+      },
+      "required": [
+        "previous_bill_amount",
+        "payment_received",
+        "balance_forwarded",
+        "current_charges",
+        "total_amount_due"
+      ]
+    },
+    "service_details": {
+      "description": "A standardized array containing the detailed charges for each service (phone) number.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "service_number": {
+            "description": "Standardized key. The 8-digit service (phone) number.",
+            "type": "string"
+          },
+          "user_name": {
+            "description": "The standardized key for the user's name. Not applicable for 3HK, so the value should be null.",
+            "type": "string"
+          },
+          "subtotal": {
+            "description": "The subtotal for the service number.",
+            "type": "number"
+          },
+          "charge_items": {
+            "description": "A standardized array of all individual charges, fees, and rebates for this service number.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "description": {
+                  "description": "Standardized key. The English description of the charge or credit.",
+                  "type": "string"
+                },
+                "period": {
+                  "description": "Standardized key. The date or period the charge applies to.",
+                  "type": "string"
+                },
+                "amount": {
+                  "description": "Standardized key. The value of the line item. MUST be negative for items marked with 'CR'.",
+                  "type": "number"
+                }
+              },
+              "required": [
+                "period",
+                "description",
+                "amount"
+              ]
+            }
+          }
+        },
+        "required": [
+          "service_number",
+          "subtotal",
+          "charge_items"
+        ]
+      }
+    }
+  },
+  "required": [
+    "provider",
+    "__filename",
+    "customer_name",
+    "account_number",
+    "invoice_date",
+    "payment_due_date",
+    "billing_summary",
+    "service_details"
+  ]
+}
