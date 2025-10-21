@@ -2782,19 +2782,28 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
 
         items_data = []
         for item in items:
-            # Get files for this item
+            # Get files for this item - separated into primary and attachments
             file_links = db.query(OrderItemFile).filter(OrderItemFile.item_id == item.item_id).all()
-            files_list = []
+
+            primary_file = None
+            attachments = []
+
             for link in file_links:
                 file_info = link.file
-                files_list.append({
+                file_data = {
                     "file_id": file_info.file_id,
                     "filename": file_info.file_name,
                     "file_size": file_info.file_size,
                     "file_type": file_info.file_type,
-                    "upload_order": link.upload_order,
                     "uploaded_at": link.created_at.isoformat()
-                })
+                }
+
+                # Check if this is the primary file
+                if item.primary_file_id and file_info.file_id == item.primary_file_id:
+                    primary_file = file_data
+                else:
+                    file_data["upload_order"] = link.upload_order
+                    attachments.append(file_data)
 
             items_data.append({
                 "item_id": item.item_id,
@@ -2803,8 +2812,9 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
                 "doc_type_id": item.doc_type_id,
                 "item_name": item.item_name,
                 "status": item.status.value,
-                "file_count": item.file_count,
-                "files": files_list,
+                "primary_file": primary_file,
+                "attachments": attachments,
+                "attachment_count": len(attachments),
                 "company_name": item.company.company_name if item.company else None,
                 "doc_type_name": item.document_type.type_name if item.document_type else None,
                 "ocr_result_json_path": item.ocr_result_json_path,
@@ -3193,14 +3203,278 @@ def process_order_mapping_only(order_id: int, background_tasks: BackgroundTasks,
         raise HTTPException(status_code=500, detail=f"Failed to process mapping: {str(e)}")
 
 
+# ========== PRIMARY FILE ENDPOINTS ==========
+
+@app.post("/orders/{order_id}/items/{item_id}/primary-file", response_model=dict)
+def upload_primary_file_to_order_item(
+    order_id: int,
+    item_id: int,
+    file: UploadFile = File(...),
+    replace: bool = Query(False),
+    db: Session = Depends(get_db)
+):
+    """Upload or replace the primary file for an order item"""
+    try:
+        # Verify order and item exist
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only upload files to orders in DRAFT status")
+
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Validate file type
+        valid_types = ['image/jpeg', 'image/png', 'application/pdf']
+        valid_extensions = ['.jpg', '.jpeg', '.png', '.pdf']
+        file_extension = '.' + file.filename.split('.')[-1].lower() if '.' in file.filename else ''
+
+        if file.content_type not in valid_types and file_extension not in valid_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File {file.filename} type not supported. Please upload images or PDFs."
+            )
+
+        # If replacing and old primary file exists, delete it
+        if replace and item.primary_file_id:
+            _delete_primary_file_and_results(item, db)
+
+        # Get file size
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        file.file.seek(0)
+
+        # Get file storage manager
+        file_storage = get_file_storage()
+
+        # Save file to storage
+        try:
+            file_path, original_filename = file_storage.save_order_file(
+                file, order_id, item_id
+            )
+
+            # Create file record
+            db_file = DBFile(
+                file_path=file_path,
+                file_name=file.filename,
+                file_size=file_size,
+                file_type=file.content_type
+            )
+            db.add(db_file)
+            db.flush()  # Get file_id
+
+            # Link file as primary
+            item.primary_file_id = db_file.file_id
+            item.updated_at = datetime.utcnow()
+
+            # Create association in order_item_files for unified cleanup
+            order_item_file = OrderItemFile(
+                item_id=item_id,
+                file_id=db_file.file_id,
+                upload_order=0  # Primary file gets upload_order=0
+            )
+            db.add(order_item_file)
+
+            order.updated_at = datetime.utcnow()
+            db.commit()
+
+            return {
+                "message": "Primary file uploaded successfully",
+                "file_id": db_file.file_id,
+                "filename": file.filename,
+                "file_size": file_size,
+                "file_path": file_path
+            }
+
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to save primary file {file.filename}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to save file {file.filename}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to upload primary file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload primary file: {str(e)}")
+
+
+@app.delete("/orders/{order_id}/items/{item_id}/primary-file", response_model=dict)
+def delete_primary_file_from_order_item(
+    order_id: int,
+    item_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete the primary file from an order item"""
+    try:
+        # Verify order exists and is in DRAFT status
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only delete files from orders in DRAFT status")
+
+        # Verify item exists and belongs to the order
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        if not item.primary_file_id:
+            raise HTTPException(status_code=404, detail="Item has no primary file")
+
+        # Delete file and results
+        _delete_primary_file_and_results(item, db)
+
+        return {
+            "message": "Primary file deleted successfully",
+            "item_id": item_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete primary file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete primary file: {str(e)}")
+
+
+def _delete_primary_file_and_results(item: OcrOrderItem, db: Session):
+    """Helper to delete primary file and its associated OCR results."""
+    try:
+        file_id = item.primary_file_id
+        if not file_id:
+            return
+
+        # Get file info for deletion from storage
+        file_info = db.query(DBFile).filter(DBFile.file_id == file_id).first()
+        if file_info:
+            file_storage = get_file_storage()
+            try:
+                file_storage.delete_file(file_info.file_path)
+            except Exception as e:
+                logger.warning(f"Could not delete file from storage: {e}")
+
+        # Remove from order_item_files
+        file_link = db.query(OrderItemFile).filter(
+            OrderItemFile.item_id == item.item_id,
+            OrderItemFile.file_id == file_id
+        ).first()
+        if file_link:
+            db.delete(file_link)
+
+        # Delete from files table
+        db.query(DBFile).filter(DBFile.file_id == file_id).delete()
+
+        # Clear primary_file_id and JSON/CSV results
+        item.primary_file_id = None
+        item.ocr_result_json_path = None
+        item.ocr_result_csv_path = None
+        item.updated_at = datetime.utcnow()
+
+        # Delete S3 results if they exist
+        try:
+            s3_manager = S3StorageManager()
+            if item.ocr_result_json_path:
+                try:
+                    s3_manager.delete_file(item.ocr_result_json_path)
+                    logger.info(f"Deleted S3 result: {item.ocr_result_json_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete {item.ocr_result_json_path}: {e}")
+
+            if item.ocr_result_csv_path:
+                try:
+                    s3_manager.delete_file(item.ocr_result_csv_path)
+                    logger.info(f"Deleted S3 result: {item.ocr_result_csv_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete {item.ocr_result_csv_path}: {e}")
+        except Exception as e:
+            logger.warning(f"Error deleting S3 results: {str(e)}")
+
+        db.commit()
+
+    except Exception as e:
+        logger.error(f"Error in _delete_primary_file_and_results: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete primary file: {str(e)}")
+
+
+@app.get("/orders/{order_id}/items/{item_id}/files/{file_id}/download/json", response_model=dict)
+def download_attachment_json(
+    order_id: int,
+    item_id: int,
+    file_id: int,
+    db: Session = Depends(get_db)
+):
+    """Download JSON result for a specific attachment file"""
+    try:
+        # Verify order exists
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # Verify item exists and belongs to order
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Verify file exists and is linked to the item (but not primary)
+        file_link = db.query(OrderItemFile).filter(
+            OrderItemFile.item_id == item_id,
+            OrderItemFile.file_id == file_id
+        ).first()
+        if not file_link:
+            raise HTTPException(status_code=404, detail="File not linked to this item")
+
+        # Check that this is not the primary file
+        if file_id == item.primary_file_id:
+            raise HTTPException(status_code=400, detail="Use the item JSON download for primary file results. This endpoint is for attachments only.")
+
+        # Construct S3 path for attachment JSON
+        # Path pattern: results/orders/{item_id//1000}/items/{item_id}/files/file_{file_id}_result.json
+        s3_manager = S3StorageManager()
+        prefix = f"results/orders/{item_id // 1000}/items/{item_id}/files/file_{file_id}_result.json"
+
+        # Try to get the file from S3
+        try:
+            result = s3_manager.get_file(prefix)
+            return {
+                "file_id": file_id,
+                "item_id": item_id,
+                "json_data": result,
+                "s3_path": prefix
+            }
+        except Exception as e:
+            logger.error(f"Failed to download attachment JSON from S3 path {prefix}: {str(e)}")
+            raise HTTPException(status_code=404, detail="Attachment JSON result not found or not yet processed")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading attachment JSON: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error downloading JSON: {str(e)}")
+
+
+# ========== ATTACHMENT FILES ENDPOINTS ==========
+
 @app.post("/orders/{order_id}/items/{item_id}/files", response_model=dict)
-def upload_files_to_order_item(
+def upload_attachment_files_to_order_item(
     order_id: int,
     item_id: int,
     files: List[UploadFile] = File(...),
     db: Session = Depends(get_db)
 ):
-    """Upload files to a specific order item"""
+    """Upload attachment files to a specific order item (attachments only, not primary file)"""
     try:
         # Verify order and item exist
         order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
@@ -3280,7 +3554,7 @@ def upload_files_to_order_item(
                 logger.error(f"Failed to save file {file.filename}: {str(e)}")
                 raise HTTPException(status_code=500, detail=f"Failed to save file {file.filename}")
 
-        # Update item file count
+        # Update item file count (only for attachments, not including primary file)
         item.file_count += len(uploaded_files)
         item.updated_at = datetime.utcnow()
 
@@ -3290,9 +3564,9 @@ def upload_files_to_order_item(
         db.commit()
 
         return {
-            "message": f"Successfully uploaded {len(uploaded_files)} files",
+            "message": f"Successfully uploaded {len(uploaded_files)} attachment files",
             "uploaded_files": uploaded_files,
-            "item_file_count": item.file_count
+            "attachment_count": item.file_count
         }
 
     except HTTPException:
@@ -3304,7 +3578,7 @@ def upload_files_to_order_item(
 
 @app.get("/orders/{order_id}/items/{item_id}/files", response_model=dict)
 def list_order_item_files(order_id: int, item_id: int, db: Session = Depends(get_db)):
-    """List files for a specific order item"""
+    """List files for a specific order item (separated into primary and attachments)"""
     try:
         # Verify order and item exist
         order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
@@ -3318,25 +3592,34 @@ def list_order_item_files(order_id: int, item_id: int, db: Session = Depends(get
         if not item:
             raise HTTPException(status_code=404, detail="Order item not found")
 
-        # Get files linked to this item
+        # Get files linked to this item - separated into primary and attachments
         file_links = db.query(OrderItemFile).filter(OrderItemFile.item_id == item_id).all()
 
-        files_data = []
+        primary_file = None
+        attachments = []
+
         for link in file_links:
             file_info = link.file
-            files_data.append({
+            file_data = {
                 "file_id": file_info.file_id,
                 "filename": file_info.file_name,
                 "file_size": file_info.file_size,
                 "file_type": file_info.file_type,
-                "upload_order": link.upload_order,
                 "uploaded_at": link.created_at.isoformat()
-            })
+            }
+
+            # Check if this is the primary file
+            if item.primary_file_id and file_info.file_id == item.primary_file_id:
+                primary_file = file_data
+            else:
+                file_data["upload_order"] = link.upload_order
+                attachments.append(file_data)
 
         return {
             "item_id": item_id,
-            "file_count": len(files_data),
-            "files": files_data
+            "primary_file": primary_file,
+            "attachments": attachments,
+            "attachment_count": len(attachments)
         }
 
     except HTTPException:

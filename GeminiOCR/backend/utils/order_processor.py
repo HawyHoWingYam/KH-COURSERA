@@ -615,6 +615,128 @@ class OrderProcessor:
                 order.error_message = str(e)
                 db.commit()
 
+    def _get_ordered_file_links(self, item: OcrOrderItem) -> Tuple[Optional[Dict], List[Dict]]:
+        """Get file links ordered with primary file first.
+
+        Returns:
+            Tuple of (primary_file_data, attachment_files_data)
+        """
+        from sqlalchemy.orm import Session
+        with Session(engine) as db:
+            file_links = db.query(OrderItemFile).filter(OrderItemFile.item_id == item.item_id).all()
+
+            primary_file_data = None
+            attachment_files = []
+
+            for link in file_links:
+                file_record = link.file
+                file_data = {
+                    'file_record': file_record,
+                    'file_link': link,
+                    'is_primary': item.primary_file_id and file_record.file_id == item.primary_file_id
+                }
+
+                if file_data['is_primary']:
+                    primary_file_data = file_data
+                else:
+                    attachment_files.append(file_data)
+
+            return primary_file_data, attachment_files
+
+    async def _generate_item_csv_with_default_mapping(self, item_id: int,
+                                                      primary_result: Optional[Dict],
+                                                      attachment_results: List[Dict]) -> Optional[str]:
+        """Generate CSV for item using primary file + attachments with default mapping keys.
+
+        Args:
+            item_id: Item ID
+            primary_result: OCR result from primary file
+            attachment_results: List of OCR results from attachments
+
+        Returns:
+            S3 path to the generated CSV, or None if generation failed
+        """
+        try:
+            from sqlalchemy.orm import Session
+            with Session(engine) as db:
+                item = db.query(OcrOrderItem).filter(OcrOrderItem.item_id == item_id).first()
+                if not item:
+                    logger.error(f"Item {item_id} not found for CSV generation")
+                    return None
+
+                config = db.query(CompanyDocumentConfig).filter(
+                    CompanyDocumentConfig.company_id == item.company_id,
+                    CompanyDocumentConfig.doc_type_id == item.doc_type_id
+                ).first()
+
+                default_mapping_keys = config.default_mapping_keys if config else None
+
+                # Prepare data for CSV
+                csv_rows = []
+
+                # Add primary file result as base row
+                primary_row = {}
+                if primary_result:
+                    primary_row = {k: v for k, v in primary_result.items() if not k.startswith('__')}
+                    csv_rows.append(primary_row)
+
+                # Add attachment results with prefixing or as separate rows
+                if default_mapping_keys and primary_row:
+                    # Merge attachment fields into primary row with attachment_ prefix
+                    for attach_result in attachment_results:
+                        merged_row = dict(primary_row)
+                        for k, v in attach_result.items():
+                            if not k.startswith('__'):
+                                merged_row[f"attachment_{k}"] = v
+                        # Replace with merged row if this is the first attachment
+                        if attach_result == attachment_results[0]:
+                            csv_rows[0] = merged_row
+                        else:
+                            # Additional attachments as separate rows
+                            csv_rows.append(merged_row)
+                else:
+                    # No mapping keys or no primary, add attachments as independent rows
+                    for attach_result in attachment_results:
+                        row = {k: v for k, v in attach_result.items() if not k.startswith('__')}
+                        csv_rows.append(row)
+
+                if not csv_rows:
+                    logger.warning(f"No data for CSV generation for item {item_id}")
+                    return None
+
+                # Generate CSV
+                s3_base = f"results/orders/{item_id // 1000}/items/{item_id}"
+                with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as temp_csv:
+                    temp_csv_path = temp_csv.name
+
+                try:
+                    # Convert to DataFrame and save
+                    df = pd.DataFrame(csv_rows)
+                    df.to_csv(temp_csv_path, index=False, encoding='utf-8')
+
+                    # Upload to S3
+                    with open(temp_csv_path, 'rb') as csv_file:
+                        csv_content = csv_file.read()
+                        csv_s3_key = f"{s3_base}/item_{item_id}_mapped.csv"
+                        csv_upload_success = self.s3_manager.upload_file(csv_content, csv_s3_key)
+
+                        if csv_upload_success:
+                            csv_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{csv_s3_key}"
+                            logger.info(f"Generated mapped CSV for item {item_id}: {csv_s3_key}")
+                            return csv_path
+                        else:
+                            logger.error(f"Failed to upload mapped CSV for item {item_id}")
+                            return None
+                finally:
+                    try:
+                        os.unlink(temp_csv_path)
+                    except:
+                        pass
+
+        except Exception as e:
+            logger.error(f"Error generating mapped CSV for item {item_id}: {str(e)}")
+            return None
+
     async def _process_order_item(self, item_id: int) -> bool:
         """Process a single order item"""
         with Session(engine) as db:
@@ -637,16 +759,28 @@ class OrderProcessor:
                 if not company or not doc_type:
                     raise Exception("Company or document type not found")
 
-                # Load prompt and schema
+                # Load prompt and schema for this company/doc type. These are required for OCR.
                 prompt = await self.prompt_schema_manager.get_prompt(company.company_code, doc_type.type_code)
                 schema = await self.prompt_schema_manager.get_schema(company.company_code, doc_type.type_code)
 
+                # Provide a clearer error so the UI can surface an actionable message
                 if not prompt or not schema:
-                    raise Exception("Prompt or schema not found")
+                    raise Exception(
+                        f"Prompt or schema not found for {company.company_code}/{doc_type.type_code}. "
+                        f"Please create and activate a configuration in Admin > Configs."
+                    )
 
-                # Get files for this item
-                file_links = db.query(OrderItemFile).filter(OrderItemFile.item_id == item_id).all()
-                if not file_links:
+                # Get files for this item (use helper to prioritize primary file)
+                primary_file_data, attachment_files = self._get_ordered_file_links(item)
+                all_files = []
+                if primary_file_data:
+                    # `primary_file_data` is a dict with keys: file_record, file_link, is_primary
+                    # Use the DB file record, not a non-existent 'file' key
+                    all_files.append((primary_file_data['file_record'], True))  # Mark as primary
+                for attachment_data in attachment_files:
+                    all_files.append((attachment_data['file_record'], False))  # Mark as attachment
+
+                if not all_files:
                     raise Exception("No files found for item")
 
                 # Process all files for this item
@@ -654,8 +788,7 @@ class OrderProcessor:
                 temp_files_to_cleanup = []
                 is_awb = doc_type.type_code == "AIRWAY_BILL"  # Check if this is an AWB item
 
-                for file_link in file_links:
-                    file_record = file_link.file
+                for file_record, is_primary_file in all_files:
                     try:
                         # Download file from S3 to temporary location
                         file_content = self.s3_manager.download_file_by_stored_path(file_record.file_path)
@@ -683,6 +816,7 @@ class OrderProcessor:
                                 try:
                                     business_data = json.loads(text_content)
                                     business_data["__filename"] = file_record.file_name
+                                    business_data["__is_primary"] = is_primary_file  # Mark if primary file
                                     # Add file-level metadata for AWB items
                                     if is_awb:
                                         business_data["__file_id"] = file_record.file_id
@@ -691,7 +825,8 @@ class OrderProcessor:
                                 except json.JSONDecodeError:
                                     error_result = {
                                         "text": text_content,
-                                        "__filename": file_record.file_name
+                                        "__filename": file_record.file_name,
+                                        "__is_primary": is_primary_file
                                     }
                                     if is_awb:
                                         error_result["__file_id"] = file_record.file_id
@@ -700,7 +835,8 @@ class OrderProcessor:
                             else:
                                 no_content_result = {
                                     "__filename": file_record.file_name,
-                                    "__error": "No text content in result"
+                                    "__error": "No text content in result",
+                                    "__is_primary": is_primary_file
                                 }
                                 if is_awb:
                                     no_content_result["__file_id"] = file_record.file_id
@@ -711,7 +847,8 @@ class OrderProcessor:
                         logger.error(f"Error processing file {file_record.file_name}: {str(e)}")
                         error_result = {
                             "__filename": file_record.file_name,
-                            "__error": f"Processing failed: {str(e)}"
+                            "__error": f"Processing failed: {str(e)}",
+                            "__is_primary": is_primary_file
                         }
                         if is_awb:
                             error_result["__file_id"] = file_record.file_id
@@ -830,11 +967,20 @@ class OrderProcessor:
             return None
 
     async def _save_item_results(self, item_id: int, company_code: str, doc_type_code: str, results: List[Dict[str, Any]]):
-        """Save individual item results to S3, with file-level results for AWB items"""
+        """Save individual item results to S3, with file-level results for AWB items and CSV mapping"""
         try:
             # Generate S3 paths for item results
             s3_base = f"results/orders/{item_id // 1000}/items/{item_id}"
             is_awb = doc_type_code == "AIRWAY_BILL"
+
+            # Separate primary file result from attachments
+            primary_result = None
+            attachment_results = []
+            for result in results:
+                if result.get("__is_primary", False):
+                    primary_result = result
+                else:
+                    attachment_results.append(result)
 
             # For AWB items, save file-level results
             file_results_map = {}
@@ -852,33 +998,27 @@ class OrderProcessor:
                 if file_results_map:
                     await self._generate_file_results_manifest(item_id, file_results_map)
 
-            # Save JSON results (item-level aggregated results)
-            json_content = json.dumps(results, indent=2, ensure_ascii=False)
-            json_s3_key = f"{s3_base}/item_{item_id}_results.json"
-            json_upload_success = self.s3_manager.upload_file(json_content.encode('utf-8'), json_s3_key)
-
+            # Save JSON results (save primary file result separately if available)
             json_path = None
-            if json_upload_success:
-                json_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{json_s3_key}"
+            if primary_result:
+                # Save primary file result
+                json_content = json.dumps(primary_result, indent=2, ensure_ascii=False)
+                json_s3_key = f"{s3_base}/item_{item_id}_primary.json"
+                json_upload_success = self.s3_manager.upload_file(json_content.encode('utf-8'), json_s3_key)
 
-            # Save CSV results
-            csv_path = None
-            with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as temp_csv:
-                temp_csv_path = temp_csv.name
+                if json_upload_success:
+                    json_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{json_s3_key}"
+            else:
+                # No primary file, save aggregated results for backward compatibility
+                json_content = json.dumps(attachment_results if attachment_results else results, indent=2, ensure_ascii=False)
+                json_s3_key = f"{s3_base}/item_{item_id}_results.json"
+                json_upload_success = self.s3_manager.upload_file(json_content.encode('utf-8'), json_s3_key)
 
-            try:
-                json_to_csv(results, temp_csv_path)
+                if json_upload_success:
+                    json_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{json_s3_key}"
 
-                with open(temp_csv_path, 'rb') as csv_file:
-                    csv_content = csv_file.read()
-                    csv_s3_key = f"{s3_base}/item_{item_id}_results.csv"
-                    csv_upload_success = self.s3_manager.upload_file(csv_content, csv_s3_key)
-
-                    if csv_upload_success:
-                        csv_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{csv_s3_key}"
-
-            finally:
-                os.unlink(temp_csv_path)
+            # Generate CSV results using new mapping function
+            csv_path = await self._generate_item_csv_with_default_mapping(item_id, primary_result, attachment_results)
 
             # Update item with result paths
             with Session(engine) as db:

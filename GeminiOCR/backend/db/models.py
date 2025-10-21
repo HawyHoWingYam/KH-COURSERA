@@ -339,11 +339,12 @@ class OcrOrderItem(Base):
     order_id = Column(Integer, ForeignKey("ocr_orders.order_id", ondelete="CASCADE"), nullable=False)
     company_id = Column(Integer, ForeignKey("companies.company_id"), nullable=False)
     doc_type_id = Column(Integer, ForeignKey("document_types.doc_type_id"), nullable=False)
+    primary_file_id = Column(Integer, ForeignKey("files.file_id", ondelete="SET NULL"), nullable=True, comment='Primary uploaded file for this item')
     item_name = Column(String(255), nullable=True, comment='User-friendly name for this item')
     status = Column(Enum(OrderItemStatus), nullable=False, default=OrderItemStatus.PENDING)
-    file_count = Column(Integer, nullable=False, default=0, comment='Number of files in this item')
-    ocr_result_json_path = Column(String(500), nullable=True, comment='S3 path to OCR result JSON file')
-    ocr_result_csv_path = Column(String(500), nullable=True, comment='S3 path to OCR result CSV file')
+    file_count = Column(Integer, nullable=False, default=0, comment='Number of attachment files in this item (excludes primary file)')
+    ocr_result_json_path = Column(String(500), nullable=True, comment='S3 path to primary file OCR result JSON')
+    ocr_result_csv_path = Column(String(500), nullable=True, comment='S3 path to mapped CSV result (primary + attachments)')
     mapping_keys = Column(JSON, nullable=True, comment='Selected mapping keys for this item (up to 3 keys)')
     processing_started_at = Column(DateTime, nullable=True)
     processing_completed_at = Column(DateTime, nullable=True)
@@ -356,6 +357,7 @@ class OcrOrderItem(Base):
     order = relationship("OcrOrder", back_populates="items")
     company = relationship("Company")
     document_type = relationship("DocumentType")
+    primary_file = relationship("File", foreign_keys=[primary_file_id])
     files = relationship("OrderItemFile", back_populates="order_item", cascade="all, delete-orphan")
 
 

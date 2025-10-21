@@ -19,12 +19,12 @@ export default function Home() {
             📦 OCR Orders
           </Link>
 
-          <Link
+          {/* <Link
             href="/awb/monthly"
             className="bg-purple-600 text-white py-3 px-6 rounded-lg text-center font-medium hover:bg-purple-700 transition-colors"
           >
             📄 AWB 月度處理
-          </Link>
+          </Link> */}
 
           {/* <Link
             href="/upload"

@@ -1,0 +1,62 @@
+Please analyze the provided OCS Courier Service Invoice PDF document and extract the information based on the FINAL UNIFIED SCHEMA provided.
+
+CRITICAL INSTRUCTION: You MUST map the extracted data to the provided JSON schema. The key names in your output MUST EXACTLY match the key names defined in the schema (e.g., use "invoice_number", "customer_name", "line_items", etc.).
+
+Overall Document Guidelines:
+* provider: Set this value to "OCS".
+* __filename: Extract the filename of the PDF document.
+* Scope: Extract information from the computer-generated printed text only. Ignore all handwritten notes, signatures, and stamps.
+
+I. Header Section (Top of the page):
+1.  invoice_number:
+    * Label: 'Invoice No.'.
+    * Location: Top right of the document.
+    * Value: Extract the alphanumeric string.
+2.  invoice_date:
+    * Label: 'Date:'.
+    * Location: Top right of the document.
+    * Value: Extract the date and convert it to YYYY-MM-DD format.
+3.  customer_name:
+    * Location: In the address block on the upper left.
+    * Value: Extract the full company name (e.g., 'HYAKUNOUSHA INT'L LTD').
+4.  customer_number:
+    * Label: 'Customer No.:'.
+    * Location: In the address block on the upper left.
+    * Value: Extract the alphanumeric customer identifier.
+
+II. Summary Section (Right side, below the main table):
+This section should be mapped to the `summary` object.
+1.  total_amount_due:
+    * Label: 'Amount Due HK$'.
+    * Value: Extract the final numeric value, removing any currency symbols or prefixes.
+2.  total_weight_kg:
+    * Label: 'Total Weight (Kg)'.
+    * Value: Extract the numeric value.
+3.  total_items:
+    * Label: 'Total no of cwbs'.
+    * Value: Extract the integer value representing the total count of waybills.
+
+III. Line Items Section (Main Table):
+This is the most critical part. All rows from the main table MUST be extracted into the `line_items` array. For EACH row in the table:
+1.  service_date:
+    * Column: 'Date'.
+    * Value: Extract the date and format it as YYYY-MM-DD.
+2.  waybill_number:
+    * Column: 'Courier waybill No.'.
+    * Value: Extract the waybill number string (e.g., '14-115-212-296'). This is the first piece of information in the second column.
+3.  weight_kg:
+    * Column: 'Courier waybill No.'.
+    * Value: Extract the numeric weight value (e.g., '1.0'). This is the number immediately following the waybill number.
+4.  remarks:
+    * Column: 'Courier waybill No.'.
+    * Value: Extract the descriptive text that follows the weight (e.g., 'HONGKONG ZONE C to D*R').
+5.  freight_charge:
+    * Column: 'Freight Charge'.
+    * Value: Extract the numeric value only. Remove the '$' symbol.
+6.  amount:
+    * Column: 'Amount'.
+    * Value: Extract the numeric value only. Remove the '$' symbol and any trailing non-numeric characters (e.g., for '$85.00m', extract 85.00).
+
+IV. Final Validation Rule:
+* The sum of all `amount` values in the `line_items` array should equal the `summary.total_amount_due`.
+* The number of objects in the `line_items` array should equal the `summary.total_items`.

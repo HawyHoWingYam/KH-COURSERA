@@ -1,0 +1,104 @@
+{
+  "description": "Schema for extracting data from OCS Courier Service Invoices.",
+  "type": "object",
+  "properties": {
+    "provider": {
+      "description": "Name of the courier provider. MUST be 'OCS'.",
+      "type": "string"
+    },
+    "__filename": {
+      "description": "The filename of the source PDF document.",
+      "type": "string"
+    },
+    "invoice_number": {
+      "description": "The unique identifier for the invoice, found at the top right.",
+      "type": "string"
+    },
+    "invoice_date": {
+      "description": "The date the invoice was issued, in YYYY-MM-DD format.",
+      "type": "string"
+    },
+    "customer_name": {
+      "description": "The name of the customer being billed.",
+      "type": "string"
+    },
+    "customer_number": {
+      "description": "The customer's account number with the provider.",
+      "type": "string"
+    },
+    "summary": {
+      "description": "An object containing the overall summary of the invoice.",
+      "type": "object",
+      "properties": {
+        "total_amount_due": {
+          "description": "The total amount due for payment, labeled 'Amount Due HK$'.",
+          "type": "number"
+        },
+        "total_weight_kg": {
+          "description": "The total weight of all shipments in kilograms.",
+          "type": "number"
+        },
+        "total_items": {
+          "description": "The total number of courier waybills (shipments) listed.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "total_amount_due",
+        "total_weight_kg",
+        "total_items"
+      ]
+    },
+    "line_items": {
+      "description": "An array containing details for each individual shipment.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "service_date": {
+            "description": "The date of the individual courier service in YYYY-MM-DD format.",
+            "type": "string"
+          },
+          "waybill_number": {
+            "description": "The unique tracking or waybill number for the shipment.",
+            "type": "string"
+          },
+          "weight_kg": {
+            "description": "The weight of the individual shipment in kilograms.",
+            "type": "number"
+          },
+          "remarks": {
+            "description": "Description of the shipment, such as origin and destination zones.",
+            "type": "string"
+          },
+          "freight_charge": {
+            "description": "The freight charge for the line item.",
+            "type": "number"
+          },
+          "amount": {
+            "description": "The total amount for the line item. Extracted as a number, ignoring currency symbols and trailing characters.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "service_date",
+          "waybill_number",
+          "weight_kg",
+          "remarks",
+          "freight_charge",
+          "amount"
+        ]
+      }
+    }
+  },
+  "required": [
+    "provider",
+    "__filename",
+    "invoice_number",
+    "invoice_date",
+    "customer_name",
+    "customer_number",
+    "summary",
+    "line_items"
+  ]
+}
