@@ -31,7 +31,8 @@ KH-COURSERA/
 - **Multi-API Key Support**: Automatic failover and rotation for Gemini API keys
 - **Dual Storage**: Local file storage with optional S3 integration
 - **WebSocket Integration**: Real-time job progress updates
-- **Batch Processing**: ZIP file handling with individual job tracking
+- **Orders Pipeline**: Unified document processing with order management and item tracking
+- **S3 Invoice Discovery**: Automatic invoice detection from OneDrive for AWB processing
 - **Centralized File Organization**: Infrastructure files organized by type (env/, docker/, scripts/, terraform/, migrations/)
 
 ## 🚀 Quick Start Guide
@@ -221,10 +222,16 @@ Key models in `db/models.py`:
 - `Company`: Company management
 - `DocumentType`: Document type definitions
 - `CompanyDocumentConfig`: Company-specific processing configs
-- `ProcessingJob`: Individual document jobs
-- `BatchJob`: ZIP file batch processing
+- `ProcessingJob`: Individual document jobs (legacy, being phased out)
+- `OcrOrder`: Order management for document batches
+- `OcrOrderItem`: Individual items within an order
+- `OrderItemFile`: File attachments to order items
 - `File`: File metadata and storage
 - `ApiUsage`: API usage tracking
+- `OneDriveSync`: OneDrive sync history and metadata
+
+**Deprecated Models** (scheduled for removal):
+- `BatchJob`: Legacy ZIP batch processing (replaced by Orders pipeline)
 
 ## Testing and Quality
 
@@ -233,6 +240,14 @@ Key models in `db/models.py`:
 cd GeminiOCR/frontend
 npm run lint        # ESLint checking
 npm run build       # TypeScript compilation check
+
+# Manual test scenarios (see __tests__/orders-flow.spec.md)
+# Test scenarios cover:
+# - Upload page Orders API integration
+# - AWB monthly processing flow
+# - File upload and validation
+# - Order creation and redirect
+# - Navigation and redirects
 ```
 
 ### Backend
@@ -240,10 +255,21 @@ npm run build       # TypeScript compilation check
 cd GeminiOCR/backend
 python check_db.py  # Database connectivity test
 
-# Run tests (including APScheduler robustness tests)
-pytest tests/test_awb_processor.py -v
-pytest tests/test_app_boot_without_scheduler.py -v
+# Run tests (including Orders flow tests)
+pytest tests/test_orders_flow.py -v              # Orders pipeline tests
+pytest tests/test_awb_processor.py -v            # AWB processing tests
+pytest tests/test_app_boot_without_scheduler.py -v  # APScheduler robustness tests
+
+# Test coverage includes:
+# - Order creation and management
+# - File upload and attachment
+# - AWB monthly processing with S3 invoice discovery
+# - Migration from batch-jobs system
 ```
+
+### Test Files
+- **Backend**: `tests/test_orders_flow.py` - Comprehensive Orders pipeline tests
+- **Frontend**: `__tests__/orders-flow.spec.md` - Test specifications and scenarios
 
 ## Optional Dependencies and Features
 
@@ -293,15 +319,89 @@ python -c "import apscheduler; print('APScheduler installed')" || echo "APSchedu
 **Features**:
 - Automated daily file sync from OneDrive to S3
 - Duplicate prevention via source path tracking
-- File movement to "已处理" (processed) folder after sync
-- Integration with AWB monthly processing workflow
+- File movement to "已処理" (processed) folder after sync
+- Seamless integration with Orders pipeline for AWB processing
+- Automatic invoice discovery from S3 for monthly summaries
 
 **API Endpoints**:
 ```
-POST /api/awb/process-monthly   # Start AWB processing
+POST /api/awb/process-monthly   # Start AWB processing with Orders pipeline
 GET  /api/awb/sync-status       # Check OneDrive sync history
 POST /api/awb/trigger-sync      # Manually trigger sync
 ```
+
+### Orders Pipeline
+
+**Purpose**: Unified document processing system replacing legacy batch-jobs
+
+**Components**:
+- `OcrOrder`: Container for batch processing
+- `OcrOrderItem`: Individual items within an order
+- `OrderItemFile`: File attachments to items
+- `ProcessingJob`: Background job tracking for each item
+
+**Workflow**:
+1. Create order via `POST /orders`
+2. Upload files via `POST /api/upload`
+3. Create order items for each file
+4. Attach files to items
+5. Process through OCR pipeline
+6. Download results from order detail page
+
+**API Endpoints**:
+```
+POST   /orders                          # Create new order
+GET    /orders                          # List all orders
+GET    /orders/{order_id}               # Get order details
+DELETE /orders/{order_id}               # Delete order
+
+POST   /orders/{order_id}/items         # Create order item
+POST   /orders/{order_id}/items/{item_id}/files  # Attach file
+
+POST   /api/upload                      # Upload file
+POST   /api/orders/{id}/mapping-file    # Upload mapping file
+```
+
+**S3 Invoice Discovery for AWB**:
+- Scans S3 for invoices in canonical paths
+- Automatic fallback prefixes for compatibility
+- Minimum file size filtering (default 10KB)
+- Deduplication by filename with timestamp precedence
+- Triggers OneDrive sync if no invoices found
+
+**Configuration**:
+```bash
+# S3 paths for AWB invoices
+AWB_S3_PREFIX=upload/onedrive/airway-bills
+AWB_S3_FALLBACK_PREFIXES=uploads/onedrive/airway-bills,upload/upload/onedrive/airway-bills
+AWB_S3_MIN_FILE_SIZE_BYTES=10240
+
+# OneDrive fallback sync
+ONEDRIVE_SYNC_ENABLED=true
+```
+
+### Deprecated: Batch Jobs System
+
+**Status**: REMOVED in order consolidation (October 2025)
+
+**What Changed**:
+- Removed `/process` endpoint (single document)
+- Removed `/process-zip` endpoint (ZIP batches)
+- Removed `/process-batch` endpoint (unified batch)
+- Removed `/batch-jobs` endpoints (listing/status/delete)
+- Removed frontend pages: `/batch-jobs/*` and `/jobs/*`
+- Dropped `batch_jobs` database table
+
+**Migration Path**:
+- Use `/api/orders` for new document processing
+- Upload files individually or in batches to `/api/upload`
+- Create items and attach files using Orders API
+- Monitor progress via `/orders/{id}` page
+
+**Migration Status**: ✅ Complete
+- All endpoints migrated to Orders pipeline
+- Database migration available: `drop_batch_jobs_001`
+- Frontend redirects configured for legacy URLs
 
 ## Important File Locations & URLs
 
@@ -326,10 +426,13 @@ POST /api/awb/trigger-sync      # Manually trigger sync
 
 ## WebSocket Architecture
 
-Real-time job progress via WebSocket endpoints:
-- Connect to `/ws/{job_id}` for individual job updates
-- Frontend components in `src/app/jobs/` handle WebSocket connections
+Real-time progress updates via WebSocket endpoints:
+- Connect to `/ws/{job_id}` for individual processing job updates
+- Useful for tracking OCR processing within order items
 - Backend WebSocket handlers in `app.py`
+- Frontend displays order status on `/orders/{id}` page
+
+**Note**: Legacy `/jobs/` frontend pages have been removed. Use `/orders/{id}` for monitoring.
 
 ## 🗄️ Database Infrastructure Management
 
