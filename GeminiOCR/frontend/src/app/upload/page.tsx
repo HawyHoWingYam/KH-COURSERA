@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import { fetchDocumentTypes, fetchCompaniesForDocType, processBatch } from '@/lib/api';
+import { fetchDocumentTypes, fetchCompaniesForDocType } from '@/lib/api';
 import type { DocumentType, Company } from '@/lib/api';
 import { MdZoomIn, MdZoomOut, MdRefresh } from 'react-icons/md';
 
@@ -207,41 +207,108 @@ export default function Upload() {
     setError(null);
 
     try {
-      // Create the FormData object for unified batch processing
-      const formData = new FormData();
-      formData.append('doc_type_id', selectedType.toString());
-      formData.append('company_id', selectedCompany.toString());
-      
-      // Add all files to the form data
-      files.forEach((file, index) => {
-        formData.append('files', file);
+      // 1. Create OCR Order
+      const orderResp = await fetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order_name: `Upload ${new Date().toISOString()}`,
+          primary_doc_type_id: selectedType
+        })
       });
 
-      // Add mapping file if selected
-      if (mappingFile) {
-        formData.append('mapping_file', mappingFile);
+      if (!orderResp.ok) {
+        throw new Error('Failed to create order');
       }
-      
-      // Process as unified batch (handles all file types)
-      const result = await processBatch(formData);
-      
-      console.log('Batch upload completed:', result);
-      
-      // Store batch upload info for jobs page
-      sessionStorage.setItem('pendingBatchUpload', JSON.stringify({
-        batchId: result.batch_id,
-        uploadType: result.upload_type,
-        fileCount: result.file_count,
-        fileNames: files.map(f => f.name),
-        documentType: documentTypes.find(dt => dt.doc_type_id === selectedType)?.type_name || 'Unknown',
-        timestamp: new Date().toISOString()
-      }));
 
-      // Navigate to jobs page
-      router.push('/jobs');
+      const orderData = await orderResp.json();
+      const orderId = orderData.order_id;
+      console.log('Created order:', orderId);
+
+      // 2. Upload files and create order items
+      const uploadedFiles = [];
+
+      for (const file of files) {
+        // Upload file to backend
+        const uploadFormData = new FormData();
+        uploadFormData.append('file', file);
+
+        const uploadResp = await fetch('/api/upload', {
+          method: 'POST',
+          body: uploadFormData
+        });
+
+        if (!uploadResp.ok) {
+          console.warn(`Failed to upload file ${file.name}`);
+          continue;
+        }
+
+        const uploadedData = await uploadResp.json();
+        uploadedFiles.push({
+          file_id: uploadedData.file_id,
+          original_name: file.name
+        });
+      }
+
+      if (uploadedFiles.length === 0) {
+        throw new Error('No files uploaded successfully');
+      }
+
+      // 3. Create order items and attach files
+      for (const uploadedFile of uploadedFiles) {
+        // Create order item
+        const itemResp = await fetch(`/api/orders/${orderId}/items`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            company_id: selectedCompany,
+            doc_type_id: selectedType,
+            item_name: uploadedFile.original_name
+          })
+        });
+
+        if (!itemResp.ok) {
+          console.warn(`Failed to create item for ${uploadedFile.original_name}`);
+          continue;
+        }
+
+        const itemData = await itemResp.json();
+        const itemId = itemData.item_id;
+
+        // Attach file to item
+        const attachResp = await fetch(`/api/orders/${orderId}/items/${itemId}/files`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file_id: uploadedFile.file_id })
+        });
+
+        if (!attachResp.ok) {
+          console.warn(`Failed to attach file to item ${itemId}`);
+        }
+      }
+
+      // 4. Upload mapping file if provided
+      if (mappingFile) {
+        const mappingFormData = new FormData();
+        mappingFormData.append('mapping_file', mappingFile);
+
+        const mappingResp = await fetch(`/api/orders/${orderId}/mapping-file`, {
+          method: 'POST',
+          body: mappingFormData
+        });
+
+        if (!mappingResp.ok) {
+          console.warn('Failed to upload mapping file');
+        }
+      }
+
+      console.log('Order setup completed successfully');
+
+      // 5. Redirect to orders page
+      router.push(`/orders/${orderId}`);
 
     } catch (err) {
-      setError('Failed to start upload');
+      setError(err instanceof Error ? err.message : 'Failed to start upload');
       console.error(err);
     } finally {
       setIsLoading(false);
