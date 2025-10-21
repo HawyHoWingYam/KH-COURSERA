@@ -6697,17 +6697,33 @@ async def get_analysis_dashboard(db: Session = Depends(get_db)):
 
 # ===== AWB Processing Endpoints =====
 
+async def trigger_onedrive_sync_async():
+    """Trigger OneDrive sync in background (fire-and-forget)"""
+    try:
+        onedrive_enabled = os.getenv('ONEDRIVE_SYNC_ENABLED', 'false').lower() == 'true'
+        if not onedrive_enabled:
+            logger.warning("⚠️ OneDrive sync is disabled")
+            return
+
+        from scripts.onedrive_ingest import run_onedrive_sync as sync_func
+        logger.info("🔄 Triggering OneDrive sync in background...")
+        sync_func()
+        logger.info("✅ OneDrive sync completed")
+
+    except Exception as e:
+        logger.error(f"❌ Error in OneDrive sync: {e}", exc_info=True)
+
 @app.post("/api/awb/process-monthly")
 async def process_monthly_awb(
     company_id: int = Form(...),
     month: str = Form(...),
-    summary_pdf: UploadFile = File(...),
-    employees_csv: UploadFile = File(...),
-    s3_prefix: str = Form("upload/onedrive/airway-bills"),
+    monthly_bill_pdf: UploadFile = File(None),
+    summary_pdf: UploadFile = File(None),
+    employees_csv: UploadFile = File(None),
     background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db)
 ):
-    """Process monthly AWB files - OCR + 3-layer matching"""
+    """Process monthly AWB files - Orders-based pipeline with S3 invoice discovery"""
     try:
         # Validate inputs
         if not month or '-' not in month:
@@ -6718,63 +6734,163 @@ async def process_monthly_awb(
         if not company:
             raise HTTPException(status_code=404, detail=f"Company {company_id} not found")
 
-        # Upload files to S3
-        s3_manager = get_s3_manager()
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        # Use monthly_bill_pdf if provided, fallback to summary_pdf for backward compat
+        bill_pdf = monthly_bill_pdf or summary_pdf
+        if not bill_pdf:
+            raise HTTPException(status_code=400, detail="Either monthly_bill_pdf or summary_pdf is required")
 
-        # Upload summary PDF
-        summary_content = await summary_pdf.read()
-        summary_s3_key = f"upload/awb/monthly/{month}/summary_{timestamp}.pdf"
-        s3_manager.put_object(summary_s3_key, summary_content, content_type='application/pdf')
-        logger.info(f"✅ Uploaded summary PDF: {summary_s3_key}")
+        # Find or create AIRWAY_BILL document type
+        doc_type = db.query(DocumentType).filter(
+            DocumentType.type_code == "AIRWAY_BILL"
+        ).first()
+        if not doc_type:
+            raise HTTPException(status_code=404, detail="Document type AIRWAY_BILL not found. Please create it in admin.")
 
-        # Upload employees CSV
-        employees_content = await employees_csv.read()
-        employees_s3_key = f"upload/awb/monthly/{month}/employees_{timestamp}.csv"
-        s3_manager.put_object(employees_s3_key, employees_content, content_type='text/csv')
-        logger.info(f"✅ Uploaded employees CSV: {employees_s3_key}")
-
-        # Create batch job
-        batch_job = BatchJob(
-            company_id=company_id,
-            upload_type=UploadType.awb_monthly,
-            status="processing",
-            total_files=1,
-            s3_upload_path=f"upload/awb/monthly/{month}",
-            upload_description=f"AWB Monthly Processing: {month}"
+        # Create OCR Order
+        order = OcrOrder(
+            order_name=f"AWB {month}",
+            status=OrderStatus.DRAFT,
+            primary_doc_type_id=doc_type.doc_type_id
         )
-        db.add(batch_job)
+        db.add(order)
         db.commit()
-        db.refresh(batch_job)
-        batch_id = batch_job.batch_id
+        db.refresh(order)
+        order_id = order.order_id
+        logger.info(f"✅ Created OCR Order {order_id} for AWB {month}")
 
-        logger.info(f"✅ Created BatchJob {batch_id} for AWB processing")
+        # Upload bill PDF to S3
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
 
-        # Process in background
-        if background_tasks:
-            background_tasks.add_task(
-                process_awb_background,
-                batch_id,
-                month,
-                summary_s3_key,
-                employees_s3_key,
-                s3_prefix
-            )
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        bill_content = await bill_pdf.read()
+        bill_s3_key = f"upload/awb/monthly/{month}/summary_{timestamp}.pdf"
+
+        s3_manager.put_object(bill_s3_key, bill_content, content_type='application/pdf')
+        logger.info(f"✅ Uploaded monthly bill PDF: {bill_s3_key}")
+
+        # Create File record for bill
+        file_record = File(
+            file_name=bill_pdf.filename or f"summary_{timestamp}.pdf",
+            file_path=bill_s3_key,
+            file_type="pdf",
+            file_size=len(bill_content),
+            mime_type="application/pdf",
+            s3_bucket=s3_manager.bucket_name,
+            s3_key=bill_s3_key,
+            source_system="upload"
+        )
+        db.add(file_record)
+        db.commit()
+        db.refresh(file_record)
+
+        # Create order item for bill
+        bill_item = OcrOrderItem(
+            order_id=order_id,
+            company_id=company_id,
+            doc_type_id=doc_type.doc_type_id,
+            item_name=f"Monthly Bill {month}",
+            status=OrderItemStatus.PENDING,
+            file_count=1
+        )
+        db.add(bill_item)
+        db.commit()
+        db.refresh(bill_item)
+
+        # Attach bill file to item
+        order_item_file = OrderItemFile(
+            item_id=bill_item.item_id,
+            file_id=file_record.file_id,
+            upload_order=1
+        )
+        db.add(order_item_file)
+        db.commit()
+        logger.info(f"✅ Created order item for bill with file attachment")
+
+        # Discover invoice PDFs from S3
+        invoices = []
+        if s3_manager.list_awb_invoices_for_month:
+            invoices = s3_manager.list_awb_invoices_for_month(month)
+            logger.info(f"🔍 Found {len(invoices)} invoice PDFs for month {month}")
+
+            # Create order items for each invoice and attach files (no re-upload)
+            for idx, invoice in enumerate(invoices, 1):
+                try:
+                    # Get invoice size and create File record (referencing existing S3 file)
+                    invoice_file = File(
+                        file_name=invoice["key"],
+                        file_path=invoice["full_key"],
+                        file_type="pdf",
+                        file_size=invoice["size"],
+                        mime_type="application/pdf",
+                        s3_bucket=s3_manager.bucket_name,
+                        s3_key=invoice["full_key"],
+                        source_system="onedrive",
+                        source_path=f"onedrive://{invoice['full_key']}"
+                    )
+                    db.add(invoice_file)
+                    db.commit()
+                    db.refresh(invoice_file)
+
+                    # Create order item for invoice
+                    invoice_item = OcrOrderItem(
+                        order_id=order_id,
+                        company_id=company_id,
+                        doc_type_id=doc_type.doc_type_id,
+                        item_name=invoice["key"],
+                        status=OrderItemStatus.PENDING,
+                        file_count=1
+                    )
+                    db.add(invoice_item)
+                    db.commit()
+                    db.refresh(invoice_item)
+
+                    # Attach invoice file to item
+                    invoice_order_item_file = OrderItemFile(
+                        item_id=invoice_item.item_id,
+                        file_id=invoice_file.file_id,
+                        upload_order=idx
+                    )
+                    db.add(invoice_order_item_file)
+                    db.commit()
+                    logger.info(f"✅ Attached invoice {idx}: {invoice['key']}")
+
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to process invoice {invoice['key']}: {e}")
+                    continue
+
+        # Update order with total items
+        order.total_items = 1 + len(invoices)
+        db.commit()
+
+        # Submit order to processing pipeline if we have invoices or bill
+        if 1 + len(invoices) > 0:
+            order.status = OrderStatus.PROCESSING
+            db.commit()
+            logger.info(f"✅ Order {order_id} submitted to processing pipeline")
+
+        # If no invoices found, trigger OneDrive sync as fallback
+        if len(invoices) == 0:
+            logger.info(f"ℹ️ No invoices found in S3 for {month}, triggering OneDrive sync as fallback...")
+            # Fire-and-forget OneDrive sync
+            if background_tasks:
+                background_tasks.add_task(trigger_onedrive_sync_async)
+            message = f"Order {order_id} created. No invoices found in S3; OneDrive sync triggered. Invoices will attach as they appear."
         else:
-            # Synchronous processing fallback
-            process_awb_background(batch_id, month, summary_s3_key, employees_s3_key, s3_prefix)
+            message = f"Order {order_id} created with {len(invoices)} invoices from S3"
 
         return {
             "success": True,
-            "batch_id": batch_id,
-            "message": f"AWB processing started for {month}",
-            "status_url": f"/batch-jobs/{batch_id}"
+            "order_id": order_id,
+            "invoices_found": len(invoices),
+            "message": message
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error in AWB processing: {str(e)}")
+        logger.error(f"❌ Error in AWB processing: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
