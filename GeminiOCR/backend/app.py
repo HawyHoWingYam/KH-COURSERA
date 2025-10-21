@@ -1716,8 +1716,6 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
 
 
 # Process document endpoint
-@app.post("/process", response_model=dict)
-async def process_document(
     background_tasks: BackgroundTasks,
     document: UploadFile = File(...),
     company_id: int = Form(...),
@@ -2886,7 +2884,6 @@ async def get_api_usage_summary(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Failed to fetch API usage summary: {str(e)}")
 
 
-@app.post("/process-zip", response_model=dict)
 async def process_zip_file(
     background_tasks: BackgroundTasks,
     zip_file: UploadFile = File(...),
@@ -3342,7 +3339,6 @@ async def process_zip_task(
 
 
 # Unified batch processing endpoint (replaces both /process and /process-zip)
-@app.post("/process-batch", response_model=dict)
 async def process_batch(
     background_tasks: BackgroundTasks,
     company_id: int = Form(...),
@@ -3917,8 +3913,6 @@ async def process_unified_batch(batch_id: int, file_paths: List[str], company_co
                     logger.warning(f"Failed to cleanup temporary file {temp_path}: {cleanup_error}")
 
 
-# Add new endpoints to get batch job status and list batch jobs
-@app.get("/batch-jobs/{batch_id}", response_model=dict)
 def get_batch_job_status(batch_id: int, db: Session = Depends(get_db)):
     batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
     if not batch_job:
@@ -3955,7 +3949,6 @@ def get_batch_job_status(batch_id: int, db: Session = Depends(get_db)):
     }
 
 
-@app.get("/batch-jobs", response_model=dict)
 def list_batch_jobs(
     company_id: Optional[int] = None,
     doc_type_id: Optional[int] = None,
@@ -4026,7 +4019,6 @@ def list_batch_jobs(
     }
 
 
-@app.delete("/batch-jobs/{batch_id}", response_model=dict)
 def delete_batch_job(batch_id: int, db: Session = Depends(get_db)):
     """
     Delete a batch job and all its related files and data.
