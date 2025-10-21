@@ -163,10 +163,16 @@ class S3StorageManager:
                 if content_type is None:
                     content_type = "application/octet-stream"
 
-            # 准备上传参数
+            # 准备上传参数 - 避免双重前缀
+            # 如果 key 已经包含 upload_prefix，就直接用 key；否则才加前缀
+            if key.startswith(self.upload_prefix):
+                final_key = key
+            else:
+                final_key = f"{self.upload_prefix}{key}"
+
             upload_args = {
                 "Bucket": self.bucket_name,
-                "Key": f"{self.upload_prefix}{key}",
+                "Key": final_key,
                 "ContentType": content_type,
             }
 
@@ -192,7 +198,7 @@ class S3StorageManager:
                 self.s3_client.put_object(Body=file_content, **upload_args)
 
             logger.info(
-                f"✅ 文件上传成功：s3://{self.bucket_name}/{self.upload_prefix}{key}"
+                f"✅ 文件上传成功：s3://{self.bucket_name}/{final_key}"
             )
             return True
 
@@ -1176,20 +1182,27 @@ class S3StorageManager:
                 "error": str(e),
             }
 
-    def list_awb_invoices_for_month(self, month: str) -> list:
+    def list_awb_invoices_for_month(self, month: str, debug: bool = False) -> list:
         """List invoice PDFs for given month from canonical and fallback S3 prefixes.
 
         Args:
             month: Month in YYYY-MM format (e.g., "2025-10")
+            debug: If True, return sample keys for diagnostics
 
         Returns:
-            list: List of dictionaries with keys: key, full_key, size, last_modified
+            list: List of dictionaries with keys: key, full_key, size, last_modified, prefix_source
         """
         try:
             year, mm = month.split('-')
+            yyyymm = f"{year}{mm}"
 
             # Canonical and fallback prefixes for AWB invoices
+            # Supports both YYYY/MM/ (original) and YYYYMM/ (new format)
             prefixes = [
+                # New format: YYYYMM/ (without upload/ prefix, since S3StorageManager adds it)
+                f"onedrive/airway-bills/{yyyymm}/",
+                f"upload/onedrive/airway-bills/{yyyymm}/",
+                # Original format: YYYY/MM/ (for backward compatibility)
                 f"upload/onedrive/airway-bills/{year}/{mm}/",
                 f"uploads/onedrive/airway-bills/{year}/{mm}/",
                 f"upload/upload/onedrive/airway-bills/{year}/{mm}/",
@@ -1199,9 +1212,18 @@ class S3StorageManager:
             min_size = int(os.getenv("AWB_S3_MIN_FILE_SIZE_BYTES", "10240"))
 
             all_files = []
+            prefix_stats = {}  # Track statistics per prefix for diagnostics
 
             for prefix in prefixes:
-                logger.info(f"🔍 Scanning S3 prefix for invoices: {prefix}")
+                logger.info(f"🔍 Scanning S3 prefix for invoices: bucket={self.bucket_name}, prefix={prefix}")
+                prefix_stats[prefix] = {
+                    "total_objects": 0,
+                    "pdf_files": 0,
+                    "skipped_small": 0,
+                    "added": 0,
+                    "sample_keys": []
+                }
+
                 try:
                     paginator = self.s3_client.get_paginator("list_objects_v2")
                     pages = paginator.paginate(Bucket=self.bucket_name, Prefix=prefix)
@@ -1210,15 +1232,29 @@ class S3StorageManager:
                         if "Contents" not in page:
                             continue
 
+                        prefix_stats[prefix]["total_objects"] += len(page["Contents"])
+
                         for obj in page["Contents"]:
                             # Filter for PDF files only
                             if not obj["Key"].lower().endswith('.pdf'):
                                 continue
 
+                            prefix_stats[prefix]["pdf_files"] += 1
+
                             # Filter by minimum size
                             if obj["Size"] < min_size:
-                                logger.debug(f"⊘ Skipping {obj['Key']} - size {obj['Size']} < {min_size}")
+                                prefix_stats[prefix]["skipped_small"] += 1
+                                logger.debug(f"⊘ Skipping {obj['Key']} - size {obj['Size']} bytes < {min_size} bytes (min_size)")
                                 continue
+
+                            # Track sample keys for debugging
+                            if len(prefix_stats[prefix]["sample_keys"]) < 5:
+                                prefix_stats[prefix]["sample_keys"].append({
+                                    "key": os.path.basename(obj["Key"]),
+                                    "size": obj["Size"]
+                                })
+
+                            prefix_stats[prefix]["added"] += 1
 
                             all_files.append({
                                 "key": os.path.basename(obj["Key"]),
@@ -1232,6 +1268,16 @@ class S3StorageManager:
                     if e.response["Error"]["Code"] != "NoSuchKey":
                         logger.warning(f"⚠️ Error scanning prefix {prefix}: {e}")
 
+            # Log prefix statistics for diagnostics
+            for prefix, stats in prefix_stats.items():
+                if stats["total_objects"] > 0 or stats["pdf_files"] > 0:
+                    logger.info(f"📊 Prefix stats [{prefix}]: {stats['total_objects']} objects, "
+                              f"{stats['pdf_files']} PDFs, {stats['skipped_small']} skipped (size < {min_size}), "
+                              f"{stats['added']} added")
+                    if stats["sample_keys"]:
+                        for sample in stats["sample_keys"]:
+                            logger.debug(f"   Sample: {sample['key']} ({sample['size']} bytes)")
+
             # Deduplicate by filename, prefer latest LastModified
             seen = {}
             for f in all_files:
@@ -1240,7 +1286,14 @@ class S3StorageManager:
                     seen[name] = f
 
             result = list(seen.values())
-            logger.info(f"✅ Found {len(result)} unique invoice PDFs for month {month}")
+            logger.info(f"✅ Found {len(result)} unique invoice PDFs for month {month} (min_size_threshold={min_size} bytes)")
+
+            # In debug mode, return statistics along with results
+            if debug and result:
+                logger.debug(f"🔍 Debug mode: Returning {len(result)} results with statistics")
+                for item in result[:3]:  # Log first 3 for debug
+                    logger.debug(f"   - {item['key']} ({item['size']} bytes) from {item['prefix_source']}")
+
             return result
 
         except ValueError:
@@ -1249,6 +1302,133 @@ class S3StorageManager:
         except Exception as e:
             logger.error(f"❌ Error listing AWB invoices for {month}: {e}")
             return []
+
+    def list_awb_objects_for_month_raw(self, month: str) -> list:
+        """List ALL AWS objects for given month from canonical and fallback S3 prefixes.
+
+        This is used for reconciliation - does NOT filter by file size, returns all objects.
+
+        Args:
+            month: Month in YYYY-MM format (e.g., "2025-10")
+
+        Returns:
+            list: List of dictionaries with keys: key, full_key, size, last_modified, prefix_source
+        """
+        try:
+            year, mm = month.split('-')
+            yyyymm = f"{year}{mm}"
+
+            # Same prefixes as list_awb_invoices_for_month
+            prefixes = [
+                f"onedrive/airway-bills/{yyyymm}/",
+                f"upload/onedrive/airway-bills/{yyyymm}/",
+                f"upload/onedrive/airway-bills/{year}/{mm}/",
+                f"uploads/onedrive/airway-bills/{year}/{mm}/",
+                f"upload/upload/onedrive/airway-bills/{year}/{mm}/",
+            ]
+
+            all_files = []
+            prefix_stats = {}
+
+            for prefix in prefixes:
+                logger.info(f"🔍 Scanning S3 prefix (raw): bucket={self.bucket_name}, prefix={prefix}")
+                prefix_stats[prefix] = {
+                    "total_objects": 0,
+                    "pdf_files": 0,
+                }
+
+                try:
+                    paginator = self.s3_client.get_paginator("list_objects_v2")
+                    pages = paginator.paginate(Bucket=self.bucket_name, Prefix=prefix)
+
+                    for page in pages:
+                        if "Contents" not in page:
+                            continue
+
+                        prefix_stats[prefix]["total_objects"] += len(page["Contents"])
+
+                        for obj in page["Contents"]:
+                            # Filter for PDF files only (no size filter for raw listing)
+                            if not obj["Key"].lower().endswith('.pdf'):
+                                continue
+
+                            prefix_stats[prefix]["pdf_files"] += 1
+
+                            all_files.append({
+                                "key": os.path.basename(obj["Key"]),
+                                "full_key": obj["Key"],
+                                "size": obj["Size"],
+                                "last_modified": obj["LastModified"],
+                                "prefix_source": prefix,
+                            })
+
+                except ClientError as e:
+                    if e.response["Error"]["Code"] != "NoSuchKey":
+                        logger.warning(f"⚠️ Error scanning prefix {prefix}: {e}")
+
+            # Log prefix statistics
+            for prefix, stats in prefix_stats.items():
+                if stats["total_objects"] > 0 or stats["pdf_files"] > 0:
+                    logger.info(f"📊 Prefix stats (raw) [{prefix}]: {stats['total_objects']} objects, {stats['pdf_files']} PDFs")
+
+            logger.info(f"✅ Found {len(all_files)} total PDF objects for month {month} (no size filter)")
+            return all_files
+
+        except ValueError:
+            logger.error(f"❌ Invalid month format: {month}. Expected YYYY-MM")
+            return []
+        except Exception as e:
+            logger.error(f"❌ Error listing raw AWB objects for {month}: {e}")
+            return []
+
+    def index_awb_month_by_name(self, month: str) -> dict:
+        """Create a filename-based index of all S3 objects for given month.
+
+        Returns a dictionary where:
+        - key: filename
+        - value: dict with {largest: {...}, any_tiny: bool, all_records: [...]}
+
+        Used for fast lookup to determine if file exists and if it's undersized.
+
+        Args:
+            month: Month in YYYY-MM format (e.g., "2025-10")
+
+        Returns:
+            dict: Filename-indexed objects
+        """
+        try:
+            min_size = int(os.getenv("AWB_S3_MIN_FILE_SIZE_BYTES", "10240"))
+
+            # Get all raw objects for the month
+            all_objects = self.list_awb_objects_for_month_raw(month)
+
+            # Build index by filename
+            index = {}
+            for obj in all_objects:
+                name = obj["key"]
+
+                if name not in index:
+                    index[name] = {
+                        "largest": obj,
+                        "any_tiny": obj["size"] < min_size,
+                        "all_records": [obj],
+                    }
+                else:
+                    # Update to largest by size if needed
+                    if obj["size"] > index[name]["largest"]["size"]:
+                        index[name]["largest"] = obj
+                    # Mark if ANY version is tiny
+                    if obj["size"] < min_size:
+                        index[name]["any_tiny"] = True
+                    # Keep all records
+                    index[name]["all_records"].append(obj)
+
+            logger.info(f"✅ Created filename index for {month}: {len(index)} unique filenames")
+            return index
+
+        except Exception as e:
+            logger.error(f"❌ Error creating AWB month index for {month}: {e}")
+            return {}
 
     # ========================================
     # NEW ID-BASED METHODS FOR FILE MANAGEMENT

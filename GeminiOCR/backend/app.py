@@ -1667,546 +1667,6 @@ async def upload_file(file: UploadFile = File(...), path: str = Form(...)):
         raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
 
 
-# WebSocket connection
-@app.websocket("/ws/{job_id}")
-async def websocket_endpoint(websocket: WebSocket, job_id: str):
-    try:
-        await websocket.accept()
-        active_connections[job_id] = websocket
-        logger.info(f"✅ WebSocket connection established for job_id: {job_id}")
-
-        # Send initial connection confirmation
-        await websocket.send_json(
-            {
-                "type": "connection_established",
-                "job_id": job_id,
-                "message": "WebSocket connection established successfully",
-            }
-        )
-
-        try:
-            while True:
-                # Keep the connection alive and handle any incoming messages
-                try:
-                    data = await websocket.receive_text()
-                    logger.debug(f"Received WebSocket message for job {job_id}: {data}")
-
-                    # Handle ping messages to keep connection alive
-                    if data == "ping":
-                        await websocket.send_json({"type": "pong", "job_id": job_id})
-
-                except asyncio.TimeoutError:
-                    # Send periodic ping to keep connection alive
-                    await websocket.send_json({"type": "ping", "job_id": job_id})
-
-        except Exception as connection_error:
-            logger.warning(
-                f"WebSocket connection error for job_id {job_id}: {str(connection_error)}"
-            )
-
-    except Exception as accept_error:
-        logger.error(
-            f"❌ Failed to accept WebSocket connection for job_id {job_id}: {str(accept_error)}"
-        )
-
-    finally:
-        if job_id in active_connections:
-            del active_connections[job_id]
-            logger.info(f"🔌 WebSocket connection closed for job_id: {job_id}")
-
-
-# Process document endpoint
-    background_tasks: BackgroundTasks,
-    document: UploadFile = File(...),
-    company_id: int = Form(...),
-    doc_type_id: int = Form(...),
-    db: Session = Depends(get_db),
-):
-    try:
-        # Check if company and document type exist
-        company = db.query(Company).filter(Company.company_id == company_id).first()
-        if not company:
-            raise HTTPException(status_code=404, detail="Company not found")
-
-        doc_type = (
-            db.query(DocumentType)
-            .filter(DocumentType.doc_type_id == doc_type_id)
-            .first()
-        )
-        if not doc_type:
-            raise HTTPException(status_code=404, detail="Document type not found")
-
-        # Check if configuration exists
-        config = (
-            db.query(CompanyDocumentConfig)
-            .filter(
-                CompanyDocumentConfig.company_id == company_id,
-                CompanyDocumentConfig.doc_type_id == doc_type_id,
-                CompanyDocumentConfig.active,
-            )
-            .first()
-        )
-
-        if not config:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No active configuration found for company ID {company_id} and document type ID {doc_type_id}",
-            )
-
-        # Verify prompt and schema are accessible (supports both local and S3)
-        prompt_schema_manager = get_prompt_schema_manager()
-        
-        # Check if prompt exists
-        prompt_test = await prompt_schema_manager.get_prompt(company.company_code, doc_type.type_code)
-        if not prompt_test:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Prompt template not found for {company.company_code}/{doc_type.type_code}",
-            )
-        
-        # Check if schema exists
-        schema_test = await prompt_schema_manager.get_schema(company.company_code, doc_type.type_code)
-        if not schema_test:
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Schema file not found for {company.company_code}/{doc_type.type_code}"
-            )
-
-        # 使用文件存储服务保存上传的文件
-        file_storage = get_file_storage()
-        try:
-            file_path, original_filename = file_storage.save_uploaded_file(
-                document, company.company_code, doc_type.type_code
-            )
-            logger.info(f"📁 文件已保存：{file_path}")
-        except Exception as e:
-            logger.error(f"❌ 文件保存失败：{e}")
-            raise HTTPException(status_code=500, detail=f"File save failed: {str(e)}")
-
-        # Create a new processing job
-        job = ProcessingJob(
-            company_id=company_id,
-            doc_type_id=doc_type_id,
-            original_filename=original_filename,
-            status="pending",
-            s3_pdf_path=file_path,  # 现在可能是S3 URL或本地路径
-        )
-
-        db.add(job)
-        db.commit()
-        db.refresh(job)
-
-        job_id = job.job_id
-
-        # Start processing in background but return immediately
-        background_tasks.add_task(
-            process_document_task,
-            job_id,
-            file_path,
-            company.company_code,
-            doc_type.type_code,
-        )
-
-        # Return immediately with job ID
-        return {
-            "job_id": job_id,
-            "status": "pending",
-            "message": "Document processing started",
-            "storage_type": "S3" if file_path.startswith("s3://") else "local",
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error processing document: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail=f"Error processing document: {str(e)}"
-        )
-
-
-# Background processing task
-async def process_document_task(
-    job_id: int,
-    file_path: str,
-    company_code: str,
-    doc_type_code: str,
-):
-    db = next(get_db())
-    file_storage = get_file_storage()
-    temp_file_path = None
-
-    try:
-        # Update job status
-        job = db.query(ProcessingJob).filter(ProcessingJob.job_id == job_id).first()
-        if not job:
-            logger.error(f"Job {job_id} not found")
-            return
-
-        # Update only existing columns
-        job.s3_pdf_path = file_path
-        job.status = "processing"
-        # Comment out the timing fields until database is updated
-        # job.processing_started_at = datetime.now()
-        db.commit()
-
-        # Send WebSocket notification
-        await send_websocket_message(
-            job_id, {"status": "processing", "message": "Document processing started"}
-        )
-
-        # Load prompt and schema using the new manager (supports both S3 and local)
-        prompt_template, schema_json = await load_prompt_and_schema(company_code, doc_type_code)
-        
-        if not prompt_template:
-            raise ValueError(f"Prompt not found for {company_code}/{doc_type_code}")
-        
-        if not schema_json:
-            raise ValueError(f"Schema not found for {company_code}/{doc_type_code}")
-
-        # Get API key and model from config loader
-        try:
-            api_key = get_api_key_manager().get_least_used_key()
-            model_name = app_config.get("model_name", "gemini-2.5-flash-preview-05-20")
-        except ValueError as e:
-            raise ValueError(f"API key configuration error: {e}")
-
-        await send_websocket_message(
-            job_id,
-            {"status": "processing", "message": "Extracting text from document..."},
-        )
-
-        # 创建本地临时文件用于处理（如果需要）
-        temp_file_path = file_storage.create_temp_file_from_storage(file_path)
-        if not temp_file_path:
-            raise Exception(f"无法访问文件：{file_path}")
-
-        # Process the document based on file type
-        file_extension = os.path.splitext(temp_file_path)[1].lower()
-
-        process_start_time = time.time()
-
-        # Handle based on file type
-        if file_extension in [".jpg", ".jpeg", ".png"]:
-            # Process image directly
-            await send_websocket_message(
-                job_id,
-                {
-                    "status": "processing",
-                    "message": "Processing image with Gemini API...",
-                },
-            )
-            result = await extract_text_from_image(
-                temp_file_path, prompt_template, schema_json, api_key, model_name
-            )
-        elif file_extension == ".pdf":
-            # Process PDF directly
-            await send_websocket_message(
-                job_id,
-                {
-                    "status": "processing",
-                    "message": "Processing PDF with Gemini API...",
-                },
-            )
-            result = await extract_text_from_pdf(
-                temp_file_path, prompt_template, schema_json, api_key, model_name
-            )
-        else:
-            # Unsupported file type
-            raise ValueError(f"Unsupported file type: {file_extension}")
-
-        # Extract results
-        json_result = result["text"]
-        input_tokens = result["input_tokens"]
-        output_tokens = result["output_tokens"]
-        processing_time = time.time() - process_start_time
-
-        # Update WebSocket with processing time
-        await send_websocket_message(
-            job_id,
-            {
-                "status": "processing",
-                "message": f"API processing completed in {processing_time:.2f} seconds",
-            },
-        )
-
-        # Record API usage with timing metrics
-        api_usage = ApiUsage(
-            job_id=job_id,
-            input_token_count=input_tokens,
-            output_token_count=output_tokens,
-            api_call_timestamp=datetime.now(),
-            model=model_name,
-            processing_time_seconds=processing_time,
-            status="success",
-        )
-        db.add(api_usage)
-        db.commit()
-
-        # Generate output files - 使用S3存储结果文件
-        s3_manager = get_s3_manager()
-
-        # Prepare JSON content
-        if isinstance(json_result, str):
-            json_content = json_result
-            result_obj = json.loads(json_result)
-        else:
-            json_content = json.dumps(json_result, indent=2, ensure_ascii=False)
-            result_obj = json_result
-
-        # Generate S3 key for JSON result
-        json_key = f"{company_code}/{doc_type_code}/{job_id}/results.json"
-
-        # Save JSON to S3 results folder
-        json_saved = False
-        json_file_size = len(json_content.encode("utf-8"))
-
-        if s3_manager:
-            json_saved = s3_manager.save_json_result(json_key, result_obj)
-
-        if not json_saved:
-            # Fallback to local storage
-            output_dir = os.path.join(
-                "uploads", company_code, doc_type_code, str(job_id)
-            )
-            os.makedirs(output_dir, exist_ok=True)
-            json_output_path = os.path.join(output_dir, "results.json")
-
-            with open(json_output_path, "w", encoding="utf-8") as f:
-                f.write(json_content)
-            json_file_size = os.path.getsize(json_output_path)
-            json_s3_path = json_output_path
-        else:
-            json_s3_path = f"s3://{s3_manager.bucket_name}/results/{json_key}"
-
-        # Create file entries for JSON output
-        json_file = DBFile(
-            file_path=json_s3_path,
-            file_name="results.json",
-            file_type="application/json",
-            file_size=json_file_size,
-        )
-
-        db.add(json_file)
-        db.commit()
-        db.refresh(json_file)
-
-        # Create document file relationship
-        json_doc_file = DocumentFile(
-            job_id=job_id, file_id=json_file.file_id, file_category="json_output"
-        )
-
-        db.add(json_doc_file)
-
-        # Generate Excel file
-        excel_key = f"{company_code}/{doc_type_code}/{job_id}/results.xlsx"
-        excel_saved = False
-
-        if s3_manager:
-            # Create temporary Excel file
-            with tempfile.NamedTemporaryFile(
-                suffix=".xlsx", delete=False
-            ) as temp_excel:
-                temp_excel_path = temp_excel.name
-
-            try:
-                # Generate Excel file to temporary location
-                json_to_excel(result_obj, temp_excel_path, doc_type_code)
-                excel_file_size = os.path.getsize(temp_excel_path)
-
-                # Upload to S3 exports folder
-                with open(temp_excel_path, "rb") as excel_file_obj:
-                    excel_saved = s3_manager.save_excel_export(
-                        excel_key, excel_file_obj
-                    )
-            finally:
-                # Clean up temporary file
-                if os.path.exists(temp_excel_path):
-                    os.unlink(temp_excel_path)
-
-        if not excel_saved:
-            # Fallback to local storage
-            output_dir = os.path.join(
-                "uploads", company_code, doc_type_code, str(job_id)
-            )
-            os.makedirs(output_dir, exist_ok=True)
-            excel_output_path = os.path.join(output_dir, "results.xlsx")
-
-            json_to_excel(result_obj, excel_output_path, doc_type_code)
-            excel_file_size = os.path.getsize(excel_output_path)
-            excel_s3_path = excel_output_path
-        else:
-            excel_s3_path = f"s3://{s3_manager.bucket_name}/exports/{excel_key}"
-
-        excel_file = DBFile(
-            file_path=excel_s3_path,
-            file_name="results.xlsx",
-            file_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            file_size=excel_file_size,
-        )
-
-        db.add(excel_file)
-        db.commit()
-        db.refresh(excel_file)
-
-        # Create document file relationship
-        excel_doc_file = DocumentFile(
-            job_id=job_id, file_id=excel_file.file_id, file_category="excel_output"
-        )
-
-        db.add(excel_doc_file)
-
-        # Generate CSV file
-        csv_key = f"{company_code}/{doc_type_code}/{job_id}/results.csv"
-        csv_saved = False
-
-        if s3_manager:
-            # Create temporary CSV file
-            with tempfile.NamedTemporaryFile(
-                suffix=".csv", delete=False
-            ) as temp_csv:
-                temp_csv_path = temp_csv.name
-
-            try:
-                # Generate CSV file to temporary location
-                json_to_csv(result_obj, temp_csv_path, doc_type_code)
-                csv_file_size = os.path.getsize(temp_csv_path)
-
-                # Upload to S3 exports folder
-                with open(temp_csv_path, "rb") as csv_file_obj:
-                    csv_saved = s3_manager.save_excel_export(
-                        csv_key, csv_file_obj
-                    )  # Using save_excel_export as it works for any file type
-            finally:
-                # Clean up temporary file
-                if os.path.exists(temp_csv_path):
-                    os.unlink(temp_csv_path)
-
-        if not csv_saved:
-            # Fallback to local storage
-            output_dir = os.path.join(
-                "uploads", company_code, doc_type_code, str(job_id)
-            )
-            os.makedirs(output_dir, exist_ok=True)
-            csv_output_path = os.path.join(output_dir, "results.csv")
-
-            json_to_csv(result_obj, csv_output_path, doc_type_code)
-            csv_file_size = os.path.getsize(csv_output_path)
-            csv_s3_path = csv_output_path
-        else:
-            csv_s3_path = f"s3://{s3_manager.bucket_name}/exports/{csv_key}"
-
-        csv_file = DBFile(
-            file_path=csv_s3_path,
-            file_name="results.csv",
-            file_type="text/csv",
-            file_size=csv_file_size,
-        )
-
-        db.add(csv_file)
-        db.commit()
-        db.refresh(csv_file)
-
-        # Create document file relationship
-        csv_doc_file = DocumentFile(
-            job_id=job_id, file_id=csv_file.file_id, file_category="csv_output"
-        )
-
-        db.add(csv_doc_file)
-
-        # Update job completion info
-        job.status = "success"
-        # Comment out these lines
-        # job.processing_completed_at = datetime.now()
-        # job.processing_time_seconds = time.time() - process_start_time
-        db.commit()
-
-        # Send WebSocket notification with timing info
-        await send_websocket_message(
-            job_id,
-            {
-                "status": "success",
-                "message": f"Document processing completed in {processing_time:.2f} seconds",
-                "processing_time": processing_time,
-                "storage_type": "S3" if file_path.startswith("s3://") else "local",
-                "files": [
-                    {
-                        "id": json_file.file_id,
-                        "name": "results.json",
-                        "type": "json_output",
-                    },
-                    {
-                        "id": excel_file.file_id,
-                        "name": "results.xlsx",
-                        "type": "excel_output",
-                    },
-                ],
-            },
-        )
-
-    except Exception as e:
-        logger.error(f"Error in background processing task for job {job_id}: {str(e)}")
-
-        # Update job status to error with timing info
-        if job:
-            job.status = "error"
-            job.error_message = str(e)
-            # Comment out these lines
-            # job.processing_completed_at = datetime.now()
-            # if hasattr(job, 'processing_started_at') and job.processing_started_at:
-            #     job.processing_time_seconds = (datetime.now() - job.processing_started_at).total_seconds()
-            db.commit()
-
-        # Send WebSocket notification
-        await send_websocket_message(
-            job_id, {"status": "error", "message": f"Processing failed: {str(e)}"}
-        )
-    finally:
-        # 清理临时文件
-        if temp_file_path and temp_file_path != file_path:  # 只清理真正的临时文件
-            file_storage.cleanup_temp_file(temp_file_path)
-
-        db.close()
-        db = next(get_db())
-
-
-# WebSocket message sender
-# Enhanced WebSocket message sender with error handling
-async def send_websocket_message(job_id: int, message: dict):
-    """Send WebSocket message with improved error handling"""
-    job_id_str = str(job_id)
-
-    if job_id_str not in active_connections:
-        logger.debug(f"No WebSocket connection found for job_id: {job_id}")
-        return False
-
-    try:
-        websocket = active_connections[job_id_str]
-
-        # Add metadata to message
-        enhanced_message = {
-            **message,
-            "job_id": job_id,
-            "timestamp": datetime.utcnow().isoformat(),
-        }
-
-        await websocket.send_json(enhanced_message)
-        logger.debug(
-            f"✅ WebSocket message sent for job_id {job_id}: {message.get('status', 'unknown')}"
-        )
-        return True
-
-    except Exception as e:
-        logger.warning(
-            f"⚠️  Failed to send WebSocket message for job_id {job_id}: {str(e)}"
-        )
-
-        # Remove the broken connection
-        if job_id_str in active_connections:
-            del active_connections[job_id_str]
-
-        return False
-
-
 # Get job status endpoint
 @app.get("/jobs/{job_id}", response_model=dict)
 def get_job_status(job_id: int, db: Session = Depends(get_db)):
@@ -2882,1181 +2342,6 @@ async def get_api_usage_summary(db: Session = Depends(get_db)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch API usage summary: {str(e)}")
-
-
-async def process_zip_file(
-    background_tasks: BackgroundTasks,
-    zip_file: UploadFile = File(...),
-    company_id: int = Form(...),
-    doc_type_id: int = Form(...),
-    # uploader_user_id: int = Form(...),
-    db: Session = Depends(get_db),
-):
-    try:
-        # Check if company and document type exist
-        company = db.query(Company).filter(Company.company_id == company_id).first()
-        if not company:
-            raise HTTPException(status_code=404, detail="Company not found")
-
-        doc_type = (
-            db.query(DocumentType)
-            .filter(DocumentType.doc_type_id == doc_type_id)
-            .first()
-        )
-        if not doc_type:
-            raise HTTPException(status_code=404, detail="Document type not found")
-
-        # Check if user exists
-        # user = db.query(User).filter(User.user_id == uploader_user_id).first()
-        # if not user:
-        #     raise HTTPException(status_code=404, detail="User not found")
-
-        # Check if configuration exists
-        config = (
-            db.query(CompanyDocumentConfig)
-            .filter(
-                CompanyDocumentConfig.company_id == company_id,
-                CompanyDocumentConfig.doc_type_id == doc_type_id,
-                CompanyDocumentConfig.active,
-            )
-            .first()
-        )
-
-        if not config:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No active configuration found for company ID {company_id} and document type ID {doc_type_id}",
-            )
-
-        # Verify prompt and schema are accessible (supports both local and S3)
-        prompt_schema_manager = get_prompt_schema_manager()
-        
-        # Check if prompt exists
-        prompt_test = await prompt_schema_manager.get_prompt(company.company_code, doc_type.type_code)
-        if not prompt_test:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Prompt template not found for {company.company_code}/{doc_type.type_code}",
-            )
-        
-        # Check if schema exists
-        schema_test = await prompt_schema_manager.get_schema(company.company_code, doc_type.type_code)
-        if not schema_test:
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Schema file not found for {company.company_code}/{doc_type.type_code}"
-            )
-
-        # Save the uploaded zip file
-        upload_dir = os.path.join(
-            "uploads", company.company_code, doc_type.type_code, "batch_jobs"
-        )
-        os.makedirs(upload_dir, exist_ok=True)
-
-        # Generate a unique filename with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        zip_path = os.path.join(upload_dir, f"{timestamp}_{zip_file.filename}")
-
-        # Save file to disk
-        with open(zip_path, "wb") as buffer:
-            shutil.copyfileobj(zip_file.file, buffer)
-
-        logger.info(f"Zip file saved to: {zip_file.filename}")
-
-        batch_job = BatchJob(
-            # uploader_user_id=3,
-            company_id=company_id,
-            doc_type_id=doc_type_id,
-            upload_description=zip_file.filename,
-            s3_upload_path=zip_path,
-            original_zipfile=zip_path,
-            status="pending",
-        )
-        logger.info(f"batch_job: {str(batch_job.__dict__)}")
-
-        db.add(batch_job)
-        db.commit()
-        db.refresh(batch_job)
-        logger.info(f"Batch job created: {batch_job.batch_id}")
-        batch_id = batch_job.batch_id
-
-        # Start processing in background but return immediately
-        background_tasks.add_task(
-            process_zip_task,
-            batch_id,
-            zip_path,
-            company.company_code,
-            doc_type.type_code,
-        )
-
-        # Return immediately with batch ID
-        return {
-            "batch_id": batch_id,
-            "status": "pending",
-            "message": "ZIP file processing started",
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error processing ZIP file: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail=f"Error processing ZIP file: {str(e)}"
-        )
-
-
-# Add the process_zip_task function
-async def process_zip_task(
-    batch_id: int,
-    zip_path: str,
-    company_code: str,
-    doc_type_code: str,
-):
-    db = next(get_db())
-    import zipfile
-    import tempfile
-
-    try:
-        # Update batch job status
-        batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
-        if not batch_job:
-            logger.error(f"Batch job {batch_id} not found")
-            return
-
-        batch_job.status = "processing"
-        db.commit()
-
-        # Create output directory for extracted files and results
-        output_dir = os.path.join(
-            "uploads", company_code, doc_type_code, f"batch_{batch_id}"
-        )
-        os.makedirs(output_dir, exist_ok=True)
-
-        # Extract zip file
-        with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            # First, count the number of valid image files
-            image_files = [
-                f
-                for f in zip_ref.namelist()
-                if f.lower().endswith((".jpg", ".jpeg", ".png"))
-                and not f.startswith("__MACOSX")
-            ]
-
-            batch_job.total_files = len(image_files)
-            batch_job.processed_files = 0
-            db.commit()
-
-            if batch_job.total_files == 0:
-                batch_job.status = "failed"
-                batch_job.error_message = "No valid image files found in ZIP"
-                db.commit()
-                return
-
-            # Extract files to temp directory
-            with tempfile.TemporaryDirectory() as temp_dir:
-                zip_ref.extractall(temp_dir)
-
-                # Load prompt and schema using the new manager (supports both S3 and local)
-                prompt_template, schema_json = await load_prompt_and_schema(company_code, doc_type_code)
-                
-                if not prompt_template:
-                    raise ValueError(f"Prompt not found for {company_code}/{doc_type_code}")
-                
-                if not schema_json:
-                    raise ValueError(f"Schema not found for {company_code}/{doc_type_code}")
-
-                # Get API key from config loader
-                try:
-                    api_key = get_api_key_manager().get_least_used_key()
-                    model_name = app_config.get(
-                        "model_name", "gemini-2.5-flash-preview-05-20"
-                    )
-                except ValueError as e:
-                    raise ValueError(f"API key configuration error: {e}")
-
-                # Prepare the results file
-                all_results = []
-
-                # Process each image
-                for image_path_rel in image_files:
-                    image_path = os.path.join(temp_dir, image_path_rel)
-                    if not os.path.exists(image_path) or os.path.isdir(image_path):
-                        continue
-
-                    # Create a job record for this image
-                    job = ProcessingJob(
-                        company_id=batch_job.company_id,
-                        doc_type_id=batch_job.doc_type_id,
-                        batch_id=batch_id,
-                        original_filename=os.path.basename(image_path),
-                        status="processing",
-                        s3_pdf_path=image_path,  # Reusing PDF field for image path
-                    )
-
-                    db.add(job)
-                    db.commit()
-                    db.refresh(job)
-
-                    try:
-                        # Process the image
-                        result = await extract_text_from_image(
-                            image_path,
-                            prompt_template,
-                            schema_json,
-                            api_key,
-                            model_name,
-                        )
-
-                        # Parse the JSON result with better error handling
-                        try:
-                            # First check if result is a dictionary with the expected keys
-                            if not isinstance(result, dict):
-                                raise TypeError(
-                                    f"Expected dict result, got {type(result)}"
-                                )
-
-                            if "text" not in result:
-                                raise KeyError("Result missing 'text' key")
-
-                            # Now handle the text content - always parse it as JSON string first
-                            json_text = result["text"]
-                            if not isinstance(json_text, str):
-                                json_text = str(
-                                    json_text
-                                )  # Convert to string if it's not already
-
-                            # Parse the JSON string
-                            json_data = json.loads(json_text)
-
-                            # Handle case where the parsed JSON is a list
-                            if isinstance(json_data, list):
-                                # Process all items in the list
-                                processed_results = []
-
-                                for item in json_data:
-                                    # Add filename to each item
-                                    if isinstance(item, dict):
-                                        item["__filename"] = os.path.basename(
-                                            image_path
-                                        )
-                                        processed_results.append(item)
-                                    else:
-                                        # Handle non-dict items
-                                        processed_results.append(
-                                            {
-                                                "__filename": os.path.basename(
-                                                    image_path
-                                                ),
-                                                "value": item,
-                                                "__non_dict_item": True,
-                                            }
-                                        )
-
-                                # Add all processed items to the results
-                                all_results.extend(processed_results)
-                            else:
-                                # Handle single object case (original behavior)
-                                json_data["__filename"] = os.path.basename(image_path)
-                                all_results.append(json_data)
-                        except (
-                            json.JSONDecodeError,
-                            TypeError,
-                            KeyError,
-                            IndexError,
-                        ) as json_err:
-                            logger.error(
-                                f"Error parsing JSON result for {image_path}: {str(json_err)}"
-                            )
-                            logger.error(f"Raw result type: {type(result)}")
-                            if isinstance(result, dict) and "text" in result:
-                                logger.error(f"Raw text type: {type(result['text'])}")
-                                logger.error(
-                                    f"Raw text content: {str(result['text'])[:500]}"
-                                )
-
-                            # Create a simple JSON with error info instead - only business data
-                            json_data = {
-                                "__filename": os.path.basename(image_path),
-                                "__error": f"Failed to parse result: {str(json_err)}"
-                                # Remove __raw_text to keep results.json clean
-                            }
-                            all_results.append(json_data)
-
-                        # Record API usage with safer access to token counts
-                        api_usage = ApiUsage(
-                            job_id=job.job_id,
-                            input_token_count=result.get("input_tokens", 0),
-                            output_token_count=result.get("output_tokens", 0),
-                            api_call_timestamp=datetime.now(),
-                            model=model_name,
-                            status=(
-                                "success" if "__error" not in json_data else "failed"
-                            ),
-                        )
-                        db.add(api_usage)
-
-                        # Update job status
-                        if "__error" not in json_data:
-                            job.status = "success"
-                        else:
-                            job.status = "failed"
-                            job.error_message = json_data["__error"]
-                        db.commit()
-
-                    except Exception as e:
-                        job.status = "failed"
-                        job.error_message = str(e)
-                        db.commit()
-                        logger.error(f"Error processing image {image_path}: {str(e)}")
-                        # Still add a placeholder in results so we know which file failed
-                        all_results.append(
-                            {
-                                "__filename": os.path.basename(image_path),
-                                "__error": f"Processing failed: {str(e)}",
-                            }
-                        )
-
-                    # Update batch job progress
-                    batch_job.processed_files += 1
-                    db.commit()
-
-                # Save all results using S3 storage
-                s3_manager = get_s3_manager()
-
-                # Generate S3 keys for batch results with batch ID in filename
-                batch_json_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_{batch_job.batch_job_id}_results.json"
-                batch_excel_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_{batch_job.batch_job_id}_results.xlsx"
-                batch_csv_key = f"{company_code}/{doc_type_code}/batch_{batch_job.batch_job_id}/batch_{batch_job.batch_job_id}_results.csv"
-
-                json_saved = False
-                excel_saved = False
-                csv_saved = False
-
-                if s3_manager:
-                    # Save JSON results to S3 results folder
-                    json_saved = s3_manager.save_json_result(
-                        batch_json_key, all_results
-                    )
-
-                    if json_saved:
-                        json_s3_path = (
-                            f"s3://{s3_manager.bucket_name}/results/{batch_json_key}"
-                        )
-
-                    # Create temporary Excel file and upload to S3
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".xlsx", delete=False
-                    ) as temp_excel:
-                        temp_excel_path = temp_excel.name
-
-                    try:
-                        # Convert to Excel
-                        await asyncio.to_thread(
-                            json_to_excel, all_results, temp_excel_path
-                        )
-
-                        # Upload to S3 exports folder
-                        with open(temp_excel_path, "rb") as excel_file_obj:
-                            excel_saved = s3_manager.save_excel_export(
-                                batch_excel_key, excel_file_obj
-                            )
-
-                        if excel_saved:
-                            excel_s3_path = f"s3://{s3_manager.bucket_name}/exports/{batch_excel_key}"
-                    finally:
-                        # Clean up temporary file
-                        if os.path.exists(temp_excel_path):
-                            os.unlink(temp_excel_path)
-
-                    # Create temporary CSV file and upload to S3
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".csv", delete=False
-                    ) as temp_csv:
-                        temp_csv_path = temp_csv.name
-
-                    try:
-                        # Convert to CSV
-                        await asyncio.to_thread(
-                            json_to_csv, all_results, temp_csv_path
-                        )
-
-                        # Upload to S3 exports folder
-                        with open(temp_csv_path, "rb") as csv_file_obj:
-                            csv_saved = s3_manager.save_excel_export(
-                                batch_csv_key, csv_file_obj
-                            )  # Using save_excel_export as it works for any file type
-
-                        if csv_saved:
-                            csv_s3_path = f"s3://{s3_manager.bucket_name}/exports/{batch_csv_key}"
-                    finally:
-                        # Clean up temporary file
-                        if os.path.exists(temp_csv_path):
-                            os.unlink(temp_csv_path)
-
-                # Fallback to local storage if S3 fails
-                if not json_saved or not excel_saved or not csv_saved:
-                    if not json_saved:
-                        json_output_path = os.path.join(
-                            output_dir, f"batch_{batch_job.batch_job_id}_results.json"
-                        )
-                        with open(json_output_path, "w", encoding="utf-8") as f:
-                            json.dump(all_results, f, indent=2, ensure_ascii=False)
-                        json_s3_path = json_output_path
-
-                    if not excel_saved:
-                        excel_output_path = os.path.join(
-                            output_dir, f"batch_{batch_job.batch_job_id}_results.xlsx"
-                        )
-                        await asyncio.to_thread(
-                            json_to_excel, all_results, excel_output_path
-                        )
-                        excel_s3_path = excel_output_path
-
-                    if not csv_saved:
-                        csv_output_path = os.path.join(
-                            output_dir, f"batch_{batch_job.batch_job_id}_results.csv"
-                        )
-                        await asyncio.to_thread(
-                            json_to_csv, all_results, csv_output_path
-                        )
-                        csv_s3_path = csv_output_path
-
-                # Update batch job with output paths and complete status
-                batch_job.json_output_path = json_s3_path
-                batch_job.excel_output_path = excel_s3_path
-                batch_job.csv_output_path = csv_s3_path
-                batch_job.status = "success"
-                db.commit()
-
-    except Exception as e:
-        logger.error(f"Error in batch processing: {str(e)}")
-        try:
-            batch_job.status = "failed"
-            batch_job.error_message = str(e)
-            db.commit()
-        except Exception:
-            pass
-
-
-# Unified batch processing endpoint (replaces both /process and /process-zip)
-async def process_batch(
-    background_tasks: BackgroundTasks,
-    company_id: int = Form(...),
-    doc_type_id: int = Form(...),
-    files: List[UploadFile] = File(...),
-    mapping_file: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db),
-):
-    """
-    Unified batch processing endpoint that handles all file types:
-    - Single images -> batch of 1 image
-    - Single PDFs -> batch of 1 PDF (split into pages)
-    - Multiple files -> batch of all files
-    - ZIP files -> batch of extracted contents
-    - Mixed uploads -> batch of all processed content
-    """
-    try:
-        # Validate company and document type
-        company = db.query(Company).filter(Company.company_id == company_id).first()
-        if not company:
-            raise HTTPException(status_code=404, detail="Company not found")
-
-        doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == doc_type_id).first()
-        if not doc_type:
-            raise HTTPException(status_code=404, detail="Document type not found")
-
-        # Verify configuration exists
-        config = (
-            db.query(CompanyDocumentConfig)
-            .filter(
-                CompanyDocumentConfig.company_id == company_id,
-                CompanyDocumentConfig.doc_type_id == doc_type_id,
-                CompanyDocumentConfig.active,
-            )
-            .first()
-        )
-
-        if not config:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No active configuration found for company ID {company_id} and document type ID {doc_type_id}",
-            )
-
-        # Verify prompt and schema are accessible
-        prompt_schema_manager = get_prompt_schema_manager()
-        
-        prompt_test = await prompt_schema_manager.get_prompt(company.company_code, doc_type.type_code)
-        if not prompt_test:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Prompt template not found for {company.company_code}/{doc_type.type_code}",
-            )
-        
-        schema_test = await prompt_schema_manager.get_schema(company.company_code, doc_type.type_code)
-        if not schema_test:
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Schema file not found for {company.company_code}/{doc_type.type_code}"
-            )
-
-        # Validate mapping file if provided
-        mapping_file_path = None
-        if mapping_file:
-            # Check file extension
-            if not mapping_file.filename.lower().endswith('.xlsx'):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Mapping file must be an Excel (.xlsx) file"
-                )
-            
-            # Check file size (max 10MB)
-            content = await mapping_file.read()
-            if len(content) > 10 * 1024 * 1024:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Mapping file size must be less than 10MB"
-                )
-            await mapping_file.seek(0)  # Reset file pointer
-            
-            # Save mapping file to S3 for processing
-            s3_manager = get_s3_manager()
-            if s3_manager:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                mapping_s3_key = f"mapping_files/{company.company_code}/mapping_{timestamp}_{mapping_file.filename}"
-                upload_success = s3_manager.upload_file(content, mapping_s3_key)
-                
-                if upload_success:
-                    mapping_file_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{mapping_s3_key}"
-                    logger.info(f"Mapping file uploaded to: {mapping_file_path}")
-                else:
-                    logger.warning("Failed to upload mapping file to S3, proceeding without cost allocation")
-            else:
-                logger.warning("S3 not available, proceeding without cost allocation")
-
-        # Analyze uploaded files and determine batch type
-        file_names = [f.filename for f in files]
-        file_types = []
-        total_size = 0
-        
-        for file in files:
-            total_size += len(await file.read())
-            await file.seek(0)  # Reset file pointer
-            
-            # Determine file type
-            if file.content_type:
-                if file.content_type.startswith('image/'):
-                    file_types.append('image')
-                elif file.content_type == 'application/pdf':
-                    file_types.append('pdf')
-                elif file.content_type == 'application/zip':
-                    file_types.append('zip')
-                else:
-                    file_types.append('other')
-            else:
-                # Fallback to extension checking
-                ext = file.filename.lower().split('.')[-1] if '.' in file.filename else ''
-                if ext in ['jpg', 'jpeg', 'png', 'gif', 'bmp']:
-                    file_types.append('image')
-                elif ext == 'pdf':
-                    file_types.append('pdf')
-                elif ext == 'zip':
-                    file_types.append('zip')
-                else:
-                    file_types.append('other')
-
-        # Determine upload type
-        unique_types = set(file_types)
-        if len(files) == 1:
-            if 'zip' in unique_types:
-                upload_type = UploadType.zip_file
-            else:
-                upload_type = UploadType.single_file
-        elif len(unique_types) > 1:
-            upload_type = UploadType.mixed
-        else:
-            upload_type = UploadType.multiple_files
-
-        # Create upload description
-        if len(files) == 1:
-            upload_description = files[0].filename
-        else:
-            upload_description = f"{len(files)} files uploaded"
-
-        # Save uploaded files to S3
-        s3_manager = get_s3_manager()
-        if not s3_manager:
-            raise HTTPException(status_code=500, detail="S3 storage not available")
-            
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        saved_file_paths = []
-        s3_upload_base = f"batch_uploads/{company.company_code}/{doc_type.type_code}/batch_{timestamp}"
-
-        for i, file in enumerate(files):
-            # Generate unique filename
-            safe_filename = f"{timestamp}_{i}_{file.filename}"
-            s3_key = f"{s3_upload_base}/{safe_filename}"
-            
-            # Upload file to S3
-            file_content = file.file.read()
-            upload_success = s3_manager.upload_file(file_content, s3_key)
-            
-            if not upload_success:
-                raise HTTPException(status_code=500, detail=f"Failed to upload {file.filename} to S3")
-            
-            # Construct S3 path (S3 manager adds 'upload/' prefix automatically)
-            s3_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{s3_key}"
-            saved_file_paths.append(s3_path)
-            
-            # Reset file pointer for potential reuse
-            file.file.seek(0)
-
-        # Create BatchJob record
-        batch_job = BatchJob(
-            company_id=company_id,
-            doc_type_id=doc_type_id,
-            upload_description=upload_description,
-            s3_upload_path=f"s3://{s3_manager.bucket_name}/{s3_upload_base}",  # Store the S3 base path
-            upload_type=upload_type,
-            original_file_names=file_names,
-            file_count=len(files),
-            status="pending",
-        )
-
-        db.add(batch_job)
-        db.commit()
-        db.refresh(batch_job)
-
-        logger.info(f"Created unified batch job {batch_job.batch_id} with {len(files)} files")
-
-        # Start background processing
-        background_tasks.add_task(
-            process_unified_batch, 
-            batch_job.batch_id, 
-            saved_file_paths,
-            company.company_code,
-            doc_type.type_code,
-            mapping_file_path
-        )
-
-        return {
-            "batch_id": batch_job.batch_id,
-            "status": "success",
-            "message": f"Batch upload started with {len(files)} files",
-            "upload_type": upload_type.value,
-            "file_count": len(files)
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in unified batch processing: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
-
-
-async def process_unified_batch(batch_id: int, file_paths: List[str], company_code: str, doc_type_code: str, mapping_file_path: Optional[str] = None):
-    """Background task to process unified batch of any file types"""
-    
-    with Session(engine) as db:
-        try:
-            # Get batch job
-            batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
-            if not batch_job:
-                logger.error(f"Batch job {batch_id} not found")
-                return
-
-            batch_job.status = "processing"
-            db.commit()
-
-            # Load prompt and schema
-            prompt_schema_manager = get_prompt_schema_manager()
-            prompt = await prompt_schema_manager.get_prompt(company_code, doc_type_code)
-            schema = await prompt_schema_manager.get_schema(company_code, doc_type_code)
-
-            if not prompt or not schema:
-                batch_job.status = "failed"
-                batch_job.error_message = "Prompt or schema not found"
-                db.commit()
-                return
-
-            # Process all files and collect processable units
-            processable_files = []
-            s3_manager = get_s3_manager()
-            temp_files_to_cleanup = []
-            
-            for file_path in file_paths:
-                # Check if this is an S3 path
-                if file_path.startswith('s3://'):
-                    # Download S3 file to temporary location
-                    file_content = s3_manager.download_file_by_stored_path(file_path)
-                    if not file_content:
-                        logger.error(f"Failed to download S3 file: {file_path}")
-                        continue
-                    
-                    # Create temporary file
-                    import tempfile
-                    original_filename = file_path.split('/')[-1]
-                    file_ext = os.path.splitext(original_filename)[1].lower()
-                    
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
-                        temp_file.write(file_content)
-                        local_file_path = temp_file.name
-                        temp_files_to_cleanup.append(local_file_path)
-                else:
-                    # Use local file path as-is
-                    local_file_path = file_path
-                    original_filename = os.path.basename(file_path)
-                    file_ext = os.path.splitext(original_filename)[1].lower()
-                
-                if file_ext == '.zip':
-                    # Extract ZIP and add images
-                    with zipfile.ZipFile(local_file_path, 'r') as zip_ref:
-                        extract_dir = local_file_path + "_extracted"
-                        os.makedirs(extract_dir, exist_ok=True)
-                        zip_ref.extractall(extract_dir)
-                        temp_files_to_cleanup.append(extract_dir)
-                        
-                        # Find images in extracted files
-                        for root, dirs, files in os.walk(extract_dir):
-                            for file in files:
-                                if file.lower().endswith(('.jpg', '.jpeg', '.png')):
-                                    processable_files.append(os.path.join(root, file))
-                
-                elif file_ext == '.pdf':
-                    # For PDF files, add both the local path and original filename
-                    processable_files.append((local_file_path, original_filename))
-                
-                elif file_ext in ['.jpg', '.jpeg', '.png']:
-                    # Direct image processing
-                    processable_files.append((local_file_path, original_filename))
-
-            # Update total files count based on what we actually found
-            batch_job.total_files = len(processable_files)
-            batch_job.processed_files = 0
-            db.commit()
-
-            if len(processable_files) == 0:
-                batch_job.status = "failed"
-                batch_job.error_message = "No processable files found"
-                db.commit()
-                return
-
-            # Process each file
-            all_results = []
-            
-            for i, file_info in enumerate(processable_files):
-                try:
-                    # Handle both tuple (local_path, original_filename) and string formats
-                    if isinstance(file_info, tuple):
-                        local_file_path, original_filename = file_info
-                    else:
-                        local_file_path = file_info
-                        original_filename = os.path.basename(file_info)
-                    
-                    # Create individual ProcessingJob for tracking
-                    job = ProcessingJob(
-                        company_id=batch_job.company_id,
-                        doc_type_id=batch_job.doc_type_id,
-                        batch_id=batch_id,
-                        original_filename=original_filename,
-                        status="processing"
-                    )
-                    db.add(job)
-                    db.commit()
-
-                    # Process the file
-                    if local_file_path.lower().endswith('.pdf'):
-                        result = await extract_text_from_pdf(local_file_path, prompt, schema)
-                    else:
-                        result = await extract_text_from_image(local_file_path, prompt, schema)
-                    
-                    # Record API usage data to database
-                    if isinstance(result, dict) and "text" in result:
-                        api_usage = ApiUsage(
-                            job_id=job.job_id,
-                            input_token_count=result.get("input_tokens", 0),
-                            output_token_count=result.get("output_tokens", 0),
-                            api_call_timestamp=datetime.now(),
-                            model=app_config.get("model_name", "gemini-2.5-flash-preview-05-20"),
-                            processing_time_seconds=result.get("processing_time", 0),
-                            status="success"
-                        )
-                        db.add(api_usage)
-                    
-                    # Clean result data - only keep business data for results.json
-                    if isinstance(result, dict):
-                        # Extract only the text content for results
-                        text_content = result.get("text", "")
-                        if text_content:
-                            try:
-                                # Parse the text content as JSON
-                                business_data = json.loads(text_content)
-                                business_data["__filename"] = original_filename
-                                all_results.append(business_data)
-                            except json.JSONDecodeError:
-                                # If text is not JSON, wrap it
-                                all_results.append({
-                                    "text": text_content,
-                                    "__filename": original_filename
-                                })
-                        else:
-                            # Fallback for missing text
-                            all_results.append({
-                                "__filename": original_filename,
-                                "__error": "No text content in result"
-                            })
-                    
-                    # Update job status
-                    job.status = "success"
-                    db.commit()
-
-                except Exception as e:
-                    logger.error(f"Error processing {local_file_path}: {str(e)}")
-                    job.status = "failed"
-                    job.error_message = str(e)
-                    
-                    # If we have a result with API usage data, still record it
-                    if 'result' in locals() and isinstance(result, dict):
-                        if "input_tokens" in result or "output_tokens" in result:
-                            api_usage = ApiUsage(
-                                job_id=job.job_id,
-                                input_token_count=result.get("input_tokens", 0),
-                                output_token_count=result.get("output_tokens", 0),
-                                api_call_timestamp=datetime.now(),
-                                model=app_config.get("model_name", "gemini-2.5-flash-preview-05-20"),
-                                processing_time_seconds=result.get("processing_time", 0),
-                                status="failed"
-                            )
-                            db.add(api_usage)
-                    
-                    db.commit()
-                    
-                    # Add error result to batch results
-                    all_results.append({
-                        "__filename": original_filename,
-                        "__error": f"Processing failed: {str(e)}"
-                    })
-
-                # Update batch progress
-                batch_job.processed_files += 1
-                db.commit()
-
-            # Save batch results to S3
-            if all_results:
-                s3_manager = get_s3_manager()
-                s3_results_base = f"batch_results/{company_code}/{doc_type_code}/batch_{batch_id}"
-
-                # Save JSON to S3
-                json_content = json.dumps(all_results, indent=2, ensure_ascii=False)
-                json_s3_key = f"{s3_results_base}/batch_{batch_id}_results.json"
-                json_upload_success = s3_manager.upload_file(json_content.encode('utf-8'), json_s3_key)
-                
-                if json_upload_success:
-                    batch_job.json_output_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{json_s3_key}"
-                else:
-                    logger.error(f"Failed to upload JSON results to S3 for batch {batch_id}")
-
-                # Save Excel to S3
-                import tempfile
-                with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temp_excel:
-                    temp_excel_path = temp_excel.name
-                
-                # Generate Excel file locally first
-                json_to_excel(all_results, temp_excel_path)
-                
-                # Upload Excel to S3
-                with open(temp_excel_path, 'rb') as excel_file:
-                    excel_content = excel_file.read()
-                    excel_s3_key = f"{s3_results_base}/batch_{batch_id}_results.xlsx"
-                    excel_upload_success = s3_manager.upload_file(excel_content, excel_s3_key)
-                    
-                    if excel_upload_success:
-                        batch_job.excel_output_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{excel_s3_key}"
-                    else:
-                        logger.error(f"Failed to upload Excel results to S3 for batch {batch_id}")
-                
-                # Clean up temporary Excel file
-                os.unlink(temp_excel_path)
-
-                # Save CSV to S3
-                with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as temp_csv:
-                    temp_csv_path = temp_csv.name
-                
-                # Generate CSV file locally first
-                json_to_csv(all_results, temp_csv_path)
-                
-                # Upload CSV to S3
-                with open(temp_csv_path, 'rb') as csv_file:
-                    csv_content = csv_file.read()
-                    csv_s3_key = f"{s3_results_base}/batch_{batch_id}_results.csv"
-                    csv_upload_success = s3_manager.upload_file(csv_content, csv_s3_key)
-                    
-                    if csv_upload_success:
-                        batch_job.csv_output_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{csv_s3_key}"
-                    else:
-                        logger.error(f"Failed to upload CSV results to S3 for batch {batch_id}")
-                
-                # Clean up temporary CSV file
-                os.unlink(temp_csv_path)
-
-            # Process cost allocation if mapping file is provided
-            if mapping_file_path and all_results:
-                logger.info(f"Starting cost allocation process for batch {batch_id}")
-                try:
-                    # Download mapping file from S3
-                    mapping_content = None
-                    if mapping_file_path.startswith('s3://'):
-                        s3_key = mapping_file_path.replace(f"s3://{s3_manager.bucket_name}/", "")
-                        if s3_key.startswith(s3_manager.upload_prefix):
-                            s3_key = s3_key[len(s3_manager.upload_prefix):]
-                        mapping_content = s3_manager.download_file(s3_key)
-                    
-                    if mapping_content:
-                        # Process mapping file
-                        mapping_result = process_dynamic_mapping_file(mapping_content, mapping_file_path)
-                        
-                        if mapping_result.get('success', False):
-                            unified_map = mapping_result['unified_map']
-                            
-                            # Flatten all OCR results for matching
-                            flat_results = []
-                            for result in all_results:
-                                if 'service_details' in result:
-                                    # Handle structured results (like 3HK, CMHK)
-                                    for service in result['service_details']:
-                                        for charge_item in service.get('charge_items', []):
-                                            flat_record = {
-                                                'mobile_number': service.get('service_number', service.get('mobile_number', '')),
-                                                'account_number': result.get('account_number', result.get('customer_number', '')),
-                                                'description': charge_item.get('description', ''),
-                                                'amount': charge_item.get('amount', 0),
-                                                'period': charge_item.get('item_date_or_period', ''),
-                                                'company_name': result.get('company_name', ''),
-                                                'bill_date': result.get('bill_date', result.get('issue_date', ''))
-                                            }
-                                            flat_results.append(flat_record)
-                                else:
-                                    # Handle simple results
-                                    flat_results.append(result)
-                            
-                            # Enrich OCR data with mapping information
-                            enrichment_result = enrich_ocr_data(flat_results, unified_map)
-                            
-                            if enrichment_result.get('success', False):
-                                enriched_records = enrichment_result['enriched_records']
-                                
-                                # Generate NetSuite CSV
-                                netsuite_csv = generate_netsuite_csv(enriched_records)
-                                if netsuite_csv:
-                                    # Upload NetSuite CSV to S3
-                                    netsuite_s3_key = f"{s3_results_base}/netsuite_import.csv"
-                                    if s3_manager.upload_file(netsuite_csv.encode('utf-8-sig'), netsuite_s3_key):
-                                        batch_job.netsuite_csv_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{netsuite_s3_key}"
-                                        logger.info(f"NetSuite CSV uploaded to: {batch_job.netsuite_csv_path}")
-                                
-                                # Generate matching details report
-                                matching_report = generate_matching_report(enriched_records, mapping_result)
-                                if matching_report:
-                                    # Upload matching report to S3
-                                    matching_s3_key = f"{s3_results_base}/matching_details.xlsx"
-                                    if s3_manager.upload_file(matching_report, matching_s3_key):
-                                        batch_job.matching_report_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{matching_s3_key}"
-                                        logger.info(f"Matching report uploaded to: {batch_job.matching_report_path}")
-                                
-                                # Generate cost summary report
-                                summary_report = generate_summary_report(enriched_records)
-                                if summary_report:
-                                    # Upload summary report to S3
-                                    summary_s3_key = f"{s3_results_base}/cost_summary.xlsx"
-                                    if s3_manager.upload_file(summary_report, summary_s3_key):
-                                        batch_job.summary_report_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{summary_s3_key}"
-                                        logger.info(f"Summary report uploaded to: {batch_job.summary_report_path}")
-                                
-                                # Update unmatched count
-                                batch_job.unmatched_count = enrichment_result.get('unmatched_records', 0)
-                                
-                                logger.info(f"Cost allocation completed for batch {batch_id}: {enrichment_result.get('matched_records', 0)}/{enrichment_result.get('total_records', 0)} records matched")
-                            else:
-                                logger.error(f"Failed to enrich OCR data: {enrichment_result.get('error', 'Unknown error')}")
-                        else:
-                            logger.error(f"Failed to process mapping file: {mapping_result.get('error', 'Unknown error')}")
-                    else:
-                        logger.error(f"Failed to download mapping file from: {mapping_file_path}")
-                
-                except Exception as e:
-                    logger.error(f"Error in cost allocation process: {str(e)}")
-                    # Don't fail the entire batch if cost allocation fails
-
-            batch_job.status = "completed"
-            db.commit()
-
-            logger.info(f"Unified batch {batch_id} completed successfully")
-
-        except Exception as e:
-            logger.error(f"Error in unified batch processing: {str(e)}")
-            try:
-                batch_job.status = "failed"
-                batch_job.error_message = str(e)
-                db.commit()
-            except Exception:
-                pass
-        
-        finally:
-            # Clean up temporary files
-            import shutil
-            for temp_path in temp_files_to_cleanup:
-                try:
-                    if os.path.isfile(temp_path):
-                        os.unlink(temp_path)
-                    elif os.path.isdir(temp_path):
-                        shutil.rmtree(temp_path)
-                except Exception as cleanup_error:
-                    logger.warning(f"Failed to cleanup temporary file {temp_path}: {cleanup_error}")
-
-
-def get_batch_job_status(batch_id: int, db: Session = Depends(get_db)):
-    batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
-    if not batch_job:
-        raise HTTPException(status_code=404, detail="Batch job not found")
-
-    return {
-        "batch_id": batch_job.batch_id,
-        "company_id": batch_job.company_id,
-        "company_name": batch_job.company.company_name if batch_job.company else None,
-        "doc_type_id": batch_job.doc_type_id,
-        "type_name": (
-            batch_job.document_type.type_name if batch_job.document_type else None
-        ),
-        "uploader_user_id": (
-            batch_job.uploader_user_id
-            if hasattr(batch_job, "uploader_user_id")
-            else None
-        ),
-        "uploader_name": (
-            batch_job.uploader.name
-            if hasattr(batch_job, "uploader") and batch_job.uploader
-            else None
-        ),
-        "zip_filename": batch_job.upload_description,
-        "s3_zipfile_path": batch_job.s3_upload_path,
-        "total_files": batch_job.total_files,
-        "processed_files": batch_job.processed_files,
-        "status": batch_job.status,
-        "error_message": batch_job.error_message,
-        "json_output_path": batch_job.json_output_path,
-        "excel_output_path": batch_job.excel_output_path,
-        "created_at": batch_job.created_at.isoformat(),
-        "updated_at": batch_job.updated_at.isoformat(),
-    }
-
-
-def list_batch_jobs(
-    company_id: Optional[int] = None,
-    doc_type_id: Optional[int] = None,
-    status: Optional[str] = None,
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
-):
-    query = db.query(BatchJob)
-
-    if company_id is not None:
-        query = query.filter(BatchJob.company_id == company_id)
-
-    if doc_type_id is not None:
-        query = query.filter(BatchJob.doc_type_id == doc_type_id)
-
-    if status is not None:
-        query = query.filter(BatchJob.status == status)
-
-    # Get total count before applying pagination
-    total_count = query.count()
-
-    # Order by most recent first
-    query = query.order_by(BatchJob.created_at.desc())
-
-    # Apply pagination
-    batch_jobs = query.offset(offset).limit(limit).all()
-
-    # Calculate pagination info
-    total_pages = (total_count + limit - 1) // limit  # Ceiling division
-    current_page = (offset // limit) + 1
-    has_next = offset + limit < total_count
-    has_previous = offset > 0
-
-    return {
-        "data": [
-            {
-                "batch_id": job.batch_id,
-                "company_id": job.company_id,
-                "company_name": job.company.company_name if job.company else None,
-                "doc_type_id": job.doc_type_id,
-                "type_name": job.document_type.type_name if job.document_type else None,
-                "uploader_user_id": (
-                    job.uploader_user_id if hasattr(job, "uploader_user_id") else None
-                ),
-                "uploader_name": (
-                    job.uploader.name if hasattr(job, "uploader") and job.uploader else None
-                ),
-                "zip_filename": job.upload_description,
-                "s3_zipfile_path": job.s3_upload_path,
-                "total_files": job.total_files,
-                "processed_files": job.processed_files,
-                "status": job.status,
-                "created_at": job.created_at.isoformat(),
-                "updated_at": job.updated_at.isoformat(),
-            }
-            for job in batch_jobs
-        ],
-        "pagination": {
-            "total_count": total_count,
-            "total_pages": total_pages,
-            "current_page": current_page,
-            "limit": limit,
-            "offset": offset,
-            "has_next": has_next,
-            "has_previous": has_previous,
-        }
-    }
-
-
-def delete_batch_job(batch_id: int, db: Session = Depends(get_db)):
-    """
-    Delete a batch job and all its related files and data.
-    
-    This endpoint will:
-    - Delete all related ProcessingJobs and their files
-    - Delete all associated file records and S3 files
-    - Delete the batch job record itself
-    - Clean up any API usage records
-    
-    Returns a summary of what was deleted.
-    """
-    try:
-        # Check if batch job exists
-        batch_job = db.query(BatchJob).filter(BatchJob.batch_id == batch_id).first()
-        if not batch_job:
-            raise HTTPException(status_code=404, detail="Batch job not found")
-        
-        # Use ForceDeleteManager to handle the deletion
-        delete_manager = ForceDeleteManager(db)
-        result = delete_manager.force_delete_batch_job(batch_id)
-        
-        logger.info(f"Successfully deleted batch job {batch_id}: {result['message']}")
-        
-        return {
-            "success": True,
-            "message": result["message"],
-            "batch_id": batch_id,
-            "deleted_entity": result["deleted_entity"],
-            "statistics": result["statistics"]
-        }
-        
-    except ValueError as e:
-        # Batch job not found
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to delete batch job {batch_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete batch job: {str(e)}")
 
 
 @app.get("/download-by-path")
@@ -5134,6 +3419,203 @@ def delete_order_item_file(
         db.rollback()
         logger.error(f"Failed to delete order item file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to delete file: {str(e)}")
+
+@app.post("/orders/{order_id}/items/{item_id}/awb/attach-month", response_model=dict)
+def attach_awb_month_to_item(
+    order_id: int,
+    item_id: int,
+    month: str = Form(...),
+    include_bill: bool = Form(False),  # DEPRECATED: Monthly bills should be uploaded via "Upload Files" button
+    monthly_bill_pdf: UploadFile = File(None),  # DEPRECATED: Monthly bills should be uploaded via "Upload Files" button
+    debug: bool = Query(False, description="If true, return detailed diagnostics including sample invoice keys and prefix statistics"),
+    db: Session = Depends(get_db)
+):
+    """Attach AWB invoices from a specific month to an order item
+
+    Args:
+        order_id: ID of the order
+        item_id: ID of the order item
+        month: Month in YYYY-MM format (e.g., "2025-10")
+        include_bill: (DEPRECATED) No longer used. Monthly bills should be uploaded via "Upload Files" button.
+        monthly_bill_pdf: (DEPRECATED) No longer used. Monthly bills should be uploaded via "Upload Files" button.
+        debug: If true, return detailed diagnostics including sample invoice keys
+
+    Returns:
+        JSON with statistics: success, order_id, item_id, invoices_found, added_files, skipped_duplicates, message,
+        and optionally debug info with sample keys and prefix statistics
+    """
+    try:
+        # Validate month format
+        if not month or '-' not in month:
+            raise HTTPException(status_code=400, detail="Month must be in YYYY-MM format")
+
+        try:
+            year, mm = month.split('-')
+            int(year)
+            int(mm)
+            if int(mm) < 1 or int(mm) > 12:
+                raise ValueError("Invalid month")
+        except (ValueError, IndexError):
+            raise HTTPException(status_code=400, detail="Month must be in YYYY-MM format (e.g., 2025-10)")
+
+        # Verify order exists and is DRAFT
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        if order.status != OrderStatus.DRAFT:
+            raise HTTPException(status_code=400, detail="Can only attach files to orders in DRAFT status")
+
+        # Verify item exists and belongs to the order
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Verify item's document type is AIRWAY_BILL
+        doc_type = db.query(DocumentType).filter(DocumentType.doc_type_id == item.doc_type_id).first()
+        if not doc_type or doc_type.type_code != "AIRWAY_BILL":
+            raise HTTPException(status_code=400, detail="Order item must be of type AIRWAY_BILL to attach monthly invoices")
+
+        # Get S3 manager
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+
+        # Build existing file keys for deduplication
+        existing_file_links = db.query(OrderItemFile).filter(OrderItemFile.item_id == item_id).all()
+        existing_keys = set()
+        for link in existing_file_links:
+            file_info = link.file
+            if file_info.s3_key:
+                existing_keys.add(file_info.s3_key)
+            elif file_info.file_path:
+                # For older file records with just file_path
+                existing_keys.add(file_info.file_path)
+
+        added_files = 0
+        skipped_duplicates = 0
+
+        # NOTE: Monthly bill PDF upload is now handled via "Upload Files" button for consistency
+        # The include_bill and monthly_bill_pdf parameters are deprecated and no longer processed here
+
+        # Get invoices for the month from S3
+        invoices = s3_manager.list_awb_invoices_for_month(month, debug=debug)
+        invoices_found = len(invoices)
+
+        # Enhanced logging for diagnostics
+        logger.info(f"📋 Attach-month request: order_id={order_id}, item_id={item_id}, month={month}, "
+                   f"invoices_found={invoices_found}, existing_files={len(existing_keys)}, debug={debug}")
+
+        # Collect debug information if requested
+        debug_info = None
+        if debug:
+            debug_info = {
+                "s3_bucket": s3_manager.bucket_name,
+                "month_format": month,
+                "min_file_size_threshold": int(os.getenv('AWB_S3_MIN_FILE_SIZE_BYTES', '10240')),
+                "existing_files_count": len(existing_keys),
+                "existing_file_keys_sample": list(existing_keys)[:5]  # Show first 5 for inspection
+            }
+
+        # If no invoices found, log detailed diagnostics
+        if invoices_found == 0:
+            logger.warning(f"⚠️  No invoices found for month {month}. Debugging info:")
+            logger.warning(f"   - S3 bucket: {s3_manager.bucket_name}")
+            logger.warning(f"   - Month format: {month}")
+            logger.warning(f"   - Min file size threshold: {os.getenv('AWB_S3_MIN_FILE_SIZE_BYTES', '10240')} bytes")
+            logger.warning(f"   - Existing attached files: {len(existing_keys)}")
+            logger.warning(f"   - This usually means: files in S3 are too small (<10KB) or don't exist in expected prefixes")
+            logger.warning(f"   - Tip: Try /api/awb/trigger-sync?month={month}&force=true to rescan and repair")
+
+        # Attach each invoice to the item
+        for invoice in invoices:
+            full_key = invoice['full_key']
+            invoice_size = invoice.get('size', 0)
+            prefix_source = invoice.get('prefix_source', 'unknown')
+
+            # Check if already attached (deduplication)
+            if full_key in existing_keys:
+                skipped_duplicates += 1
+                logger.debug(f"⊘ Invoice already attached, skipping: {full_key}")
+                continue
+
+            try:
+                # Create File record
+                file_name = invoice['key']  # Just the filename without path
+                logger.debug(f"📎 Attaching invoice: {file_name} ({invoice_size} bytes) from {prefix_source}")
+
+                invoice_file = DBFile(
+                    file_name=file_name,
+                    file_path=full_key,  # Full S3 key as the path
+                    file_type="pdf",
+                    file_size=invoice['size'],
+                    mime_type="application/pdf",
+                    s3_bucket=s3_manager.bucket_name,
+                    s3_key=full_key,
+                    source_system="onedrive"
+                )
+                db.add(invoice_file)
+                db.flush()  # Get file_id
+
+                # Link file to order item
+                order_item_file = OrderItemFile(
+                    item_id=item_id,
+                    file_id=invoice_file.file_id,
+                    upload_order=item.file_count + added_files + 1
+                )
+                db.add(order_item_file)
+                added_files += 1
+                logger.debug(f"✅ Successfully linked invoice to item: {file_name}")
+
+            except Exception as e:
+                logger.error(f"❌ Failed to attach invoice {file_name}: {str(e)}")
+                # Continue with next invoice instead of failing entire operation
+                continue
+
+        # Update item file count and timestamps
+        item.file_count += added_files
+        item.updated_at = datetime.utcnow()
+
+        # Update order timestamp
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        # Log summary
+        logger.info(f"✅ Attach-month completed: month={month}, found={invoices_found}, "
+                   f"added={added_files}, duplicates_skipped={skipped_duplicates}")
+
+        response = {
+            "success": True,
+            "order_id": order_id,
+            "item_id": item_id,
+            "invoices_found": invoices_found,
+            "added_files": added_files,
+            "skipped_duplicates": skipped_duplicates,
+            "message": f"Attached {added_files} files from {month} ({skipped_duplicates} duplicates skipped)"
+        }
+
+        # Add debug information if requested
+        if debug and debug_info:
+            response["debug"] = debug_info
+            # Also include sample invoice keys if found
+            if invoices:
+                response["debug"]["sample_invoices"] = [
+                    {"key": inv['key'], "size": inv['size'], "prefix": inv.get('prefix_source')}
+                    for inv in invoices[:3]  # Show first 3
+                ]
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to attach AWB month to item: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to attach files: {str(e)}")
 
 @app.post("/orders/{order_id}/mapping-file", response_model=dict)
 def upload_mapping_file(
@@ -6980,8 +5462,25 @@ def get_onedrive_sync_status(limit: int = Query(10, ge=1, le=100), db: Session =
 
 
 @app.post("/api/awb/trigger-sync")
-def trigger_onedrive_sync(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """Manually trigger OneDrive sync"""
+def trigger_onedrive_sync(
+    background_tasks: BackgroundTasks,
+    month: Optional[str] = Query(None, description="Optional month in YYYY-MM format (e.g., 2025-10)"),
+    force: bool = Query(False, description="If true, force rescan of all files and repair corrupted objects"),
+    reconcile: bool = Query(False, description="If true, perform filename-based reconciliation instead of incremental sync"),
+    scan_processed: bool = Query(True, description="If true, scan OneDrive processed folder during reconciliation"),
+    db: Session = Depends(get_db)
+):
+    """Manually trigger OneDrive sync with optional month, force, and reconciliation parameters
+
+    Args:
+        month: Optional month in YYYY-MM format to sync only that month (e.g., "2025-10")
+        force: If true, ignore last_sync_time and re-scan all files; also re-upload corrupted objects
+        reconcile: If true, perform filename-based reconciliation instead of incremental sync
+        scan_processed: If true, scan OneDrive processed folder during reconciliation
+
+    Returns:
+        JSON with sync status and details
+    """
     try:
         # Check if sync is enabled
         onedrive_enabled = os.getenv('ONEDRIVE_SYNC_ENABLED', 'false').lower() == 'true'
@@ -6992,15 +5491,49 @@ def trigger_onedrive_sync(background_tasks: BackgroundTasks, db: Session = Depen
                 "message": "OneDrive sync is disabled (ONEDRIVE_SYNC_ENABLED not set to 'true')"
             }
 
-        # Queue background task
+        # Validate month format if provided
+        if month:
+            try:
+                parts = month.split('-')
+                if len(parts) != 2:
+                    raise ValueError("Invalid format")
+                int(parts[0])  # year
+                int(parts[1])  # month
+                if int(parts[1]) < 1 or int(parts[1]) > 12:
+                    raise ValueError("Invalid month")
+            except (ValueError, IndexError):
+                raise HTTPException(status_code=400, detail="Month must be in YYYY-MM format (e.g., 2025-10)")
+
+        # Queue background task with parameters
         from scripts.onedrive_ingest import run_onedrive_sync as sync_func
-        background_tasks.add_task(sync_func)
+        logger.info(f"📡 Endpoint received params: month={month}, force={force}, reconcile={reconcile}, scan_processed={scan_processed}")
+        background_tasks.add_task(sync_func, month=month, force=force, reconcile=reconcile, scan_processed=scan_processed)
+
+        message = f"OneDrive sync triggered"
+        details = []
+        if month:
+            details.append(f"month={month}")
+        if force:
+            details.append("force=true")
+        if reconcile:
+            details.append("reconcile=true")
+        if not scan_processed:
+            details.append("scan_processed=false")
+        if details:
+            message += f" ({', '.join(details)})"
+        message += " in background"
 
         return {
             "success": True,
-            "message": "OneDrive sync triggered in background"
+            "message": message,
+            "month": month,
+            "force": force,
+            "reconcile": reconcile,
+            "scan_processed": scan_processed
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Error triggering sync: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

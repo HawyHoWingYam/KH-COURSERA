@@ -26,13 +26,6 @@ export default function Home() {
             📄 AWB 月度處理
           </Link>
 
-          <Link
-            href="/batch-jobs"
-            className="bg-slate-200 text-slate-800 py-3 px-6 rounded-lg text-center font-medium hover:bg-slate-300 transition-colors"
-          >
-            📋 批次任務列表
-          </Link>
-
           {/* <Link
             href="/upload"
             className="bg-blue-600 text-white py-3 px-6 rounded-lg text-center font-medium hover:bg-blue-700 transition-colors"

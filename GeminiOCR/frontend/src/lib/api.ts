@@ -416,10 +416,8 @@ export interface OneDriveSyncResponse {
 }
 
 export interface AWBProcessResponse {
-  success: boolean;
-  batch_id: number;
+  order_id: number;
   message: string;
-  status_url: string;
 }
 
 export const awbApi = {
@@ -434,9 +432,25 @@ export const awbApi = {
   getSyncStatus: (limit: number = 10): Promise<OneDriveSyncResponse> =>
     fetchApi<OneDriveSyncResponse>(`/awb/sync-status?limit=${limit}`),
 
-  // Trigger manual OneDrive sync
-  triggerSync: (): Promise<{ success: boolean; message: string }> =>
-    fetchApi<{ success: boolean; message: string }>('/awb/trigger-sync', {
+  // Trigger manual OneDrive sync with optional parameters
+  triggerSync: (options?: {
+    month?: string;
+    force?: boolean;
+    reconcile?: boolean;
+    scan_processed?: boolean;
+  }): Promise<{ success: boolean; message: string; month?: string; force?: boolean; reconcile?: boolean; scan_processed?: boolean }> => {
+    const params = new URLSearchParams();
+    if (options?.month) params.append('month', options.month);
+    if (options?.force) params.append('force', 'true');
+    if (options?.reconcile) params.append('reconcile', 'true');
+    if (options?.scan_processed !== undefined) params.append('scan_processed', String(options.scan_processed));
+
+    const queryString = params.toString();
+    const url = `/awb/trigger-sync${queryString ? `?${queryString}` : ''}`;
+
+    return fetchApi<{ success: boolean; message: string; month?: string; force?: boolean; reconcile?: boolean; scan_processed?: boolean }>(url, {
       method: 'POST',
-    }),
+    });
+  },
+
 };

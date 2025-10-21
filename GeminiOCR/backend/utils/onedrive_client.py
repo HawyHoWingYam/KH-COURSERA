@@ -155,6 +155,88 @@ class OneDriveClient:
             logger.error(f"❌ Error listing files: {str(e)}")
             return []
 
+    def list_all_pdfs(
+        self,
+        folder: O365Folder,
+        created_month_filter: Optional[str] = None
+    ) -> List[O365File]:
+        """List all PDF files in folder, optionally filtered by creation/modification month.
+
+        Does NOT depend on onedrive_id - uses filename and creation/modification dates only.
+
+        Args:
+            folder: Folder object to list PDFs from
+            created_month_filter: Optional month in YYYY-MM format to filter files (e.g., "2025-10")
+                                 Files are filtered by created or modified date matching this month.
+
+        Returns:
+            List of PDF files matching criteria
+        """
+        if not folder:
+            return []
+
+        try:
+            all_pdfs = []
+
+            # Parse month filter if provided
+            month_start = None
+            month_end = None
+            if created_month_filter:
+                try:
+                    year, month = created_month_filter.split('-')
+                    year_int = int(year)
+                    month_int = int(month)
+                    # Create start of month (first day at 00:00)
+                    month_start = datetime(year_int, month_int, 1, tzinfo=timezone.utc)
+                    # Create end of month (first day of next month at 00:00, then subtract 1 second)
+                    if month_int == 12:
+                        month_end = datetime(year_int + 1, 1, 1, tzinfo=timezone.utc)
+                    else:
+                        month_end = datetime(year_int, month_int + 1, 1, tzinfo=timezone.utc)
+                    logger.info(f"🔍 Filtering PDFs by month: {created_month_filter} ({month_start} to {month_end})")
+                except (ValueError, IndexError):
+                    logger.warning(f"⚠️ Invalid month format: {created_month_filter}. Expected YYYY-MM. No month filter applied.")
+                    month_start = None
+                    month_end = None
+
+            # Get all items in folder
+            for item in folder.get_items():
+                # Only process files
+                if not item.is_file:
+                    continue
+
+                # Check if it's a PDF
+                if not item.name.lower().endswith('.pdf'):
+                    continue
+
+                # Apply month filter if provided
+                if month_start and month_end:
+                    # Use modified date (preferred) or created date
+                    item_date = item.modified or item.created
+                    if not item_date:
+                        logger.debug(f"⊘ Skipping {item.name} - no creation/modification date")
+                        continue
+
+                    # Ensure date is timezone-aware
+                    if item_date.tzinfo is None:
+                        item_date = item_date.replace(tzinfo=timezone.utc)
+
+                    # Check if date is within month range
+                    if not (month_start <= item_date < month_end):
+                        logger.debug(f"⊘ Skipping {item.name} - date {item_date} not in range {month_start} to {month_end}")
+                        continue
+
+                all_pdfs.append(item)
+                logger.info(f"✅ Found PDF: {item.name} (modified: {item.modified or item.created})")
+
+            logger.info(f"✅ Found {len(all_pdfs)} PDF files" +
+                       (f" for month {created_month_filter}" if created_month_filter else ""))
+            return all_pdfs
+
+        except Exception as e:
+            logger.error(f"❌ Error listing all PDFs: {str(e)}")
+            return []
+
     def download_file(self, file_item: O365File, local_path: str) -> bool:
         """Download file to local path
 
@@ -197,7 +279,13 @@ class OneDriveClient:
             return False
 
         try:
-            file_item.move(target_folder, name=new_name)
+            # O365 move() method signature: move(target_folder, new_name=None) or move(target_folder, new_name)
+            # Use positional or keyword argument correctly based on O365 library API
+            if new_name:
+                result = file_item.move(target_folder, new_name)
+            else:
+                result = file_item.move(target_folder)
+
             logger.info(f"✅ Moved file: {file_item.name} to {target_folder.name}")
             return True
 

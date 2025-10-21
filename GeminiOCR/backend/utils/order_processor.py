@@ -652,6 +652,7 @@ class OrderProcessor:
                 # Process all files for this item
                 all_results = []
                 temp_files_to_cleanup = []
+                is_awb = doc_type.type_code == "AIRWAY_BILL"  # Check if this is an AWB item
 
                 for file_link in file_links:
                     file_record = file_link.file
@@ -682,24 +683,40 @@ class OrderProcessor:
                                 try:
                                     business_data = json.loads(text_content)
                                     business_data["__filename"] = file_record.file_name
+                                    # Add file-level metadata for AWB items
+                                    if is_awb:
+                                        business_data["__file_id"] = file_record.file_id
+                                        business_data["__source_path"] = file_record.file_path
                                     all_results.append(business_data)
                                 except json.JSONDecodeError:
-                                    all_results.append({
+                                    error_result = {
                                         "text": text_content,
                                         "__filename": file_record.file_name
-                                    })
+                                    }
+                                    if is_awb:
+                                        error_result["__file_id"] = file_record.file_id
+                                        error_result["__source_path"] = file_record.file_path
+                                    all_results.append(error_result)
                             else:
-                                all_results.append({
+                                no_content_result = {
                                     "__filename": file_record.file_name,
                                     "__error": "No text content in result"
-                                })
+                                }
+                                if is_awb:
+                                    no_content_result["__file_id"] = file_record.file_id
+                                    no_content_result["__source_path"] = file_record.file_path
+                                all_results.append(no_content_result)
 
                     except Exception as e:
                         logger.error(f"Error processing file {file_record.file_name}: {str(e)}")
-                        all_results.append({
+                        error_result = {
                             "__filename": file_record.file_name,
                             "__error": f"Processing failed: {str(e)}"
-                        })
+                        }
+                        if is_awb:
+                            error_result["__file_id"] = file_record.file_id
+                            error_result["__source_path"] = file_record.file_path
+                        all_results.append(error_result)
 
                 # Clean up temporary files
                 for temp_file in temp_files_to_cleanup:
@@ -739,13 +756,103 @@ class OrderProcessor:
                 db.commit()
                 return False
 
+    async def _save_file_result(self, item_id: int, file_id: int, file_name: str, result_data: Dict[str, Any]) -> Optional[str]:
+        """Save individual file-level OCR result to S3 (for AWB items only)
+
+        Args:
+            item_id: Item ID
+            file_id: File ID
+            file_name: File name
+            result_data: OCR result data for this file
+
+        Returns:
+            S3 path to the saved file result, or None if failed
+        """
+        try:
+            # Generate S3 path for file-level result
+            s3_base = f"results/orders/{item_id // 1000}/items/{item_id}"
+            file_result_key = f"{s3_base}/files/file_{file_id}_result.json"
+
+            # Save file-level JSON result
+            json_content = json.dumps(result_data, indent=2, ensure_ascii=False)
+            json_upload_success = self.s3_manager.upload_file(json_content.encode('utf-8'), file_result_key)
+
+            if json_upload_success:
+                file_result_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{file_result_key}"
+                logger.info(f"✅ Saved file-level result for item {item_id}, file {file_id}: {file_result_key}")
+                return file_result_path
+            else:
+                logger.error(f"Failed to upload file-level result for item {item_id}, file {file_id}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error saving file-level result for item {item_id}, file {file_id}: {str(e)}")
+            return None
+
+    async def _generate_file_results_manifest(self, item_id: int, file_results_map: Dict[int, str]) -> Optional[str]:
+        """Generate manifest of file-level results for AWB items
+
+        Args:
+            item_id: Item ID
+            file_results_map: Dict mapping file_id to result_json_path
+
+        Returns:
+            S3 path to the manifest file, or None if failed
+        """
+        try:
+            # Build manifest structure
+            manifest = [
+                {
+                    "file_id": file_id,
+                    "result_json_path": result_path
+                }
+                for file_id, result_path in file_results_map.items()
+            ]
+
+            # Generate S3 path for manifest
+            s3_base = f"results/orders/{item_id // 1000}/items/{item_id}"
+            manifest_key = f"{s3_base}/item_{item_id}_file_results.json"
+
+            # Save manifest
+            json_content = json.dumps(manifest, indent=2, ensure_ascii=False)
+            manifest_upload_success = self.s3_manager.upload_file(json_content.encode('utf-8'), manifest_key)
+
+            if manifest_upload_success:
+                manifest_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{manifest_key}"
+                logger.info(f"✅ Generated file results manifest for item {item_id} with {len(manifest)} files")
+                return manifest_path
+            else:
+                logger.error(f"Failed to upload manifest for item {item_id}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error generating file results manifest for item {item_id}: {str(e)}")
+            return None
+
     async def _save_item_results(self, item_id: int, company_code: str, doc_type_code: str, results: List[Dict[str, Any]]):
-        """Save individual item results to S3"""
+        """Save individual item results to S3, with file-level results for AWB items"""
         try:
             # Generate S3 paths for item results
             s3_base = f"results/orders/{item_id // 1000}/items/{item_id}"
+            is_awb = doc_type_code == "AIRWAY_BILL"
 
-            # Save JSON results
+            # For AWB items, save file-level results
+            file_results_map = {}
+            if is_awb:
+                for result in results:
+                    if "__file_id" in result:
+                        file_id = result["__file_id"]
+                        file_name = result.get("__filename", "unknown")
+                        # Save file-level result
+                        file_result_path = await self._save_file_result(item_id, file_id, file_name, result)
+                        if file_result_path:
+                            file_results_map[file_id] = file_result_path
+
+                # Generate manifest for file results
+                if file_results_map:
+                    await self._generate_file_results_manifest(item_id, file_results_map)
+
+            # Save JSON results (item-level aggregated results)
             json_content = json.dumps(results, indent=2, ensure_ascii=False)
             json_s3_key = f"{s3_base}/item_{item_id}_results.json"
             json_upload_success = self.s3_manager.upload_file(json_content.encode('utf-8'), json_s3_key)
@@ -781,7 +888,7 @@ class OrderProcessor:
                     item.ocr_result_csv_path = csv_path
                     db.commit()
 
-            logger.info(f"Item {item_id} results saved to S3")
+            logger.info(f"Item {item_id} results saved to S3" + (f" with {len(file_results_map)} file-level results" if is_awb and file_results_map else ""))
 
         except Exception as e:
             logger.error(f"Error saving item {item_id} results: {str(e)}")

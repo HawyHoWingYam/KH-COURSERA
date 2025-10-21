@@ -80,6 +80,8 @@ export default function OrderDetailsPage() {
   const [selectedDocType, setSelectedDocType] = useState<number | null>(null);
   const [itemName, setItemName] = useState('');
   const [isAddingItem, setIsAddingItem] = useState(false);
+  const [modalMode, setModalMode] = useState<'upload' | 'month'>('upload'); // For AIRWAY_BILL only
+  const [modalAwbMonth, setModalAwbMonth] = useState('');
 
   // File Upload State
   const [uploadingFiles, setUploadingFiles] = useState<{[key: number]: boolean}>({});
@@ -90,6 +92,15 @@ export default function OrderDetailsPage() {
 
   // Item Delete State
   const [deletingItems, setDeletingItems] = useState<{[key: number]: boolean}>({});
+
+  // AWB Month Attach State
+  const [awbMonthAttaching, setAwbMonthAttaching] = useState<{[key: number]: boolean}>({});
+  const [awbMonths, setAwbMonths] = useState<{[key: number]: string}>({});
+  const [modalAwbIncludeBill, setModalAwbIncludeBill] = useState(false);
+  const [modalAwbBillFile, setModalAwbBillFile] = useState<File | null>(null);
+
+  // Collapsible File List State
+  const [expandedItemFiles, setExpandedItemFiles] = useState<{[key: number]: boolean}>({});
 
   // Download State
   const [downloadingFiles, setDownloadingFiles] = useState<{[key: string]: boolean}>({});
@@ -191,6 +202,14 @@ export default function OrderDetailsPage() {
       return;
     }
 
+    // Check if we need to use month attach mode
+    const docType = documentTypes.find(dt => dt.doc_type_id === selectedDocType);
+    if (docType?.type_code === 'AIRWAY_BILL' && modalMode === 'month') {
+      // Use month attach mode
+      await addOrderItemWithMonthAttach();
+      return;
+    }
+
     setIsAddingItem(true);
     try {
       const response = await fetch(`/api/orders/${orderId}/items`, {
@@ -213,6 +232,8 @@ export default function OrderDetailsPage() {
       setSelectedCompany(null);
       setSelectedDocType(null);
       setItemName('');
+      setModalMode('upload');
+      setModalAwbMonth('');
       setShowAddItemModal(false);
 
       // Reload order to show new item
@@ -220,6 +241,72 @@ export default function OrderDetailsPage() {
     } catch (error) {
       console.error('Error adding item:', error);
       setError('Failed to add item');
+    } finally {
+      setIsAddingItem(false);
+    }
+  };
+
+  const addOrderItemWithMonthAttach = async () => {
+    if (!selectedCompany || !selectedDocType || !modalAwbMonth) {
+      setError('Please fill in all required fields');
+      return;
+    }
+
+    setIsAddingItem(true);
+    try {
+      // Step 1: Create the item
+      const itemResponse = await fetch(`/api/orders/${orderId}/items`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          company_id: selectedCompany,
+          doc_type_id: selectedDocType,
+          item_name: itemName || undefined
+        }),
+      });
+
+      if (!itemResponse.ok) {
+        throw new Error('Failed to create item');
+      }
+
+      const itemData = await itemResponse.json();
+      const newItemId = itemData.item_id;
+
+      // Step 2: Attach the AWB month to the new item
+      const formData = new FormData();
+      formData.append('month', modalAwbMonth);
+
+      const attachResponse = await fetch(`/api/orders/${orderId}/items/${newItemId}/awb/attach-month`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!attachResponse.ok) {
+        const errorData = await attachResponse.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to attach AWB month');
+      }
+
+      const attachResult = await attachResponse.json();
+
+      // Success!
+      setError(`✅ Created item and attached ${attachResult.added_files} files from ${modalAwbMonth}`);
+      setTimeout(() => setError(''), 5000);
+
+      // Reset form and close modal
+      setSelectedCompany(null);
+      setSelectedDocType(null);
+      setItemName('');
+      setModalMode('upload');
+      setModalAwbMonth('');
+      setShowAddItemModal(false);
+
+      // Reload order to show new item
+      loadOrder();
+    } catch (error) {
+      console.error('Error adding item with month attach:', error);
+      setError(error instanceof Error ? error.message : 'Failed to add item with month attach');
     } finally {
       setIsAddingItem(false);
     }
@@ -253,6 +340,48 @@ export default function OrderDetailsPage() {
       setError('Failed to upload files');
     } finally {
       setUploadingFiles(prev => ({ ...prev, [itemId]: false }));
+    }
+  };
+
+  const attachAwbMonth = async (itemId: number) => {
+    const month = awbMonths[itemId];
+    if (!month) {
+      setError('Please select a month');
+      return;
+    }
+
+    setAwbMonthAttaching(prev => ({ ...prev, [itemId]: true }));
+
+    try {
+      const formData = new FormData();
+      formData.append('month', month);
+
+      const response = await fetch(`/api/orders/${orderId}/items/${itemId}/awb/attach-month`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to attach AWB month');
+      }
+
+      const result = await response.json();
+
+      // Show success message
+      setError(`✅ Attached ${result.added_files} files from ${month} (${result.skipped_duplicates} duplicates skipped)`);
+      setTimeout(() => setError(''), 5000);
+
+      // Reset form
+      setAwbMonths(prev => ({ ...prev, [itemId]: '' }));
+
+      // Reload order to show updated file counts
+      loadOrder();
+    } catch (error) {
+      console.error('Error attaching AWB month:', error);
+      setError(error instanceof Error ? error.message : 'Failed to attach AWB month');
+    } finally {
+      setAwbMonthAttaching(prev => ({ ...prev, [itemId]: false }));
     }
   };
 
@@ -1061,33 +1190,44 @@ export default function OrderDetailsPage() {
                 </div>
                 <div className="text-sm text-gray-500">
                   {item.files && item.files.length > 0 ? (
-                    <div>
-                      <div className="font-medium">Files ({item.files.length}):</div>
-                      <div className="text-xs text-gray-600 space-y-1 mt-1">
-                        {item.files.map((file: any) => {
-                          const deleteKey = `${item.item_id}-${file.file_id}`;
-                          return (
-                            <div key={file.file_id} className="flex items-center justify-between">
-                              <div className="truncate flex-1">
-                                📄 {file.filename} ({(file.file_size / 1024).toFixed(1)}KB)
+                    <div className="border rounded-lg p-3 bg-gray-50">
+                      <button
+                        onClick={() => setExpandedItemFiles(prev => ({
+                          ...prev,
+                          [item.item_id]: !prev[item.item_id]
+                        }))}
+                        className="flex items-center gap-2 font-medium text-gray-700 hover:text-gray-900 w-full text-left"
+                      >
+                        <span>{expandedItemFiles[item.item_id] ? '▼' : '▶'}</span>
+                        <span>📎 Attached Files ({item.files.length})</span>
+                      </button>
+                      {expandedItemFiles[item.item_id] && (
+                        <div className="text-xs text-gray-600 space-y-1 mt-2 pl-4">
+                          {item.files.map((file: any) => {
+                            const deleteKey = `${item.item_id}-${file.file_id}`;
+                            return (
+                              <div key={file.file_id} className="flex items-center justify-between py-1 hover:bg-white hover:px-2 hover:rounded transition">
+                                <div className="truncate flex-1">
+                                  <span className="text-blue-600">📄</span> {file.filename} ({(file.file_size / 1024).toFixed(1)}KB)
+                                </div>
+                                {canEdit && (
+                                  <button
+                                    onClick={() => deleteFile(item.item_id, file.file_id, file.filename)}
+                                    disabled={deletingFiles[deleteKey]}
+                                    className="ml-2 text-red-600 hover:text-red-800 disabled:text-gray-400 text-sm font-medium"
+                                    title={`Delete ${file.filename}`}
+                                  >
+                                    {deletingFiles[deleteKey] ? '...' : '✕'}
+                                  </button>
+                                )}
                               </div>
-                              {canEdit && (
-                                <button
-                                  onClick={() => deleteFile(item.item_id, file.file_id, file.filename)}
-                                  disabled={deletingFiles[deleteKey]}
-                                  className="ml-2 text-red-600 hover:text-red-800 disabled:text-gray-400 text-sm"
-                                  title={`Delete ${file.filename}`}
-                                >
-                                  {deletingFiles[deleteKey] ? '...' : '×'}
-                                </button>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   ) : (
-                    <div>Files: 0</div>
+                    <div className="text-gray-400">📋 No files attached yet</div>
                   )}
                 </div>
                 <div className="text-sm text-gray-600 mb-3">
@@ -1095,26 +1235,56 @@ export default function OrderDetailsPage() {
                 </div>
 
                 {canEdit && (
-                  <div className="flex items-center gap-4">
-                    <label className="cursor-pointer bg-gray-100 hover:bg-gray-200 text-gray-700 py-2 px-4 rounded border">
-                      {uploadingFiles[item.item_id] ? 'Uploading...' : 'Upload Files'}
-                      <input
-                        key={fileInputKeys[item.item_id] || `file-input-${item.item_id}`}
-                        type="file"
-                        multiple
-                        accept=".pdf,.jpg,.jpeg,.png"
-                        className="hidden"
-                        disabled={uploadingFiles[item.item_id]}
-                        onChange={(e) => {
-                          if (e.target.files && e.target.files.length > 0) {
-                            uploadFilesToItem(item.item_id, e.target.files);
-                          }
-                        }}
-                      />
-                    </label>
-                    <span className="text-sm text-gray-500">
-                      Supported: PDF, JPG, PNG
-                    </span>
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-4">
+                      <label className="cursor-pointer bg-gray-100 hover:bg-gray-200 text-gray-700 py-2 px-4 rounded border">
+                        {uploadingFiles[item.item_id] ? 'Uploading...' : 'Upload Files'}
+                        <input
+                          key={fileInputKeys[item.item_id] || `file-input-${item.item_id}`}
+                          type="file"
+                          multiple
+                          accept=".pdf,.jpg,.jpeg,.png"
+                          className="hidden"
+                          disabled={uploadingFiles[item.item_id]}
+                          onChange={(e) => {
+                            if (e.target.files && e.target.files.length > 0) {
+                              uploadFilesToItem(item.item_id, e.target.files);
+                            }
+                          }}
+                        />
+                      </label>
+                      <span className="text-sm text-gray-500">
+                        Supported: PDF, JPG, PNG
+                      </span>
+                    </div>
+
+                    {/* AWB Month Attach - Only for AIRWAY_BILL items */}
+                    {item.doc_type_name && documentTypes.find(dt => dt.doc_type_id === item.doc_type_id)?.type_code === 'AIRWAY_BILL' && (
+                      <div className="border-t pt-3 mt-3">
+                        <div className="text-sm font-medium text-gray-700 mb-2">📅 Attach from Month</div>
+                        <div className="space-y-2">
+                          <div className="flex items-end gap-2">
+                            <div className="flex-1">
+                              <label className="block text-xs font-medium text-gray-600 mb-1">Month (YYYY-MM)</label>
+                              <input
+                                type="month"
+                                value={awbMonths[item.item_id] || ''}
+                                onChange={(e) => setAwbMonths(prev => ({ ...prev, [item.item_id]: e.target.value }))}
+                                className="w-full border border-gray-300 rounded px-2 py-1 text-sm"
+                                disabled={awbMonthAttaching[item.item_id]}
+                              />
+                            </div>
+                            <button
+                              onClick={() => attachAwbMonth(item.item_id)}
+                              disabled={awbMonthAttaching[item.item_id] || !awbMonths[item.item_id]}
+                              className="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white py-1 px-3 rounded text-sm font-medium whitespace-nowrap"
+                            >
+                              {awbMonthAttaching[item.item_id] ? 'Attaching...' : 'Attach'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1383,7 +1553,11 @@ export default function OrderDetailsPage() {
                 </label>
                 <select
                   value={selectedDocType || ''}
-                  onChange={(e) => setSelectedDocType(parseInt(e.target.value))}
+                  onChange={(e) => {
+                    setSelectedDocType(parseInt(e.target.value));
+                    // Reset mode to 'upload' when document type changes
+                    setModalMode('upload');
+                  }}
                   className="w-full border border-gray-300 rounded px-3 py-2"
                 >
                   <option value="">Select Document Type</option>
@@ -1395,18 +1569,86 @@ export default function OrderDetailsPage() {
                 </select>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Item Name (Optional)
-                </label>
-                <input
-                  type="text"
-                  value={itemName}
-                  onChange={(e) => setItemName(e.target.value)}
-                  placeholder="Leave empty for auto-generated name"
-                  className="w-full border border-gray-300 rounded px-3 py-2"
-                />
-              </div>
+              {/* Mode Toggle - Only for AIRWAY_BILL */}
+              {selectedDocType && documentTypes.find(dt => dt.doc_type_id === selectedDocType)?.type_code === 'AIRWAY_BILL' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Add Mode
+                  </label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModalMode('upload');
+                        setModalAwbMonth('');
+                        setModalAwbIncludeBill(false);
+                        setModalAwbBillFile(null);
+                      }}
+                      className={`flex-1 py-2 px-3 rounded text-sm font-medium transition ${
+                        modalMode === 'upload'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      }`}
+                    >
+                      📤 Upload Files
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModalMode('month');
+                        setItemName('');
+                      }}
+                      className={`flex-1 py-2 px-3 rounded text-sm font-medium transition ${
+                        modalMode === 'month'
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      }`}
+                    >
+                      📅 From Month
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Item Name (Only for upload mode or non-AIRWAY_BILL) */}
+              {modalMode === 'upload' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Item Name (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={itemName}
+                    onChange={(e) => setItemName(e.target.value)}
+                    placeholder="Leave empty for auto-generated name"
+                    className="w-full border border-gray-300 rounded px-3 py-2"
+                  />
+                </div>
+              )}
+
+              {/* Month Attach Mode Fields */}
+              {modalMode === 'month' && (
+                <div className="space-y-3 border-t pt-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Month (YYYY-MM) *
+                    </label>
+                    <input
+                      type="month"
+                      value={modalAwbMonth}
+                      onChange={(e) => setModalAwbMonth(e.target.value)}
+                      className="w-full border border-gray-300 rounded px-3 py-2"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Select the month to retrieve invoices from S3
+                    </p>
+                  </div>
+
+                  <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-700">
+                    💡 This will create a new item and attach all invoices from the selected month. Upload monthly bill PDF using the "Upload Files" button after item creation.
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-2 mt-6">
@@ -1418,7 +1660,12 @@ export default function OrderDetailsPage() {
               </button>
               <button
                 onClick={addOrderItem}
-                disabled={isAddingItem || !selectedCompany || !selectedDocType}
+                disabled={
+                  isAddingItem ||
+                  !selectedCompany ||
+                  !selectedDocType ||
+                  (modalMode === 'month' && !modalAwbMonth)
+                }
                 className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
               >
                 {isAddingItem ? 'Adding...' : 'Add Item'}

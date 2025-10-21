@@ -4,7 +4,6 @@ import { useState, ChangeEvent, FormEvent, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { companiesApi, Company } from '@/lib/api'
-import { AWBNavigation } from '@/components/AWBNavigation'
 
 interface FormData {
   company_id: string
@@ -143,9 +142,6 @@ export default function AWBMonthlyPage() {
           </CardHeader>
 
           <CardContent>
-            {/* Quick Navigation */}
-            <AWBNavigation />
-
             <form onSubmit={handleSubmit} className="space-y-6">
               {/* Error Alert */}
               {error && (
