@@ -73,10 +73,8 @@ export default function AWBMonthlyPage() {
     if (formData.summary_pdf.type !== 'application/pdf') {
       return 'Summary file must be a PDF'
     }
-    if (!formData.employees_csv) {
-      return 'Employee CSV is required'
-    }
-    if (formData.employees_csv.type !== 'text/csv' && !formData.employees_csv.name.endsWith('.csv')) {
+    // Employees CSV is now optional
+    if (formData.employees_csv && formData.employees_csv.type !== 'text/csv' && !formData.employees_csv.name.endsWith('.csv')) {
       return 'Employee file must be a CSV'
     }
     return null
@@ -117,11 +115,11 @@ export default function AWBMonthlyPage() {
         throw new Error(result.detail || 'Failed to start AWB processing')
       }
 
-      setSuccess(`Processing started! Redirecting to batch job ${result.batch_id}...`)
+      setSuccess(`Processing started! Order ID: ${result.order_id}. Redirecting...`)
 
-      // Redirect to batch job details page
+      // Redirect to orders page instead of batch-jobs
       setTimeout(() => {
-        router.push(`/batch-jobs/${result.batch_id}`)
+        router.push(`/orders/${result.order_id}`)
       }, 2000)
 
     } catch (err) {
@@ -234,7 +232,7 @@ export default function AWBMonthlyPage() {
               {/* Employees CSV Upload */}
               <div className="space-y-2">
                 <label htmlFor="employees_csv" className="block text-sm font-medium text-slate-700">
-                  Employee Mapping CSV <span className="text-red-500">*</span>
+                  Employee Mapping CSV <span className="text-gray-500 text-sm">(Optional)</span>
                 </label>
                 <div className="relative">
                   <input
@@ -264,12 +262,13 @@ export default function AWBMonthlyPage() {
 
               {/* Info Box */}
               <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg text-sm text-slate-700">
-                <strong>ℹ️ Processing will:</strong>
+                <strong>ℹ️ What happens next:</strong>
                 <ul className="list-disc list-inside mt-2 space-y-1">
-                  <li>Extract order data from AWB PDFs using OCR</li>
-                  <li>Match costs from the summary bill</li>
-                  <li>Associate employees with departments</li>
-                  <li>Generate Excel/CSV reports</li>
+                  <li>Monthly bill PDF will be uploaded to S3</li>
+                  <li>Invoice PDFs will be discovered from OneDrive sync folder</li>
+                  <li>All files will be attached to an OCR Order</li>
+                  <li>Automatic OCR processing and data extraction</li>
+                  <li>You'll be redirected to the Orders page to track progress</li>
                 </ul>
               </div>
             </form>
@@ -292,7 +291,7 @@ Bob Johnson,Finance`}
               </pre>
             </div>
             <p>
-              After submission, you'll be redirected to the batch job details page where you can track progress and download results (JSON, Excel, CSV).
+              After submission, you'll be redirected to the Orders page where you can track OCR processing progress and download results (JSON, Excel, CSV).
             </p>
           </CardContent>
         </Card>
