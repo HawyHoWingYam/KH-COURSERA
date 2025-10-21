@@ -11,7 +11,6 @@ from sqlalchemy.orm import sessionmaker
 from utils.onedrive_client import OneDriveClient
 from utils.s3_storage import S3StorageManager
 from db.models import File, OneDriveSync
-from config_loader import config_loader
 
 # Configure logging
 logging.basicConfig(
@@ -24,12 +23,15 @@ logger = logging.getLogger(__name__)
 ONEDRIVE_CLIENT_ID = os.getenv('ONEDRIVE_CLIENT_ID')
 ONEDRIVE_CLIENT_SECRET = os.getenv('ONEDRIVE_CLIENT_SECRET')
 ONEDRIVE_TENANT_ID = os.getenv('ONEDRIVE_TENANT_ID')
-ONEDRIVE_SHARED_FOLDER_PATH = os.getenv('ONEDRIVE_SHARED_FOLDER_PATH', '/Shared Documents/AWB')
+ONEDRIVE_TARGET_USER_UPN = os.getenv('ONEDRIVE_TARGET_USER_UPN')  # NEW: Target user for app-only access
+ONEDRIVE_SHARED_FOLDER_PATH = os.getenv('ONEDRIVE_SHARED_FOLDER_PATH', 'Documents/AWB')
 ONEDRIVE_PROCESSED_FOLDER = os.getenv('ONEDRIVE_PROCESSED_FOLDER', '已处理')
 AWB_S3_PREFIX = os.getenv('AWB_S3_PREFIX', 'upload/onedrive/airway-bills')
 
 # Database setup
-DATABASE_URL = config_loader.get('database_url')
+DATABASE_URL = os.getenv('DATABASE_URL')
+if not DATABASE_URL:
+    raise Exception("DATABASE_URL environment variable not set")
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -51,10 +53,12 @@ def run_onedrive_sync():
         onedrive_client = OneDriveClient(
             client_id=ONEDRIVE_CLIENT_ID,
             client_secret=ONEDRIVE_CLIENT_SECRET,
-            tenant_id=ONEDRIVE_TENANT_ID
+            tenant_id=ONEDRIVE_TENANT_ID,
+            target_user_upn=ONEDRIVE_TARGET_USER_UPN  # NEW: App-only access to target user
         )
 
-        s3_manager = S3StorageManager()
+        s3_bucket = os.getenv('S3_BUCKET_NAME', 'hya-ocr-sandbox')
+        s3_manager = S3StorageManager(bucket_name=s3_bucket)
 
         # Connect to OneDrive
         if not onedrive_client.connect():
@@ -65,9 +69,10 @@ def run_onedrive_sync():
         if not source_folder:
             raise Exception(f"Source folder not found: {ONEDRIVE_SHARED_FOLDER_PATH}")
 
-        # Get processed folder, create if doesn't exist
+        # Get processed folder, create if doesn't exist (at root level)
+        root_folder = onedrive_client.drive.get_root_folder()
         processed_folder = onedrive_client.get_or_create_folder(
-            source_folder.parent,
+            root_folder,
             ONEDRIVE_PROCESSED_FOLDER
         )
 
@@ -76,7 +81,12 @@ def run_onedrive_sync():
             OneDriveSync.created_at.desc()
         ).first()
 
-        since_date = (last_sync.last_sync_time if last_sync else datetime.utcnow() - timedelta(days=1))
+        # For first sync, pull files from last 7 days; for subsequent syncs, use last sync time
+        if last_sync:
+            since_date = last_sync.last_sync_time
+        else:
+            # First sync: pull all files from last 30 days
+            since_date = datetime.utcnow() - timedelta(days=30)
         logger.info(f"📅 Syncing files modified after: {since_date}")
 
         # List new files
@@ -102,8 +112,8 @@ def run_onedrive_sync():
             try:
                 logger.info(f"📄 Processing: {file_item.name}")
 
-                # Check for duplicates
-                source_path = f"onedrive://{file_item.parent.remote_item.get('id')}/{file_item.object_id}"
+                # Check for duplicates using file object_id and parent folder info
+                source_path = f"onedrive://{source_folder.name}_{file_item.object_id}"
                 existing = db.query(File).filter(File.source_path == source_path).first()
 
                 if existing:
@@ -125,6 +135,15 @@ def run_onedrive_sync():
                     logger.info(f"☁️  Uploaded to S3: {s3_key}")
 
                     # Record in database
+                    # Extract created_by safely
+                    created_by_str = None
+                    if file_item.created_by:
+                        created_by = str(file_item.created_by)  # Convert to string first
+                        if '@' in created_by:
+                            created_by_str = created_by.split('@')[0]
+                        else:
+                            created_by_str = created_by
+
                     file_record = File(
                         file_name=file_item.name,
                         file_path=s3_key,  # Store S3 path
@@ -136,7 +155,7 @@ def run_onedrive_sync():
                         source_metadata={
                             'onedrive_id': file_item.object_id,
                             'modified': file_item.modified.isoformat() if file_item.modified else None,
-                            'created_by': file_item.created_by.split('@')[0] if file_item.created_by else None,
+                            'created_by': created_by_str,
                         }
                     )
                     db.add(file_record)

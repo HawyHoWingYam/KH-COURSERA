@@ -1,6 +1,6 @@
 """OneDrive integration client using O365 library"""
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from O365 import Account
 from O365.drive import File as O365File, Folder as O365Folder
@@ -16,6 +16,7 @@ class OneDriveClient:
         client_id: str,
         client_secret: str,
         tenant_id: str,
+        target_user_upn: Optional[str] = None,
         scopes: Optional[List[str]] = None
     ):
         """Initialize OneDrive client
@@ -24,11 +25,13 @@ class OneDriveClient:
             client_id: Azure AD application client ID
             client_secret: Azure AD application client secret
             tenant_id: Azure AD tenant ID
+            target_user_upn: Target user UPN for app-only access (e.g., user@domain.com)
             scopes: OAuth scopes (default: Files.ReadWrite.All)
         """
         self.client_id = client_id
         self.client_secret = client_secret
         self.tenant_id = tenant_id
+        self.target_user_upn = target_user_upn
 
         if scopes is None:
             scopes = ['https://graph.microsoft.com/Files.ReadWrite.All']
@@ -54,11 +57,18 @@ class OneDriveClient:
             if not self.account.is_authenticated:
                 self.account.authenticate()
 
-            # Get storage and drive
-            self.storage = self.account.storage()
-            self.drive = self.storage.get_default_drive()
+            # Get storage for specific user (app-only) or default (delegated auth)
+            if self.target_user_upn:
+                # Access specific user's OneDrive using app-only authentication
+                self.storage = self.account.storage(resource=self.target_user_upn)
+                logger.info(f"✅ Connected to OneDrive (app-only mode for user: {self.target_user_upn})")
+            else:
+                # Access default drive (delegated auth - requires user context)
+                self.storage = self.account.storage()
+                logger.info("✅ Connected to OneDrive (default drive)")
 
-            logger.info("✅ Successfully connected to OneDrive")
+            self.drive = self.storage.get_default_drive()
+            logger.info("✅ Successfully obtained drive object")
             return True
 
         except Exception as e:
@@ -118,6 +128,11 @@ class OneDriveClient:
         try:
             if file_extensions is None:
                 file_extensions = ['.pdf']
+
+            # Ensure since_date is timezone-aware (UTC)
+            if since_date.tzinfo is None:
+                # Make it aware in UTC
+                since_date = since_date.replace(tzinfo=timezone.utc)
 
             new_files = []
 
