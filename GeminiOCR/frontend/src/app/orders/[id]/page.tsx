@@ -128,6 +128,19 @@ export default function OrderDetailsPage() {
   const [isUpdatingMappingKeys, setIsUpdatingMappingKeys] = useState(false);
   const [isStartingMapping, setIsStartingMapping] = useState(false);
 
+  // CSV Merge Modal State - REMOVED
+  // const [showCsvMergeModal, setShowCsvMergeModal] = useState(false);
+  // const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
+  // const [selectedJoinKey, setSelectedJoinKey] = useState('');
+  // const [isMergingCsv, setIsMergingCsv] = useState(false);
+  // const [mergeHeaderLoading, setMergeHeaderLoading] = useState(false);
+  // const [currentItemId, setCurrentItemId] = useState<number | null>(null);
+
+  // Conditional CSV Download State
+  const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
+  const [selectedJoinKey, setSelectedJoinKey] = useState('');
+  const [isLoadingCsvHeaders, setIsLoadingCsvHeaders] = useState(false);
+
   
   // Smart Recommendations functionality has been removed
   // const [smartRecommendations, setSmartRecommendations] = useState<{[key: number]: any[]}>({});
@@ -360,6 +373,93 @@ export default function OrderDetailsPage() {
     } finally {
       setDownloadingFiles(prev => ({ ...prev, [downloadKey]: false }));
     }
+  };
+
+  // Download attachment CSV result
+  const downloadAttachmentCsv = async (itemId: number, fileId: number) => {
+    const downloadKey = `${itemId}-${fileId}-csv`;
+    setDownloadingFiles(prev => ({ ...prev, [downloadKey]: true }));
+
+    try {
+      const response = await fetch(`/api/orders/${orderId}/items/${itemId}/files/${fileId}/download/csv`);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to download attachment CSV');
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+
+      // Get filename from response headers
+      const contentDisposition = response.headers.get('content-disposition');
+      let filename = `item_${itemId}_file_${fileId}_result.csv`;
+
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+        if (filenameMatch) {
+          filename = filenameMatch[1].replace(/['"]/g, '');
+        }
+      }
+
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+
+      // Cleanup
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error downloading attachment CSV:', error);
+      setError(error instanceof Error ? error.message : 'Failed to download attachment CSV');
+    } finally {
+      setDownloadingFiles(prev => ({ ...prev, [downloadKey]: false }));
+    }
+  };
+
+  // CSV Merge Functions REMOVED - replaced with conditional download
+
+  // Load CSV headers for join key selection
+  const loadCsvHeaders = async (itemId: number) => {
+    setIsLoadingCsvHeaders(true);
+    try {
+      const { fetchCsvHeaders } = await import('@/lib/api-csv');
+      const headers = await fetchCsvHeaders(orderId, itemId);
+      setCsvHeaders(headers.headers);
+      setSelectedJoinKey(headers.headers.length > 0 ? headers.headers[0] : '');
+    } catch (error) {
+      console.error('Error loading CSV headers:', error);
+      setError(error instanceof Error ? error.message : 'Failed to load CSV headers');
+    } finally {
+      setIsLoadingCsvHeaders(false);
+    }
+  };
+
+  const downloadMergedCsv = async (itemId: number, joinKey: string) => {
+    if (!joinKey) {
+      setError('Please select a join key');
+      return;
+    }
+
+    const downloadKey = `merge-${itemId}`;
+    setDownloadingFiles(prev => ({ ...prev, [downloadKey]: true }));
+
+    try {
+      const { downloadMergedCsv } = await import('@/lib/api-csv');
+      await downloadMergedCsv(orderId, itemId, joinKey, setError);
+    } catch (error) {
+      console.error('Error downloading merged CSV:', error);
+      setError(error instanceof Error ? error.message : 'Failed to download merged CSV');
+    } finally {
+      setDownloadingFiles(prev => ({ ...prev, [downloadKey]: false }));
+    }
+  };
+
+  // Return all headers for join-key selection so users can choose any column
+  const getJoinKeyOptions = (): string[] => {
+    return csvHeaders;
   };
 
   const attachAwbMonth = async (itemId: number) => {
@@ -1219,14 +1319,27 @@ export default function OrderDetailsPage() {
                         </div>
                         <div className="flex gap-2">
                           {item.status === 'COMPLETED' && item.ocr_result_json_path && (
-                            <button
-                              onClick={() => downloadItemResult(item.item_id, 'json', item.item_name)}
-                              disabled={downloadingFiles[`${item.item_id}-json`]}
-                              className="bg-blue-100 hover:bg-blue-200 disabled:bg-gray-200 text-blue-700 disabled:text-gray-500 px-2 py-1 rounded text-xs font-medium"
-                              title="Download primary file JSON"
-                            >
-                              {downloadingFiles[`${item.item_id}-json`] ? '...' : '📄 JSON'}
-                            </button>
+                            <>
+                              <div className="flex items-center border-l pl-2 gap-1">
+                                <span className="text-xs text-gray-500 font-medium">Primary:</span>
+                                <button
+                                  onClick={() => downloadItemResult(item.item_id, 'json', item.item_name)}
+                                  disabled={downloadingFiles[`${item.item_id}-json`]}
+                                  className="bg-blue-100 hover:bg-blue-200 disabled:bg-gray-200 text-blue-700 disabled:text-gray-500 px-2 py-1 rounded text-xs font-medium"
+                                  title="Download primary JSON"
+                                >
+                                  {downloadingFiles[`${item.item_id}-json`] ? '...' : '📄 JSON'}
+                                </button>
+                                <button
+                                  onClick={() => downloadItemResult(item.item_id, 'csv', item.item_name)}
+                                  disabled={downloadingFiles[`${item.item_id}-csv`]}
+                                  className="bg-green-100 hover:bg-green-200 disabled:bg-gray-200 text-green-700 disabled:text-gray-500 px-2 py-1 rounded text-xs font-medium"
+                                  title="Download primary CSV"
+                                >
+                                  {downloadingFiles[`${item.item_id}-csv`] ? '...' : '📊 CSV'}
+                                </button>
+                              </div>
+                            </>
                           )}
                           {canEdit && (
                             <>
@@ -1311,14 +1424,27 @@ export default function OrderDetailsPage() {
                                   </div>
                                   <div className="flex gap-1">
                                     {item.status === 'COMPLETED' && (
-                                      <button
-                                        onClick={() => downloadAttachmentJson(item.item_id, file.file_id)}
-                                        disabled={downloadingFiles[`${item.item_id}-${file.file_id}-json`]}
-                                        className="text-blue-600 hover:text-blue-800 disabled:text-gray-400 text-xs font-medium"
-                                        title="Download attachment JSON"
-                                      >
-                                        {downloadingFiles[`${item.item_id}-${file.file_id}-json`] ? '...' : '📄'}
-                                      </button>
+                                      <>
+                                        <div className="flex items-center gap-1 border-l pl-2">
+                                          <span className="text-xs text-gray-500 font-medium">Attachments:</span>
+                                          <button
+                                            onClick={() => downloadAttachmentJson(item.item_id, file.file_id)}
+                                            disabled={downloadingFiles[`${item.item_id}-${file.file_id}-json`]}
+                                            className="text-blue-600 hover:text-blue-800 disabled:text-gray-400 text-xs font-medium"
+                                            title="Download attachment JSON"
+                                          >
+                                            {downloadingFiles[`${item.item_id}-${file.file_id}-json`] ? '...' : '📄 JSON'}
+                                          </button>
+                                          <button
+                                            onClick={() => downloadAttachmentCsv(item.item_id, file.file_id)}
+                                            disabled={downloadingFiles[`${item.item_id}-${file.file_id}-csv`]}
+                                            className="text-green-600 hover:text-green-800 disabled:text-gray-400 text-xs font-medium"
+                                            title="Download attachment CSV"
+                                          >
+                                            {downloadingFiles[`${item.item_id}-${file.file_id}-csv`] ? '...' : '📊 CSV'}
+                                          </button>
+                                        </div>
+                                      </>
                                     )}
                                     {canEdit && (
                                       <button
@@ -1386,26 +1512,73 @@ export default function OrderDetailsPage() {
                 {item.status === 'COMPLETED' && (item.ocr_result_json_path || item.ocr_result_csv_path) && (
                   <div className="mt-4 pt-3 border-t border-gray-200">
                     <div className="text-sm font-medium text-gray-700 mb-2">Download Results:</div>
-                    <div className="flex items-center gap-2">
-                      {item.ocr_result_json_path && (
-                        <button
-                          onClick={() => downloadItemResult(item.item_id, 'json', item.item_name)}
-                          disabled={downloadingFiles[`${item.item_id}-json`]}
-                          className="bg-blue-100 hover:bg-blue-200 disabled:bg-gray-200 text-blue-700 disabled:text-gray-500 py-1 px-3 rounded text-sm font-medium"
-                          title="Download JSON results"
-                        >
-                          {downloadingFiles[`${item.item_id}-json`] ? 'Downloading...' : '📄 JSON'}
-                        </button>
-                      )}
-                      {item.ocr_result_csv_path && (
-                        <button
-                          onClick={() => downloadItemResult(item.item_id, 'csv', item.item_name)}
-                          disabled={downloadingFiles[`${item.item_id}-csv`]}
-                          className="bg-green-100 hover:bg-green-200 disabled:bg-gray-200 text-green-700 disabled:text-gray-500 py-1 px-3 rounded text-sm font-medium"
-                          title="Download CSV results"
-                        >
-                          {downloadingFiles[`${item.item_id}-csv`] ? 'Downloading...' : '📊 CSV'}
-                        </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {/* Keep JSON button for primary only */}
+                        {item.ocr_result_json_path && (
+                          <button
+                            onClick={() => downloadItemResult(item.item_id, 'json', item.item_name)}
+                            disabled={downloadingFiles[`${item.item_id}-json`]}
+                            className="bg-blue-100 hover:bg-blue-200 disabled:bg-gray-200 text-blue-700 disabled:text-gray-500 py-1 px-3 rounded text-sm font-medium"
+                            title="Download JSON results"
+                          >
+                            {downloadingFiles[`${item.item_id}-json`] ? 'Downloading...' : '📄 JSON'}
+                          </button>
+                        )}
+                        {/* CSV button for primary */}
+                        {item.ocr_result_csv_path && (
+                          <button
+                            onClick={() => downloadItemResult(item.item_id, 'csv', item.item_name)}
+                            disabled={downloadingFiles[`${item.item_id}-csv`]}
+                            className="bg-green-100 hover:bg-green-200 disabled:bg-gray-200 text-green-700 disabled:text-gray-500 py-1 px-3 rounded text-sm font-medium"
+                            title="Download primary CSV results"
+                          >
+                            {downloadingFiles[`${item.item_id}-csv`] ? 'Downloading...' : '📊 CSV'}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Conditional CSV Merge Section - Only show when attachments exist */}
+                      {item.attachments && item.attachments.length > 0 && (
+                        <div className="flex items-center gap-2 bg-purple-50 px-3 py-2 rounded-md">
+                          <select
+                            value={selectedJoinKey}
+                            onChange={(e) => setSelectedJoinKey(e.target.value)}
+                            onFocus={() => {
+                              if (csvHeaders.length === 0) {
+                                loadCsvHeaders(item.item_id);
+                              }
+                            }}
+                            disabled={isLoadingCsvHeaders}
+                            className="border border-gray-300 rounded px-2 py-1 text-sm bg-white disabled:bg-gray-100"
+                            title="Select primary CSV column as join key"
+                          >
+                            <option value="">
+                              {isLoadingCsvHeaders ? 'Loading...' : 'Select join key...'}
+                            </option>
+                            {!isLoadingCsvHeaders && csvHeaders.length > 0 && (
+                              <>
+                                {getJoinKeyOptions().length > 0 ? (
+                                  getJoinKeyOptions().map((header, index) => (
+                                    <option key={index} value={header}>{header}</option>
+                                  ))
+                                ) : (
+                                  csvHeaders.map((header, index) => (
+                                    <option key={index} value={header}>{header}</option>
+                                  ))
+                                )}
+                              </>
+                            )}
+                          </select>
+                          <button
+                            onClick={() => downloadMergedCsv(item.item_id, selectedJoinKey)}
+                            disabled={!selectedJoinKey || isLoadingCsvHeaders || downloadingFiles[`merge-${item.item_id}`]}
+                            className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 disabled:bg-opacity-50 text-white py-1 px-3 rounded text-sm font-medium whitespace-nowrap"
+                            title="Download merged CSV (primary + attachments)"
+                          >
+                            {downloadingFiles[`merge-${item.item_id}`] ? 'Merging...' : '📊 Download Merged CSV'}
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -1695,6 +1868,8 @@ export default function OrderDetailsPage() {
           </div>
         </div>
       )}
+
+      // CSV Merge Modal REMOVED - replaced with inline conditional download
     </div>
   );
 }

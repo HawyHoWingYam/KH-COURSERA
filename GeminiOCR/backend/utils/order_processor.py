@@ -1465,7 +1465,7 @@ class OrderProcessor:
     async def _perform_dynamic_join(self, ocr_results: List[Dict], mapping_data: List[Dict],
                                    mapping_columns: List[str], user_mapping_keys: List[str],
                                    order_id: int = None) -> List[Dict]:
-        """Perform dynamic JOIN based on user-selected mapping keys"""
+        """Perform dynamic JOIN based on user-selected mapping keys with Default × Select alignment"""
 
         # Get OCR columns to understand available fields
         ocr_columns = set()
@@ -1477,61 +1477,144 @@ class OrderProcessor:
         logger.info(f"   Available mapping columns: {mapping_columns}")
         logger.info(f"   User selected mapping keys: {user_mapping_keys}")
 
-        # Simplified field mapping using only default mapping keys
+        # Get default mapping keys from document configuration for Default × Select alignment
+        default_mapping_keys = []
+        if order_id:
+            logger.info("🤖 Loading default mapping keys from document configuration")
+            try:
+                from app import get_db
+                db = next(get_db())
+
+                # Get item to find company_id and doc_type_id
+                from db.models import OcrOrderItem
+                item = db.query(OcrOrderItem).filter(OcrOrderItem.item_id == order_id).first()
+                if item:
+                    # Get CompanyDocumentConfig to get default_mapping_keys
+                    from db.models import CompanyDocumentConfig
+                    config = db.query(CompanyDocumentConfig).filter(
+                        CompanyDocumentConfig.company_id == item.company_id,
+                        CompanyDocumentConfig.doc_type_id == item.document_type_id,
+                        CompanyDocumentConfig.active == True
+                    ).first()
+
+                    if config and config.default_mapping_keys:
+                        default_mapping_keys = config.default_mapping_keys
+                        logger.info(f"Default mapping keys loaded: {default_mapping_keys}")
+                    else:
+                        logger.warning(f"No default mapping keys found for company {item.company_id}, doc type {item.document_type_id}")
+                else:
+                    logger.warning(f"No item found with id {order_id}")
+
+            except Exception as e:
+                logger.warning(f"Failed to load default mapping keys: {e}")
+            finally:
+                db.close()
+        else:
+            logger.info("No order_id provided, using user mapping keys directly")
+
+        # For each user mapping key, select OCR field using default mapping keys priority
         ocr_fields = []
         mapping_fields = []
+        field_selection_log = []
 
-        logger.info(f"🚀 Starting field analysis for mapping keys...")
-
-        # AUTO-MAPPING: Use default mapping keys to determine OCR and mapping fields
-        if order_id:
-            logger.info("🤖 Using default mapping keys from document configuration")
-            # We'll use the user_mapping_keys directly for both OCR and mapping field detection
-            # This simplified approach relies on the user's selected mapping keys
+        logger.info(f"🚀 Starting field analysis with Default × Select alignment...")
+        logger.info(f"Default mapping keys priority: {default_mapping_keys}")
 
         for key in user_mapping_keys:
-            # Check for direct field matches
-            direct_ocr_match = key in ocr_columns
-            direct_mapping_match = key in mapping_columns
+            selected_ocr_field = None
+            selected_mapping_field = None
 
-            if direct_ocr_match:
-                ocr_fields.append(key)
-                logger.info(f"'{key}' identified as OCR field")
-
-            if direct_mapping_match:
-                mapping_fields.append(key)
-                logger.info(f"'{key}' identified as mapping field")
-
-            # If key not found in either column set, try semantic matching
-            if not direct_ocr_match and not direct_mapping_match:
-                logger.warning(f"'{key}' not found in either OCR or mapping columns, trying semantic matching...")
-
-                key_lower = key.lower()
-
-                # Find semantically equivalent OCR fields
-                for ocr_col in ocr_columns:
-                    ocr_col_lower = ocr_col.lower()
-                    if self._are_semantically_equivalent(key_lower, ocr_col_lower):
-                        ocr_fields.append(ocr_col)
-                        logger.info(f"'{ocr_col}' identified as similar OCR field for '{key}'")
-                        break
-
-                # Find semantically equivalent mapping fields
+            # Find mapping field using semantic matching and direct matches
+            # Strategy 1: Direct match
+            if key in mapping_columns:
+                selected_mapping_field = key
+                logger.info(f"Mapping field '{key}' matched directly")
+            else:
+                # Strategy 2: Semantic matching for mapping field
                 for map_col in mapping_columns:
-                    map_col_lower = map_col.lower()
-                    if self._are_semantically_equivalent(key_lower, map_col_lower):
-                        mapping_fields.append(map_col)
-                        logger.info(f"'{map_col}' identified as similar mapping field for '{key}'")
+                    if self._are_semantically_equivalent(key.lower(), map_col.lower()):
+                        selected_mapping_field = map_col
+                        logger.info(f"Mapping field '{map_col}' selected as semantic equivalent for '{key}'")
                         break
 
-                # If still not found, add as fallback
-                if not any(key.lower() == field.lower() for field in ocr_fields + mapping_fields):
-                    ocr_fields.append(key)
-                    mapping_fields.append(key)
-                    logger.info(f"'{key}' added to both OCR and mapping fields as fallback")
+            # If no mapping field found, fallback to key itself
+            if not selected_mapping_field:
+                selected_mapping_field = key
+                logger.info(f"Mapping field '{key}' used as fallback (no direct or semantic match)")
+
+            # Find OCR field using default mapping keys priority order
+            if default_mapping_keys:
+                logger.info(f"Using Default × Select alignment for key '{key}'")
+                for priority_key in default_mapping_keys:
+                    # Strategy 1: Direct match with priority key
+                    if priority_key in ocr_columns:
+                        selected_ocr_field = priority_key
+                        logger.info(f"OCR field '{priority_key}' selected from default mapping keys priority for '{key}'")
+                        break
+
+                    # Strategy 2: Semantic match with priority key
+                    for ocr_col in ocr_columns:
+                        if self._are_semantically_equivalent(priority_key.lower(), ocr_col.lower()):
+                            selected_ocr_field = ocr_col
+                            logger.info(f"OCR field '{ocr_col}' selected as semantic equivalent for default key '{priority_key}' (key: '{key}')")
+                            break
+
+                    if selected_ocr_field:
+                        break
+
+                # Strategy 3: Fallback to direct match with user key
+                if not selected_ocr_field and key in ocr_columns:
+                    selected_ocr_field = key
+                    logger.info(f"OCR field '{key}' selected as direct fallback for key '{key}'")
+
+                # Strategy 4: Semantic match with user key
+                if not selected_ocr_field:
+                    for ocr_col in ocr_columns:
+                        if self._are_semantically_equivalent(key.lower(), ocr_col.lower()):
+                            selected_ocr_field = ocr_col
+                            logger.info(f"OCR field '{ocr_col}' selected as semantic fallback for '{key}'")
+                            break
+
+                # Strategy 5: Final fallback - use user key directly
+                if not selected_ocr_field:
+                    selected_ocr_field = key
+                    logger.info(f"OCR field '{key}' used as final fallback for key '{key}'")
+            else:
+                # No default keys - fallback to current behavior
+                logger.info(f"No default keys available, using direct matching for key '{key}'")
+                if key in ocr_columns:
+                    selected_ocr_field = key
+                    logger.info(f"OCR field '{key}' matched directly")
+                else:
+                    # Semantic matching as fallback
+                    for ocr_col in ocr_columns:
+                        if self._are_semantically_equivalent(key.lower(), ocr_col.lower()):
+                            selected_ocr_field = ocr_col
+                            logger.info(f"OCR field '{ocr_col}' selected as semantic equivalent for '{key}'")
+                            break
+
+                    if not selected_ocr_field:
+                        selected_ocr_field = key
+                        logger.info(f"OCR field '{key}' used as fallback (no direct or semantic match)")
+
+            ocr_fields.append(selected_ocr_field)
+            mapping_fields.append(selected_mapping_field)
+
+            field_selection_log.append({
+                'user_key': key,
+                'selected_ocr_field': selected_ocr_field,
+                'selected_mapping_field': selected_mapping_field,
+                'default_keys_used': default_mapping_keys.copy() if default_mapping_keys else None
+            })
+
+            logger.info(f"Key '{key}' -> OCR: '{selected_ocr_field}', Mapping: '{selected_mapping_field}'")
 
         logger.info(f"Final OCR fields: {ocr_fields}")
         logger.info(f"Final mapping fields: {mapping_fields}")
+
+        # Log detailed field selection analysis
+        for selection in field_selection_log:
+            logger.info(f"Field selection: {selection}")
 
         # Create lookup dictionary from mapping data using mapping fields
         mapping_lookup = {}
@@ -1550,8 +1633,8 @@ class OrderProcessor:
                         # Store the mapping record for each lookup key
                         mapping_lookup[normalized_key] = mapping_row.copy()
 
-            # If no direct mapping fields identified, try all user-selected keys in mapping data
-            if not mapping_fields:
+            # If no mapping fields were selected, fallback to user mapping keys
+            if not mapping_fields and user_mapping_keys:
                 for user_key in user_mapping_keys:
                     if user_key in mapping_row and pd.notna(mapping_row[user_key]):
                         normalized_key = self._normalize_identifier(str(mapping_row[user_key]))
@@ -1572,12 +1655,12 @@ class OrderProcessor:
             mapping_match = None
             match_info = {"row_index": i, "attempts": [], "matched": False}
 
-            # Strategy 1: Try matching using OCR fields
+            # Strategy 1: Try matching using selected OCR fields (Default × Select alignment)
             for ocr_field in ocr_fields:
                 if ocr_field in ocr_row and pd.notna(ocr_row[ocr_field]):
                     lookup_value = self._normalize_identifier(str(ocr_row[ocr_field]))
                     match_info["attempts"].append({
-                        "strategy": "ocr_field",
+                        "strategy": "selected_ocr_field",
                         "field": ocr_field,
                         "original_value": str(ocr_row[ocr_field]),
                         "normalized_value": lookup_value
@@ -1587,19 +1670,18 @@ class OrderProcessor:
                     if mapping_match:
                         matched_count += 1
                         match_info["matched"] = True
-                        match_info["matched_strategy"] = f"ocr_field:{ocr_field}"
+                        match_info["matched_strategy"] = f"selected_ocr_field:{ocr_field}"
                         match_info["matched_value"] = lookup_value
-                        logger.info(f"✓ Row {i}: Matched OCR field '{ocr_field}' value '{lookup_value}'")
+                        logger.info(f"✓ Row {i}: Matched selected OCR field '{ocr_field}' (Default × Select) value '{lookup_value}'")
                         break
 
-            
-            # Strategy 2: If no match found with OCR fields, try all user keys directly
-            if not mapping_match:
+            # Strategy 2: If no match found with selected OCR fields, try user mapping keys directly
+            if not mapping_match and user_mapping_keys:
                 for user_key in user_mapping_keys:
                     if user_key in ocr_row and pd.notna(ocr_row[user_key]):
                         lookup_value = self._normalize_identifier(str(ocr_row[user_key]))
                         match_info["attempts"].append({
-                            "strategy": "user_key",
+                            "strategy": "user_key_fallback",
                             "field": user_key,
                             "original_value": str(ocr_row[user_key]),
                             "normalized_value": lookup_value
@@ -1609,9 +1691,9 @@ class OrderProcessor:
                         if mapping_match:
                             matched_count += 1
                             match_info["matched"] = True
-                            match_info["matched_strategy"] = f"user_key:{user_key}"
+                            match_info["matched_strategy"] = f"user_key_fallback:{user_key}"
                             match_info["matched_value"] = lookup_value
-                            logger.info(f"✓ Row {i}: Matched user key '{user_key}' value '{lookup_value}'")
+                            logger.info(f"✓ Row {i}: Matched user key fallback '{user_key}' value '{lookup_value}'")
                             break
 
             # Strategy 3: Intelligent matching using MatchingEngine for unmatched records

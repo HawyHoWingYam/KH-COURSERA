@@ -1829,6 +1829,62 @@ class S3StorageManager:
             logger.error(f"❌ Failed to download from stored path '{stored_path}': {e}")
             return None
 
+    def delete_file_by_stored_path(self, stored_path: str) -> bool:
+        """
+        Delete file using stored database path (S3 URI or relative path)
+
+        Args:
+            stored_path: Full S3 URI (s3://bucket/key) or relative path within current bucket
+
+        Returns:
+            bool: True if deletion successful, False otherwise
+        """
+        try:
+            if not stored_path:
+                logger.warning("⚠️ Empty stored path provided for deletion")
+                return False
+
+            # Handle S3 URI format: s3://bucket/key/path/file.ext
+            if stored_path.startswith('s3://'):
+                # Parse S3 URI
+                s3_parts = stored_path[5:].split('/', 1)  # Remove 's3://' and split on first '/'
+                if len(s3_parts) != 2:
+                    logger.error(f"❌ Invalid S3 URI format for deletion: {stored_path}")
+                    return False
+
+                bucket_name = s3_parts[0]
+                s3_key = s3_parts[1]
+
+                logger.info(f"🗑️ Deleting from S3 URI: bucket={bucket_name}, key={s3_key}")
+
+                # Validate bucket name matches current instance
+                if bucket_name != self.bucket_name:
+                    logger.warning(f"⚠️ Bucket mismatch during deletion: URI bucket={bucket_name}, current bucket={self.bucket_name}")
+
+                # Delete from S3
+                self.s3_client.delete_object(Bucket=bucket_name, Key=s3_key)
+                logger.info(f"✅ Successfully deleted from S3 URI: {stored_path}")
+                return True
+
+            # Handle relative paths (assume they're relative to current bucket)
+            elif stored_path and not stored_path.startswith('/'):
+                logger.info(f"🗑️ Deleting relative path from bucket {self.bucket_name}: {stored_path}")
+
+                self.s3_client.delete_object(Bucket=self.bucket_name, Key=stored_path)
+                logger.info(f"✅ Successfully deleted relative path: {stored_path}")
+                return True
+
+            else:
+                logger.error(f"❌ Unsupported path format for deletion: {stored_path}")
+                return False
+
+        except ClientError as e:
+            logger.error(f"❌ S3 error deleting from stored path: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Failed to delete from stored path '{stored_path}': {e}")
+            return False
+
 
 # 全局S3存储管理器实例
 _s3_manager = None

@@ -466,23 +466,15 @@ class FileStorageService:
             return self._delete_from_local(file_path)
 
     def _delete_from_s3(self, s3_url: str) -> bool:
-        """从S3删除文件"""
+        """从S3删除文件，支持S3 URI和相对路径"""
         try:
-            # 解析S3 URL
-            s3_url = s3_url[5:]  # 移除 's3://'
-            parts = s3_url.split("/", 1)
-            if len(parts) != 2:
-                raise ValueError("无效的S3 URL格式")
-
-            bucket_name, key = parts
-
-            if self.s3_manager and self.s3_manager.bucket_name == bucket_name:
-                return self.s3_manager.delete_file(key)
-            else:
-                logger.error(
-                    f"❌ S3存储桶不匹配：{bucket_name} vs {self.s3_manager.bucket_name}"
-                )
+            if not self.s3_manager:
+                logger.error("❌ S3管理器未初始化")
                 return False
+
+            # 使用新的delete_file_by_stored_path方法处理S3 URI和相对路径
+            # 这个方法能够正确处理两种格式
+            return self.s3_manager.delete_file_by_stored_path(s3_url)
 
         except Exception as e:
             logger.error(f"❌ 从S3删除文件失败：{e}")

@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, Union
 import os
 import shutil
 import tempfile
@@ -1176,7 +1176,6 @@ def download_config_file(config_id: int, file_type: str, db: Session = Depends(g
                             filename=original_filename
                         )
                         if schema_data:
-                            import json
                             file_content = json.dumps(schema_data, indent=2, ensure_ascii=False).encode('utf-8')
                     
                     if file_content is not None:
@@ -1465,7 +1464,6 @@ def download_config_file(config_id: int, file_type: str, db: Session = Depends(g
 # File upload endpoint
 @app.post("/upload", response_model=dict)
 async def upload_file(file: UploadFile = File(...), path: str = Form(...)):
-    import json  # Import here to ensure availability for exception handling
     
     try:
         # Check if this is a prompt or schema file for S3 upload
@@ -3353,6 +3351,10 @@ def _delete_primary_file_and_results(item: OcrOrderItem, db: Session):
         if not file_id:
             return
 
+        # Store paths before clearing them (they'll be used for S3 deletion)
+        json_result_path = item.ocr_result_json_path
+        csv_result_path = item.ocr_result_csv_path
+
         # Get file info for deletion from storage
         file_info = db.query(DBFile).filter(DBFile.file_id == file_id).first()
         if file_info:
@@ -3379,22 +3381,23 @@ def _delete_primary_file_and_results(item: OcrOrderItem, db: Session):
         item.ocr_result_csv_path = None
         item.updated_at = datetime.utcnow()
 
-        # Delete S3 results if they exist
+        # Delete S3 results if they exist (use stored paths)
         try:
-            s3_manager = S3StorageManager()
-            if item.ocr_result_json_path:
-                try:
-                    s3_manager.delete_file(item.ocr_result_json_path)
-                    logger.info(f"Deleted S3 result: {item.ocr_result_json_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete {item.ocr_result_json_path}: {e}")
+            s3_manager = get_s3_manager()
+            if s3_manager:
+                if json_result_path:
+                    try:
+                        s3_manager.delete_file_by_stored_path(json_result_path)
+                        logger.info(f"Deleted S3 JSON result: {json_result_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete S3 JSON result {json_result_path}: {e}")
 
-            if item.ocr_result_csv_path:
-                try:
-                    s3_manager.delete_file(item.ocr_result_csv_path)
-                    logger.info(f"Deleted S3 result: {item.ocr_result_csv_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete {item.ocr_result_csv_path}: {e}")
+                if csv_result_path:
+                    try:
+                        s3_manager.delete_file_by_stored_path(csv_result_path)
+                        logger.info(f"Deleted S3 CSV result: {csv_result_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete S3 CSV result {csv_result_path}: {e}")
         except Exception as e:
             logger.warning(f"Error deleting S3 results: {str(e)}")
 
@@ -3441,21 +3444,34 @@ def download_attachment_json(
             raise HTTPException(status_code=400, detail="Use the item JSON download for primary file results. This endpoint is for attachments only.")
 
         # Construct S3 path for attachment JSON
-        # Path pattern: results/orders/{item_id//1000}/items/{item_id}/files/file_{file_id}_result.json
-        s3_manager = S3StorageManager()
-        prefix = f"results/orders/{item_id // 1000}/items/{item_id}/files/file_{file_id}_result.json"
+        # Path pattern: upload/results/orders/{item_id//1000}/items/{item_id}/files/file_{file_id}_result.json
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
 
-        # Try to get the file from S3
+        # Build the stored path - S3StorageManager already adds upload/ prefix, so include it in the relative path
+        stored_path = f"upload/results/orders/{item_id // 1000}/items/{item_id}/files/file_{file_id}_result.json"
+
+        # Download file content from S3
         try:
-            result = s3_manager.get_file(prefix)
+            file_content = s3_manager.download_file_by_stored_path(stored_path)
+            if not file_content:
+                raise HTTPException(status_code=404, detail="Attachment JSON result not found or not yet processed")
+
+            # Parse JSON content
+            json_data = json.loads(file_content.decode('utf-8'))
+
             return {
                 "file_id": file_id,
                 "item_id": item_id,
-                "json_data": result,
-                "s3_path": prefix
+                "json_data": json_data,
+                "s3_path": stored_path
             }
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON from attachment {file_id}: {str(e)}")
+            raise HTTPException(status_code=500, detail="Invalid JSON format in attachment result")
         except Exception as e:
-            logger.error(f"Failed to download attachment JSON from S3 path {prefix}: {str(e)}")
+            logger.error(f"Failed to download attachment JSON from S3 path {stored_path}: {str(e)}")
             raise HTTPException(status_code=404, detail="Attachment JSON result not found or not yet processed")
 
     except HTTPException:
@@ -4121,7 +4137,7 @@ def download_order_item_json(order_id: int, item_id: int, db: Session = Depends(
 
 @app.get("/orders/{order_id}/items/{item_id}/download/csv")
 def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(get_db)):
-    """Download OCR result CSV file for a specific order item"""
+    """Download OCR result CSV file for a specific order item (using deep flattening)"""
     try:
         # Verify order and item exist
         order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
@@ -4135,46 +4151,44 @@ def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(g
         if not item:
             raise HTTPException(status_code=404, detail="Order item not found")
 
-        # Check if item is completed and has CSV result
+        # Check if item is completed and has JSON result
         if item.status != OrderItemStatus.COMPLETED:
             raise HTTPException(status_code=400, detail="Order item is not completed yet")
 
-        if not item.ocr_result_csv_path:
-            raise HTTPException(status_code=404, detail="CSV result file not found for this item")
+        if not item.ocr_result_json_path:
+            raise HTTPException(status_code=404, detail="JSON result file not found for this item")
 
-        # Use existing S3 download infrastructure
+        # Use existing S3 download infrastructure to get JSON
         s3_manager = get_s3_manager()
         if not s3_manager:
             raise HTTPException(status_code=500, detail="S3 storage not available")
 
-        # Download file content from S3
-        file_content = s3_manager.download_file_by_stored_path(item.ocr_result_csv_path)
-        if not file_content:
-            raise HTTPException(status_code=404, detail=f"File not found in S3: {item.ocr_result_csv_path}")
+        # Download JSON file content from S3
+        json_content = s3_manager.download_file_by_stored_path(item.ocr_result_json_path)
+        if not json_content:
+            raise HTTPException(status_code=404, detail=f"JSON file not found in S3: {item.ocr_result_json_path}")
+
+        # Parse JSON content
+        try:
+            json_data = json.loads(json_content.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON format: {str(e)}")
+
+        # Generate CSV using deep flattening
+        csv_content = convert_json_to_csv(json_data)
+        if not csv_content:
+            raise HTTPException(status_code=500, detail="Failed to convert JSON to CSV")
+
+        # Apply Excel formula escaping
+        escaped_csv_content = escape_excel_formulas_in_csv(csv_content)
 
         # Generate filename for download
-        filename = f"order_{order_id}_item_{item_id}_{item.item_name or 'result'}.csv"
+        filename = f"order_{order_id}_item_{item_id}_primary.csv"
 
-        # Apply Excel formula escaping and create temporary file with UTF-8 BOM
+        # Create temporary file with UTF-8 BOM
         import tempfile
         import os
-        import pandas as pd
-        from io import StringIO
-
-        # Parse CSV, apply formula escaping, and recreate with BOM
-        try:
-            df = pd.read_csv(StringIO(file_content.decode('utf-8')))
-            for column in df.columns:
-                df[column] = df[column].apply(escape_excel_formulas)
-
-            # Recreate CSV with escaped content
-            escaped_csv_content = df.to_csv(index=False)
-            file_content_with_bom = b'\xef\xbb\xbf' + escaped_csv_content.encode('utf-8')
-        except Exception as parse_error:
-            logger.warning(f"Failed to parse CSV for formula escaping, using original: {parse_error}")
-            # Fallback to original content if parsing fails
-            utf8_bom = b'\xef\xbb\xbf'
-            file_content_with_bom = utf8_bom + file_content
+        file_content_with_bom = b'\xef\xbb\xbf' + escaped_csv_content.encode('utf-8')
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
             temp_file.write(file_content_with_bom)
@@ -4187,7 +4201,7 @@ def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(g
             media_type="text/csv; charset=utf-8",
         )
 
-        response.headers["X-File-Source"] = "S3"
+        response.headers["X-File-Source"] = "freshly_generated"
         return response
 
     except HTTPException:
@@ -4196,6 +4210,617 @@ def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(g
         logger.error(f"Failed to download order item CSV {item_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to download CSV file: {str(e)}")
 
+
+# ========== PRIMARY CSV HEADERS ENDPOINT ==========
+@app.get("/orders/{order_id}/items/{item_id}/primary/csv/headers")
+def get_primary_csv_headers(order_id: int, item_id: int, db: Session = Depends(get_db)):
+    """Return header names derived ONLY from the primary file's JSON.
+
+    Rationale: the persisted item-level CSV (ocr_result_csv_path) may already
+    contain merged attachment columns (e.g. with an "attachment_" prefix). Those
+    should not appear in the UI's join-key dropdown, which is meant to select a
+    column from the primary file to join with attachment CSVs. To avoid mixing in
+    attachment fields, we always deep‑flatten the primary JSON here.
+    """
+    try:
+        # Verify order and item exist
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Check if item is completed
+        if item.status != OrderItemStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Order item is not completed yet")
+
+        # Always read from the PRIMARY JSON result to avoid polluted headers
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+
+        if not item.ocr_result_json_path:
+            raise HTTPException(status_code=404, detail="Primary JSON result not found")
+
+        json_content = s3_manager.download_file_by_stored_path(item.ocr_result_json_path)
+        if not json_content:
+            raise HTTPException(status_code=404, detail="Primary JSON result not found")
+
+        # Parse JSON and extract headers using deep flattening
+        json_data = json.loads(json_content.decode('utf-8'))
+
+        # Apply deep flattening to get all possible headers (primary only)
+        from utils.excel_converter import deep_flatten_json_universal
+        flattened_data = deep_flatten_json_universal(json_data)
+
+        headers: List[str] = []
+        if flattened_data:
+            # Collect all unique field names from flattened records
+            all_fields = set()
+            for record in flattened_data:
+                all_fields.update(record.keys())
+
+            # Filter out internal keys and sort
+            headers = sorted([k for k in all_fields if not k.startswith('__')])
+
+        logger.info(f"Got headers from PRIMARY JSON for item {item_id}: {headers}")
+
+        return {
+            "item_id": item_id,
+            "headers": headers,
+            "total_headers": len(headers),
+            "source": "json"
+        }
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse JSON headers for item {item_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Invalid JSON format in primary result")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get primary CSV headers for item {item_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get headers: {str(e)}")
+
+
+# ========== PER-ATTACHMENT CSV DOWNLOAD ENDPOINT ==========
+@app.get("/orders/{order_id}/items/{item_id}/files/{file_id}/download/csv")
+def download_attachment_csv(order_id: int, item_id: int, file_id: int, db: Session = Depends(get_db)):
+    """Download CSV result for a specific attachment file"""
+    try:
+        # Verify order exists
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # Verify item exists and belongs to order
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Verify file exists and is linked to the item (but not primary)
+        file_link = db.query(OrderItemFile).filter(
+            OrderItemFile.item_id == item_id,
+            OrderItemFile.file_id == file_id
+        ).first()
+        if not file_link:
+            raise HTTPException(status_code=404, detail="File not linked to this item")
+
+        # Check that this is not the primary file
+        if file_id == item.primary_file_id:
+            raise HTTPException(status_code=400, detail="Use the item CSV download for primary file results. This endpoint is for attachments only.")
+
+        # Build the stored path for attachment JSON
+        stored_path = f"upload/results/orders/{item_id // 1000}/items/{item_id}/files/file_{file_id}_result.json"
+
+        # Download JSON content from S3
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+
+        file_content = s3_manager.download_file_by_stored_path(stored_path)
+        if not file_content:
+            raise HTTPException(status_code=404, detail="Attachment JSON result not found")
+
+        # Parse JSON and convert to CSV
+        json_data = json.loads(file_content.decode('utf-8'))
+
+        # Convert JSON to single CSV row
+        csv_content = convert_json_to_csv(json_data)
+        if not csv_content:
+            raise HTTPException(status_code=500, detail="Failed to convert JSON to CSV")
+
+        # Apply Excel formula escaping and add UTF-8 BOM
+        escaped_csv_content = escape_excel_formulas_in_csv(csv_content)
+        file_content_with_bom = b'\xef\xbb\xbf' + escaped_csv_content.encode('utf-8')
+
+        # Generate filename
+        filename = f"order_{order_id}_item_{item_id}_attachment_{file_id}_result.csv"
+
+        # Create temporary file
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
+            temp_file.write(file_content_with_bom)
+            temp_file_path = temp_file.name
+
+        # Return file response
+        response = FileResponse(
+            path=temp_file_path,
+            filename=filename,
+            media_type="text/csv; charset=utf-8",
+        )
+
+        response.headers["X-File-Source"] = "S3"
+        return response
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse JSON from attachment {file_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Invalid JSON format in attachment result")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download attachment CSV for file {file_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download CSV: {str(e)}")
+
+
+# ========== CSV MERGE BY JOIN KEY ENDPOINT ==========
+@app.post("/orders/{order_id}/items/{item_id}/merge/csv")
+def merge_csv_by_join_key(order_id: int, item_id: int, join_key: str = Form(..., description="Column name to join on"), db: Session = Depends(get_db)):
+    """Merge primary CSV with attachment CSVs using specified join key"""
+    try:
+        # Verify order and item exist
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        # Check if item is completed
+        if item.status != OrderItemStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Order item is not completed yet")
+
+        # Load primary JSON
+        if not item.ocr_result_json_path:
+            raise HTTPException(status_code=404, detail="Primary JSON result not found")
+
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+
+        primary_content = s3_manager.download_file_by_stored_path(item.ocr_result_json_path)
+        if not primary_content:
+            raise HTTPException(status_code=404, detail="Primary JSON result not found")
+
+        primary_data = json.loads(primary_content.decode('utf-8'))
+
+        # Get all attachment files for this item
+        attachments = db.query(OrderItemFile).filter(
+            OrderItemFile.item_id == item_id,
+            OrderItemFile.file_id != item.primary_file_id
+        ).all()
+
+        # If no attachments, return primary CSV directly
+        if not attachments:
+            logger.info(f"No attachments found for item {item_id}, returning primary CSV")
+            return _generate_primary_csv_response(primary_data, order_id, item_id)
+
+        # Load attachment data
+        attachment_data_list = []
+        for file_link in attachments:
+            try:
+                attachment_path = f"upload/results/orders/{item_id // 1000}/items/{item_id}/files/file_{file_link.file_id}_result.json"
+                attachment_content = s3_manager.download_file_by_stored_path(attachment_path)
+                if attachment_content:
+                    attachment_data = json.loads(attachment_content.decode('utf-8'))
+                    attachment_data_list.append(attachment_data)
+                    logger.info(f"Loaded attachment {file_link.file_id} for merging")
+            except Exception as e:
+                logger.warning(f"Failed to load attachment {file_link.file_id}: {e}")
+
+        # Merge data
+        merged_data = _merge_json_by_join_key(primary_data, attachment_data_list, join_key)
+
+        # Safety improvement: fallback to primary CSV if merge returns empty data
+        if not merged_data:
+            logger.warning(f"Merge returned no data for item {item_id}, falling back to primary CSV")
+            return _generate_primary_csv_response(primary_data, order_id, item_id)
+
+        # Load template for column order if available
+        column_order = None
+        try:
+            if item.document_type and item.document_type.template_json_path:
+                s3_manager = get_s3_manager()
+                template_content = s3_manager.download_file_by_stored_path(item.document_type.template_json_path)
+                if template_content:
+                    template_data = json.loads(template_content.decode('utf-8'))
+                    from utils.template_service import validate_template_payload
+                    validate_template_payload(template_data)
+                    column_order = template_data.get('column_order')
+                    logger.info(f"Loaded template with column_order for item {item_id}")
+        except Exception as e:
+            logger.warning(f"Failed to load template for item {item_id}: {e}. Using default column order.")
+
+        # Generate CSV content and save it
+        csv_content = _render_merged_csv(merged_data, column_order)
+
+        # Save to S3 or local storage
+        if is_s3_enabled():
+            # Save to S3: key is relative; S3StorageManager will prefix upload/ automatically
+            s3_key = f"results/orders/{item_id // 1000}/items/{item_id}/item_{item_id}_merged_by_{join_key}.csv"
+            s3_manager = get_s3_manager()
+            ok = s3_manager.upload_file(csv_content.encode('utf-8'), s3_key)
+            if not ok:
+                raise HTTPException(status_code=500, detail="Failed to upload merged CSV to S3")
+            # Persist full S3 URI (consistent with rest of pipeline)
+            file_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{s3_key}"
+            logger.info(f"Saved merged CSV to S3: {file_path}")
+        else:
+            # Local storage path
+            local_dir = f"uploads/orders/{order_id}/items/{item_id}"
+            os.makedirs(local_dir, exist_ok=True)
+            local_path = os.path.join(local_dir, f"item_{item_id}_merged_by_{join_key}.csv")
+            # Optional: add BOM for Excel friendliness
+            with open(local_path, 'wb') as f:
+                f.write(b'\xef\xbb\xbf' + csv_content.encode('utf-8'))
+            file_path = local_path
+            logger.info(f"Saved merged CSV to local: {local_path}")
+
+        # Update database
+        item.ocr_result_csv_path = file_path
+        db.commit()
+        logger.info(f"Updated item {item_id} ocr_result_csv_path to: {file_path}")
+
+        # Generate response with CSV and overwrite header
+        response = _generate_merged_csv_response(merged_data, order_id, item_id, join_key, column_order)
+        response.headers["X-Merged-Saved"] = "true"
+        return response
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse JSON for merge: {str(e)}")
+        raise HTTPException(status_code=500, detail="Invalid JSON format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to merge CSV for item {item_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to merge CSV: {str(e)}")
+
+
+# ========== CSV UTILITY FUNCTIONS ==========
+def convert_json_to_csv(json_data: Union[dict, list]) -> str:
+    """Convert JSON data to CSV with deep flattening"""
+    if not json_data:
+        return ""
+
+    # Filter out internal keys
+    if isinstance(json_data, dict):
+        filtered_data = {k: v for k, v in json_data.items() if not k.startswith('__')}
+    else:
+        filtered_data = json_data
+
+    # Import the deep flattening function
+    from utils.excel_converter import deep_flatten_json_universal
+
+    # Apply deep flattening
+    flattened_data = deep_flatten_json_universal(filtered_data)
+
+    if not flattened_data:
+        return ""
+
+    # Get all unique field names across all flattened records
+    all_fields = set()
+    for record in flattened_data:
+        all_fields.update(record.keys())
+
+    # Sort fields consistently
+    sorted_fields = sorted(all_fields)
+
+    import csv
+    from io import StringIO
+
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=sorted_fields)
+    writer.writeheader()
+
+    # Write all flattened records
+    for record in flattened_data:
+        # Convert arrays to strings with pipe separator
+        processed_record = {}
+        for key, value in record.items():
+            if isinstance(value, list):
+                # Convert array to pipe-separated string
+                processed_record[key] = "|".join(str(v) for v in value)
+            elif isinstance(value, dict):
+                # Convert dict to JSON string representation
+                processed_record[key] = json.dumps(value, ensure_ascii=False)
+            else:
+                processed_record[key] = value
+
+        writer.writerow(processed_record)
+
+    return output.getvalue()
+
+
+def escape_excel_formulas_in_csv(csv_content: str) -> str:
+    """Escape Excel formulas in CSV content"""
+    lines = csv_content.split('\n')
+    escaped_lines = []
+
+    for line in lines:
+        if line.strip():
+            fields = []
+            import csv
+            reader = csv.reader([line])
+            for row in reader:
+                for field in row:
+                    # Escape = and @ prefixes and leading +/-
+                    if isinstance(field, str):
+                        if field.startswith('=') or field.startswith('@') or field.startswith('+') or field.startswith('-'):
+                            # Wrap in quotes and escape if needed
+                            field = f"'{field}"
+                        fields.append(field)
+                    else:
+                        fields.append(str(field))
+
+            # Write escaped line
+            escaped_line = ','.join(fields)
+            escaped_lines.append(escaped_line)
+
+    return '\n'.join(escaped_lines)
+
+
+def _is_empty_value(v):
+    """Check if a value is considered empty (None/NaN, empty string/whitespace, string形式的null/none/nan, empty list/dict)"""
+    import pandas as pd
+
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return True
+    if isinstance(v, str):
+        s = v.strip().lower()
+        return s == "" or s in {"null", "none", "nan", "n/a", "-", "—"}
+    if isinstance(v, (list, dict)):
+        return len(v) == 0
+    return False
+
+
+def _series_coalesce(s1, s2):
+    """Coalesce two series: prefer non-empty values from primary (s1), then secondary (s2)"""
+    # Convert empty values to None, then use combine_first for primary-first priority
+    s1c = s1.where(~s1.apply(_is_empty_value), None)
+    s2c = s2.where(~s2.apply(_is_empty_value), None)
+    return s1c.combine_first(s2c)
+
+
+def _merge_json_by_join_key(primary_data: dict, attachment_data_list: list, join_key: str) -> list:
+    """Merge primary and attachment JSON data using true join-based approach"""
+    try:
+        # Import required dependencies
+        from utils.excel_converter import deep_flatten_json_universal
+        import pandas as pd
+        from io import StringIO
+
+        # Filter out internal columns starting with __
+        def filter_internal_columns(data: dict) -> dict:
+            return {k: v for k, v in data.items() if not k.startswith('__')}
+
+        # Apply deep flattening to primary data
+        primary_data_filtered = filter_internal_columns(primary_data)
+        flattened_primary = deep_flatten_json_universal(primary_data_filtered)
+        if not flattened_primary:
+            return []
+
+        # Create primary DataFrame
+        df_primary = pd.DataFrame(flattened_primary)
+
+        # Check if join key exists in primary data
+        if join_key not in df_primary.columns:
+            logger.warning(f"Join key '{join_key}' not found in primary data columns: {list(df_primary.columns)}")
+            return []
+
+        # Initialize results container (BUGFIX)
+        all_rows: list = []
+
+        # Process all attachments with new conflict resolution strategy
+        attachment_dataframes = []
+        for i, attachment_data in enumerate(attachment_data_list):
+            # Apply deep flattening to attachment data
+            attachment_data_filtered = filter_internal_columns(attachment_data)
+            flattened_attachment = deep_flatten_json_universal(attachment_data_filtered)
+            if not flattened_attachment:
+                logger.warning(f"Attachment {i+1} has no valid data after flattening")
+                continue
+
+            # Create attachment DataFrame
+            df_attachment = pd.DataFrame(flattened_attachment)
+
+            # Check if join key exists in attachment
+            if join_key not in df_attachment.columns:
+                logger.warning(f"Join key '{join_key}' not found in attachment {i+1}, skipping this attachment")
+                continue
+
+            attachment_dataframes.append(df_attachment)
+
+        # If no valid attachments, return primary data as-is
+        if not attachment_dataframes:
+            logger.info("No valid attachments found, returning primary data")
+            for _, row in df_primary.iterrows():
+                row_dict = {}
+                for col, val in row.items():
+                    if pd.isna(val):
+                        row_dict[col] = None
+                    elif isinstance(val, list):
+                        row_dict[col] = "|".join(str(v) for v in val)
+                    elif isinstance(val, dict):
+                        row_dict[col] = json.dumps(val, ensure_ascii=False)
+                    else:
+                        row_dict[col] = val
+                all_rows.append(row_dict)
+        else:
+            # Concatenate all attachment DataFrames
+            df_attach_all = pd.concat(attachment_dataframes, ignore_index=True)
+
+            # Find overlapping column names (excluding join_key)
+            overlap = (set(df_primary.columns) & set(df_attach_all.columns)) - {join_key}
+
+            # Rename conflicting columns
+            if overlap:
+                df_primary = df_primary.rename({c: f'{c}_1' for c in overlap}, axis=1)
+                df_attach_all = df_attach_all.rename({c: f'{c}_2' for c in overlap}, axis=1)
+
+            # Perform left join with primary data
+            df_merged = pd.merge(df_primary, df_attach_all, on=join_key, how='left')
+
+            # 根据新规则：对重复列，只保留同名列，值始终取主表（*_1），忽略附表（*_2）
+            for base in overlap:
+                c1, c2 = f"{base}_1", f"{base}_2"
+                if c1 in df_merged.columns:
+                    df_merged[base] = df_merged[c1]
+                # 删除后缀列
+                drop_cols = [c for c in (c1, c2) if c in df_merged.columns]
+                if drop_cols:
+                    df_merged.drop(columns=drop_cols, inplace=True)
+
+            # Convert to dictionary records
+            for _, row in df_merged.iterrows():
+                # Convert row to dict, handling NaN values
+                row_dict = {}
+                for col, val in row.items():
+                    if pd.isna(val):
+                        row_dict[col] = None
+                    elif isinstance(val, list):
+                        # Convert arrays to pipe-separated strings
+                        row_dict[col] = "|".join(str(v) for v in val)
+                    elif isinstance(val, dict):
+                        # Convert dicts to JSON strings
+                        row_dict[col] = json.dumps(val, ensure_ascii=False)
+                    else:
+                        row_dict[col] = val
+
+                all_rows.append(row_dict)
+
+        return all_rows
+
+    except Exception as e:
+        logger.error(f"Error in join-based merging: {str(e)}")
+        return []
+
+
+def _generate_primary_csv_response(primary_data: dict, order_id: int, item_id: int) -> FileResponse:
+    """Generate CSV response for primary data only"""
+    csv_content = convert_json_to_csv(primary_data)
+    escaped_content = escape_excel_formulas_in_csv(csv_content)
+    file_content_with_bom = b'\xef\xbb\xbf' + escaped_content.encode('utf-8')
+
+    import tempfile
+    import os
+    filename = f"order_{order_id}_item_{item_id}_primary.csv"
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
+        temp_file.write(file_content_with_bom)
+        temp_file_path = temp_file.name
+
+    response = FileResponse(
+        path=temp_file_path,
+        filename=filename,
+        media_type="text/csv; charset=utf-8",
+    )
+
+    response.headers["X-File-Source"] = "S3"
+    return response
+
+
+def _generate_merged_csv_response(merged_data: list, order_id: int, item_id: int, join_key: str, column_order: list = None) -> FileResponse:
+    """Generate CSV response for merged data with optional template column order"""
+    import tempfile
+    import os
+
+    # Use the extracted function to generate CSV content
+    csv_content = _render_merged_csv(merged_data, column_order)
+    file_content_with_bom = csv_content.encode('utf-8')
+
+    filename = f"order_{order_id}_item_{item_id}_merged_by_{join_key}.csv"
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
+        temp_file.write(file_content_with_bom)
+        temp_file_path = temp_file.name
+
+    response = FileResponse(
+        path=temp_file_path,
+        filename=filename,
+        media_type="text/csv; charset=utf-8",
+    )
+
+    response.headers["X-File-Source"] = "S3"
+    return response
+
+
+def _render_merged_csv(merged_data: list, column_order: list = None) -> str:
+    """Generate CSV string for merged data with optional template column order"""
+    import csv
+    from io import StringIO
+
+    output = StringIO()
+
+    if merged_data:
+        # Determine all unique columns and filter out internal columns
+        all_columns = set()
+        for row in merged_data:
+            # Filter out internal columns starting with __
+            filtered_row = {k: v for k, v in row.items() if not k.startswith('__')}
+            all_columns.update(filtered_row.keys())
+
+        if column_order:
+            # Use template column order with conflict resolution
+            ordered_fields = []
+
+            # First pass: add _1 versions of ordered columns
+            for col in column_order:
+                col_1 = f"{col}_1"
+                if col_1 in all_columns:
+                    ordered_fields.append(col_1)
+
+            # Second pass: add _2 versions of ordered columns
+            for col in column_order:
+                col_2 = f"{col}_2"
+                if col_2 in all_columns:
+                    ordered_fields.append(col_2)
+
+            # Third pass: add original versions of ordered columns
+            for col in column_order:
+                if col in all_columns and col not in ordered_fields:
+                    ordered_fields.append(col)
+
+            # Add remaining columns that aren't in column_order (alphabetical order)
+            remaining_columns = sorted(all_columns - set(ordered_fields))
+            final_columns = ordered_fields + remaining_columns
+        else:
+            # Default alphabetical ordering
+            final_columns = sorted(all_columns)
+
+        writer = csv.DictWriter(output, fieldnames=final_columns)
+        writer.writeheader()
+
+        # Write rows with internal column filtering
+        for row in merged_data:
+            filtered_row = {k: v for k, v in row.items() if not k.startswith('__')}
+            writer.writerow(filtered_row)
+
+    csv_content = output.getvalue()
+    escaped_content = escape_excel_formulas_in_csv(csv_content)
+    file_content_with_bom = b'\xef\xbb\xbf' + escaped_content.encode('utf-8')
+    return file_content_with_bom.decode('utf-8')
 
 
 # NOTE: get_suggested_mapping_keys endpoint removed - mapping key recommendation functionality no longer needed
