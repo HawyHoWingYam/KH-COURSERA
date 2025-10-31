@@ -287,20 +287,7 @@ export default function Upload() {
         }
       }
 
-      // 4. Upload mapping file if provided
-      if (mappingFile) {
-        const mappingFormData = new FormData();
-        mappingFormData.append('mapping_file', mappingFile);
-
-        const mappingResp = await fetch(`/api/orders/${orderId}/mapping-file`, {
-          method: 'POST',
-          body: mappingFormData
-        });
-
-        if (!mappingResp.ok) {
-          console.warn('Failed to upload mapping file');
-        }
-      }
+      // 4. Order-level mapping file workflow has been removed (per-item config is used instead)
 
       console.log('Order setup completed successfully');
 

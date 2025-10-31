@@ -25,6 +25,24 @@ interface OrderFinalReportPaths {
   [key: string]: string | undefined;
 }
 
+type MappingAttachmentSource = {
+  kind: string;
+  path: string;
+  label?: string | null;
+  metadata?: Record<string, any>;
+};
+
+interface ItemMappingConfig {
+  item_type?: string;
+  master_csv_path?: string;
+  external_join_keys?: string[];
+  internal_join_key?: string;
+  column_aliases?: Record<string, string>;
+  attachment_sources?: MappingAttachmentSource[];
+  notes?: string | null;
+  [key: string]: any;
+}
+
 interface OrderItem {
   item_id: number;
   order_id: number;
@@ -32,6 +50,7 @@ interface OrderItem {
   doc_type_id: number;
   item_name: string;
   status: string;
+  item_type: string;
   file_count: number; // Now represents attachments only
   company_name: string;
   doc_type_name: string;
@@ -53,6 +72,8 @@ interface OrderItem {
   attachment_count?: number;
   ocr_result_json_path: string | null;
   ocr_result_csv_path: string | null;
+  mapping_config?: ItemMappingConfig | null;
+  applied_template_id?: number | null;
   processing_started_at: string | null;
   processing_completed_at: string | null;
   processing_time_seconds: number | null;
@@ -68,13 +89,19 @@ interface Order {
   total_items: number;
   completed_items: number;
   failed_items: number;
-  mapping_file_path: string | null;
-  mapping_keys: string[] | null;
+  mapping_file_path?: string | null;
+  mapping_keys?: string[] | null;
   primary_doc_type_id: number | null;
   primary_doc_type: PrimaryDocTypeInfo | null;
   final_report_paths: OrderFinalReportPaths | null;
   error_message: string | null;
   items: OrderItem[];
+  item_mapping_summary?: Array<{
+    item_id: number;
+    item_type: string | null;
+    has_mapping_config: boolean;
+    applied_template_id?: number | null;
+  }>;
   created_at: string;
   updated_at: string;
 }
@@ -95,6 +122,7 @@ export default function OrderDetailsPage() {
   const [selectedCompany, setSelectedCompany] = useState<number | null>(null);
   const [selectedDocType, setSelectedDocType] = useState<number | null>(null);
   const [itemName, setItemName] = useState('');
+  const [newItemType, setNewItemType] = useState<'single_source' | 'multi_source'>('single_source');
   const [isAddingItem, setIsAddingItem] = useState(false);
 
   // File Upload State
@@ -119,13 +147,6 @@ export default function OrderDetailsPage() {
   // Download State
   const [downloadingFiles, setDownloadingFiles] = useState<{[key: string]: boolean}>({});
 
-  // Mapping File State
-  const [mappingFile, setMappingFile] = useState<File | null>(null);
-  const [mappingHeaders, setMappingHeaders] = useState<{[sheet: string]: string[]} | null>(null);
-  const [selectedMappingKeys, setSelectedMappingKeys] = useState<string[]>([]);
-  const [isUploadingMapping, setIsUploadingMapping] = useState(false);
-  const [isDeletingMapping, setIsDeletingMapping] = useState(false);
-  const [isUpdatingMappingKeys, setIsUpdatingMappingKeys] = useState(false);
   const [isStartingMapping, setIsStartingMapping] = useState(false);
 
   // CSV Merge Modal State - REMOVED
@@ -154,6 +175,21 @@ export default function OrderDetailsPage() {
   const [isRestartingOcr, setIsRestartingOcr] = useState(false);
   const [isRestartingMapping, setIsRestartingMapping] = useState(false);
 
+  // Mapping configuration modal state
+  const [mappingModalItem, setMappingModalItem] = useState<OrderItem | null>(null);
+  const [mappingForm, setMappingForm] = useState({
+    item_type: 'single_source',
+    master_csv_path: '',
+    external_join_keys: '',
+    internal_join_key: '',
+    column_aliases: '',
+    inherit_defaults: true,
+  });
+  const [mappingFormError, setMappingFormError] = useState('');
+  const [isSavingMappingConfig, setIsSavingMappingConfig] = useState(false);
+  const [csvPreview, setCsvPreview] = useState<{ headers: string[]; row_count: number } | null>(null);
+  const [isPreviewingCsv, setIsPreviewingCsv] = useState(false);
+
   useEffect(() => {
     loadOrder();
     loadCompanies();
@@ -168,18 +204,6 @@ export default function OrderDetailsPage() {
       }
       const data = await response.json();
       setOrder(data);
-
-      // Initialize selectedMappingKeys with existing mapping keys
-      if (data.mapping_keys && Array.isArray(data.mapping_keys)) {
-        setSelectedMappingKeys(data.mapping_keys);
-      } else {
-        setSelectedMappingKeys([]);
-      }
-
-      // Load mapping headers if mapping file exists
-      if (data.mapping_file_path) {
-        loadMappingHeaders();
-      }
 
       setError('');
     } catch (error) {
@@ -212,18 +236,7 @@ export default function OrderDetailsPage() {
     }
   };
 
-  const loadMappingHeaders = async () => {
-    try {
-      const response = await fetch(`/api/orders/${orderId}/mapping-headers`);
-      if (!response.ok) throw new Error('Failed to fetch mapping headers');
-      const data = await response.json();
-      setMappingHeaders(data.sheet_headers);
-    } catch (error) {
-      console.error('Error fetching mapping headers:', error);
-    }
-  };
-
-  const addOrderItem = async () => {
+    const addOrderItem = async () => {
     if (!selectedCompany || !selectedDocType) {
       setError('Please select both company and document type');
       return;
@@ -239,7 +252,8 @@ export default function OrderDetailsPage() {
         body: JSON.stringify({
           company_id: selectedCompany,
           doc_type_id: selectedDocType,
-          item_name: itemName || undefined
+          item_name: itemName || undefined,
+          item_type: newItemType,
         }),
       });
 
@@ -251,6 +265,7 @@ export default function OrderDetailsPage() {
       setSelectedCompany(null);
       setSelectedDocType(null);
       setItemName('');
+      setNewItemType('single_source');
       setShowAddItemModal(false);
 
       // Reload order to show new item
@@ -504,6 +519,143 @@ export default function OrderDetailsPage() {
     }
   };
 
+  const openMappingModal = (item: OrderItem) => {
+    const config = item.mapping_config || undefined;
+    const baseType = (config?.item_type || item.item_type || 'single_source').toLowerCase();
+    setMappingForm({
+      item_type: baseType,
+      master_csv_path: config?.master_csv_path || '',
+      external_join_keys: (config?.external_join_keys || []).join(', '),
+      internal_join_key: config?.internal_join_key || '',
+      column_aliases: config?.column_aliases
+        ? Object.entries(config.column_aliases)
+            .map(([left, right]) => `${left}:${right}`)
+            .join(', ')
+        : '',
+      inherit_defaults: !config,
+    });
+    setMappingFormError('');
+    setMappingModalItem(item);
+  };
+
+  const closeMappingModal = () => {
+    setMappingModalItem(null);
+    setMappingFormError('');
+  };
+
+  const handleMappingFormChange = <K extends keyof typeof mappingForm>(field: K, value: typeof mappingForm[K]) => {
+    setMappingForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const parseColumnAliasInput = (value: string) => {
+    const aliases: Record<string, string> = {};
+    value
+      .split(',')
+      .map((token) => token.trim())
+      .filter(Boolean)
+      .forEach((token) => {
+        const [left, right] = token.split(':').map((part) => part.trim());
+        if (left && right) {
+          aliases[left] = right;
+        }
+      });
+    return aliases;
+  };
+
+  const saveMappingConfig = async () => {
+    if (!mappingModalItem) {
+      return;
+    }
+
+    if (!mappingForm.inherit_defaults) {
+      if (!mappingForm.master_csv_path.trim()) {
+        setMappingFormError('Master CSV path is required.');
+        return;
+      }
+
+      if (mappingForm.item_type === 'multi_source' && !mappingForm.internal_join_key.trim()) {
+        setMappingFormError('Internal join key is required for multiple source mapping.');
+        return;
+      }
+    }
+
+    const payload: any = {
+      item_type: mappingForm.item_type,
+      inherit_defaults: mappingForm.inherit_defaults,
+    };
+
+    if (!mappingForm.inherit_defaults) {
+      payload.mapping_config = {
+        item_type: mappingForm.item_type,
+        master_csv_path: mappingForm.master_csv_path.trim(),
+        external_join_keys: mappingForm.external_join_keys
+          .split(',')
+          .map((key) => key.trim())
+          .filter(Boolean),
+        column_aliases: parseColumnAliasInput(mappingForm.column_aliases),
+      };
+
+      if (mappingForm.item_type === 'multi_source') {
+        payload.mapping_config.internal_join_key = mappingForm.internal_join_key.trim();
+      }
+    }
+
+    setIsSavingMappingConfig(true);
+    setMappingFormError('');
+    try {
+      const response = await fetch(`/api/orders/${orderId}/items/${mappingModalItem.item_id}/mapping-config`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to save mapping configuration');
+      }
+
+      closeMappingModal();
+      await loadOrder();
+    } catch (error) {
+      console.error('Error saving mapping configuration:', error);
+      setMappingFormError(
+        error instanceof Error ? error.message : 'Failed to save mapping configuration'
+      );
+    } finally {
+      setIsSavingMappingConfig(false);
+    }
+  };
+
+  const previewMasterCsv = async () => {
+    if (!mappingForm.master_csv_path.trim()) {
+      setMappingFormError('Please provide a Master CSV path to preview columns.');
+      return;
+    }
+    setIsPreviewingCsv(true);
+    setMappingFormError('');
+    try {
+      const resp = await fetch(`/api/mapping/master-csv/preview?path=${encodeURIComponent(mappingForm.master_csv_path.trim())}`);
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || 'Failed to preview master CSV');
+      }
+      const data = await resp.json();
+      setCsvPreview({ headers: data.headers || [], row_count: data.row_count || 0 });
+    } catch (err) {
+      console.error('Preview master CSV error:', err);
+      setCsvPreview(null);
+      setMappingFormError(err instanceof Error ? err.message : 'Failed to preview master CSV');
+    } finally {
+      setIsPreviewingCsv(false);
+    }
+  };
+
+  const formatMappingType = (value: string) => {
+    return value === 'multi_source' ? 'Multiple Source' : 'Single Source';
+  };
+
   const deleteFile = async (itemId: number, fileId: number, fileName: string) => {
     if (!window.confirm(`Are you sure you want to delete "${fileName}"?`)) {
       return;
@@ -605,104 +757,8 @@ export default function OrderDetailsPage() {
     }
   };
 
-  const uploadMappingFile = async () => {
-    if (!mappingFile) return;
-
-    setIsUploadingMapping(true);
-    try {
-      const formData = new FormData();
-      formData.append('mapping_file', mappingFile);
-
-      const response = await fetch(`/api/orders/${orderId}/mapping-file`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to upload mapping file');
-      }
-
-      // Load headers from uploaded file
-      await loadMappingHeaders();
-
-      // Reload order to show mapping file
-      loadOrder();
-    } catch (error) {
-      console.error('Error uploading mapping file:', error);
-      setError('Failed to upload mapping file');
-    } finally {
-      setIsUploadingMapping(false);
-    }
-  };
-
-  const deleteMappingFile = async () => {
-    if (!window.confirm('Are you sure you want to delete the mapping file?')) {
-      return;
-    }
-
-    setIsDeletingMapping(true);
-    try {
-      const response = await fetch(`/api/orders/${orderId}/mapping-file`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to delete mapping file');
-      }
-
-      // Clear mapping related state
-      setMappingHeaders(null);
-      setSelectedMappingKeys([]);
-
-      // Reload order to show updated mapping file status
-      loadOrder();
-    } catch (error) {
-      console.error('Error deleting mapping file:', error);
-      setError('Failed to delete mapping file');
-    } finally {
-      setIsDeletingMapping(false);
-    }
-  };
-
-  const updateMappingKeys = async () => {
-    setIsUpdatingMappingKeys(true);
-    setError('');
-    try {
-      const response = await fetch(`/api/orders/${orderId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          mapping_keys: selectedMappingKeys
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to update mapping keys');
-      }
-
-      // Show success feedback
-      setError('✅ Mapping keys saved successfully');
-      setTimeout(() => setError(''), 3000);
-
-      loadOrder();
-    } catch (error) {
-      console.error('Error updating mapping keys:', error);
-      setError(error instanceof Error ? error.message : 'Failed to update mapping keys');
-    } finally {
-      setIsUpdatingMappingKeys(false);
-    }
-  };
-
   const submitOrder = async () => {
     try {
-      // Save mapping keys first if they haven't been saved
-      if (selectedMappingKeys.length > 0 && JSON.stringify(selectedMappingKeys) !== JSON.stringify(order.mapping_keys || [])) {
-        await updateMappingKeys();
-      }
-
       const response = await fetch(`/api/orders/${orderId}/submit`, {
         method: 'POST',
       });
@@ -741,11 +797,6 @@ export default function OrderDetailsPage() {
     setIsStartingMapping(true);
     setError('');
     try {
-      // Save mapping keys first if they haven't been saved
-      if (selectedMappingKeys.length > 0 && JSON.stringify(selectedMappingKeys) !== JSON.stringify(order.mapping_keys || [])) {
-        await updateMappingKeys();
-      }
-
       const response = await fetch(`/api/orders/${orderId}/process-mapping`, {
         method: 'POST',
       });
@@ -787,11 +838,8 @@ export default function OrderDetailsPage() {
   };
 
   const applyOrderLevelSuggestion = (keyIndex: number, suggestedKey: string) => {
-    setSelectedMappingKeys(prev => {
-      const newKeys = [...prev];
-      newKeys[keyIndex] = suggestedKey;
-      return newKeys;
-    });
+    // No-op: order-level mapping keys workflow has been removed
+    console.log('Order-level suggestion ignored');
   };
 
   
@@ -1029,15 +1077,13 @@ export default function OrderDetailsPage() {
   const canEdit = order.status === 'DRAFT' && !isLocked;
   const canSubmit = order.status === 'DRAFT' && order.total_items > 0 && !isLocked;
   const canStartOcrOnly = order.status === 'DRAFT' && order.total_items > 0 && !isLocked;
-  // Use selectedMappingKeys (current user selection) if available, otherwise use saved mapping_keys
-  const effectiveMappingKeys = selectedMappingKeys.length > 0 ? selectedMappingKeys : (order.mapping_keys || []);
-  const canStartFullProcess = order.status === 'DRAFT' && order.total_items > 0 && order.mapping_file_path && effectiveMappingKeys.length > 0 && !isLocked;
-  const canStartMapping = hasDoneOcr(order.status) && order.mapping_file_path && effectiveMappingKeys.length > 0 && !isLocked && !hasDoneMapping(order.status);
+  const canStartFullProcess = order.status === 'DRAFT' && order.total_items > 0 && !isLocked;
+  const canStartMapping = hasDoneOcr(order.status) && !isLocked && order.items.length > 0;
   const canConfigureMapping = (order.status === 'DRAFT' || order.status === 'OCR_COMPLETED' || order.status === 'COMPLETED' || order.status === 'MAPPING') && !isLocked;
   const canLock = !isLocked && (order.status === 'COMPLETED' || order.status === 'OCR_COMPLETED' || order.status === 'FAILED');
   const canUnlock = isLocked;
   const canRestartOcr = !isLocked && hasDoneOcr(order.status);
-  const canRestartMapping = !isLocked && hasDoneMapping(order.status) && order.mapping_file_path;
+  const canRestartMapping = !isLocked && hasDoneMapping(order.status);
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -1472,6 +1518,72 @@ export default function OrderDetailsPage() {
                   {item.company_name} - {item.doc_type_name}
                 </div>
 
+                <div className="border-t border-gray-200 pt-3 mt-3">
+                  <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <div className="text-sm font-medium text-gray-700">
+                          Mapping Mode: {formatMappingType(item.item_type)}
+                        </div>
+                        {item.mapping_config ? (
+                        <div className="mt-1 text-xs text-gray-600 space-y-1">
+                          <div>
+                            <span className="font-medium">Master CSV:</span>{' '}
+                            {item.mapping_config.master_csv_path || '—'}
+                          </div>
+                          {item.mapping_config.external_join_keys && item.mapping_config.external_join_keys.length > 0 && (
+                            <div>
+                              <span className="font-medium">External Join Keys:</span>{' '}
+                              {item.mapping_config.external_join_keys.join(', ')}
+                            </div>
+                          )}
+                          {item.mapping_config.internal_join_key && (
+                            <div>
+                              <span className="font-medium">Internal Join Key:</span>{' '}
+                              {item.mapping_config.internal_join_key}
+                            </div>
+                          )}
+                          {item.mapping_config.column_aliases && Object.keys(item.mapping_config.column_aliases).length > 0 && (
+                            <div>
+                              <span className="font-medium">Column Aliases:</span>{' '}
+                              {Object.entries(item.mapping_config.column_aliases)
+                                .map(([left, right]) => `${left} → ${right}`)
+                                .join(', ')}
+                            </div>
+                          )}
+                          {item.mapping_config.attachment_sources && item.mapping_config.attachment_sources.length > 0 && (
+                            <div>
+                              <span className="font-medium">Attachment Sources:</span>{' '}
+                              {item.mapping_config.attachment_sources.map((source, index) => (
+                                <span key={index}>
+                                  {source.path}{source.metadata?.month ? ` (${source.metadata.month})` : ''}
+                                  {index < (item.mapping_config.attachment_sources?.length ?? 0) - 1 ? ', ' : ''}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-gray-500 mt-1">
+                          No saved mapping configuration. Defaults will be applied if available.
+                        </div>
+                      )}
+                      {item.applied_template_id && (
+                        <div className="text-xs text-blue-600 mt-1">
+                          Inherits Template #{item.applied_template_id}
+                        </div>
+                      )}
+                    </div>
+                    {canConfigureMapping && (
+                      <button
+                        onClick={() => openMappingModal(item)}
+                        className="bg-blue-600 hover:bg-blue-700 text-white py-1.5 px-3 rounded text-sm font-medium whitespace-nowrap"
+                      >
+                        Configure Mapping
+                      </button>
+                    )}
+                  </div>
+                </div>
+
                 {canEdit && (
                   <div className="space-y-3">
                     {/* The generic attachment upload button is intentionally removed
@@ -1596,133 +1708,7 @@ export default function OrderDetailsPage() {
         )}
       </div>
 
-      {/* Mapping Configuration Section */}
-      <div className="bg-white rounded-lg shadow p-6">
-        <div className="mb-4">
-          <h2 className="text-lg font-semibold">Mapping Configuration (Optional)</h2>
-          <p className="text-sm text-gray-600 mt-1">
-            You can submit the order for OCR processing first, then configure mapping after reviewing the results.
-          </p>
-        </div>
 
-        {canConfigureMapping && (
-          <div className="mb-6">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Upload Mapping File (Excel/CSV)
-            </label>
-            <div className="flex items-center gap-4">
-              <input
-                type="file"
-                accept=".xlsx,.csv"
-                onChange={(e) => setMappingFile(e.target.files?.[0] || null)}
-                className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-              />
-              <button
-                onClick={uploadMappingFile}
-                disabled={!mappingFile || isUploadingMapping}
-                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white py-2 px-4 rounded"
-              >
-                {isUploadingMapping ? 'Uploading...' : 'Upload'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {order.mapping_file_path && (
-          <div className="mb-4">
-            <div className="flex items-center justify-between">
-              <div className="text-sm text-green-600">
-                ✓ Mapping file uploaded
-              </div>
-              {canConfigureMapping && (
-                <button
-                  onClick={deleteMappingFile}
-                  disabled={isDeletingMapping}
-                  className="text-red-600 hover:text-red-800 disabled:text-gray-400 text-sm"
-                  title="Delete mapping file"
-                >
-                  {isDeletingMapping ? 'Deleting...' : 'Delete'}
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Order-Level Smart Recommendations functionality has been removed */}
-
-        {/* Order-Level Smart Recommendations display functionality has been removed */}
-
-        {mappingHeaders && (
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Select Mapping Keys (1-3 keys in priority order)
-            </label>
-            <div className="space-y-2 mb-4">
-              {[1, 2, 3].map((keyNum) => (
-                <div key={keyNum} className="flex items-center gap-2">
-                  <span className="text-sm font-medium w-16">Key {keyNum}:</span>
-                  <select
-                    value={selectedMappingKeys[keyNum - 1] || ''}
-                    onChange={(e) => {
-                      const newKeys = [...selectedMappingKeys];
-                      if (e.target.value) {
-                        // Ensure we have enough slots in the array
-                        while (newKeys.length <= keyNum - 1) {
-                          newKeys.push('');
-                        }
-                        newKeys[keyNum - 1] = e.target.value;
-                        // Remove empty trailing elements to keep array clean
-                        while (newKeys.length > 0 && newKeys[newKeys.length - 1] === '') {
-                          newKeys.pop();
-                        }
-                      } else {
-                        // Clear the value at this index
-                        if (keyNum - 1 < newKeys.length) {
-                          newKeys[keyNum - 1] = '';
-                          // Remove empty trailing elements
-                          while (newKeys.length > 0 && newKeys[newKeys.length - 1] === '') {
-                            newKeys.pop();
-                          }
-                        }
-                      }
-                      setSelectedMappingKeys(newKeys);
-                    }}
-                    className="border border-gray-300 rounded px-3 py-1 text-sm flex-1"
-                    disabled={!canConfigureMapping}
-                  >
-                    <option value="">Select column...</option>
-                    {Object.values(mappingHeaders).flat().map((header, index) => (
-                      <option key={index} value={header}>{header}</option>
-                    ))}
-                  </select>
-                </div>
-              ))}
-            </div>
-            {canConfigureMapping && selectedMappingKeys.some(key => key && key.trim() !== '') && (
-              <button
-                onClick={updateMappingKeys}
-                disabled={isUpdatingMappingKeys}
-                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white py-2 px-4 rounded"
-              >
-                {isUpdatingMappingKeys ? 'Saving...' : 'Save Mapping Keys'}
-              </button>
-            )}
-          </div>
-        )}
-
-        {order.mapping_keys && (
-          <div className="mt-4">
-            <div className="text-sm font-medium text-gray-700 mb-2">Current Mapping Keys:</div>
-            <div className="flex gap-2">
-              {order.mapping_keys.map((key, index) => (
-                <span key={index} className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-sm">
-                  {index + 1}. {key}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
 
       {/* Final Mapped Results Section - Show only for completed orders with mapped results */}
       {order.status === 'COMPLETED' && (
@@ -1833,6 +1819,37 @@ export default function OrderDetailsPage() {
               </div>
 
               <div>
+                <span className="block text-sm font-medium text-gray-700 mb-2">Mapping Mode</span>
+                <div className="flex items-center gap-4">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="new_item_type"
+                      value="single_source"
+                      checked={newItemType === 'single_source'}
+                      onChange={() => setNewItemType('single_source')}
+                      className="text-blue-600 focus:ring-blue-500"
+                    />
+                    Single Source
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="new_item_type"
+                      value="multi_source"
+                      checked={newItemType === 'multi_source'}
+                      onChange={() => setNewItemType('multi_source')}
+                      className="text-blue-600 focus:ring-blue-500"
+                    />
+                    Multiple Source
+                  </label>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  Single Source joins the primary PDF directly to a master CSV. Multiple Source expects primary-plus-attachments and merges them before lookup.
+                </p>
+              </div>
+
+              <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Item Name (Optional)
                 </label>
@@ -1869,7 +1886,162 @@ export default function OrderDetailsPage() {
         </div>
       )}
 
-      // CSV Merge Modal REMOVED - replaced with inline conditional download
+      {mappingModalItem && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-lg w-full max-w-xl p-6">
+            <h3 className="text-lg font-semibold mb-4">
+              Configure Mapping – {mappingModalItem.item_name}
+            </h3>
+            {mappingModalItem.applied_template_id && (
+              <div className="mb-4 text-xs text-blue-600">
+                {mappingForm.inherit_defaults
+                  ? `Will inherit template #${mappingModalItem.applied_template_id} (no overrides).`
+                  : `Currently applying template #${mappingModalItem.applied_template_id} with overrides below.`}
+              </div>
+            )}
+            <div className="space-y-4">
+              <div>
+                <span className="block text-sm font-medium text-gray-700 mb-2">Mapping Mode</span>
+                <div className="flex items-center gap-4">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="item_type"
+                      value="single_source"
+                      checked={mappingForm.item_type === 'single_source'}
+                      onChange={() => handleMappingFormChange('item_type', 'single_source')}
+                      className="text-blue-600 focus:ring-blue-500"
+                    />
+                    Single Source
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="item_type"
+                      value="multi_source"
+                      checked={mappingForm.item_type === 'multi_source'}
+                      onChange={() => handleMappingFormChange('item_type', 'multi_source')}
+                      className="text-blue-600 focus:ring-blue-500"
+                    />
+                    Multiple Source
+                  </label>
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={mappingForm.inherit_defaults}
+                  onChange={(e) => handleMappingFormChange('inherit_defaults', e.target.checked)}
+                />
+                Inherit company/document defaults (if available)
+              </label>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Master CSV Path</label>
+                <input
+                  type="text"
+                  value={mappingForm.master_csv_path}
+                  onChange={(e) => handleMappingFormChange('master_csv_path', e.target.value)}
+                  disabled={mappingForm.inherit_defaults}
+                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm disabled:bg-gray-100"
+                  placeholder="e.g. HYA-OCR/Master Data/TELECOM_USERS.csv"
+                />
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={previewMasterCsv}
+                    disabled={mappingForm.inherit_defaults || isPreviewingCsv || !mappingForm.master_csv_path.trim()}
+                    className="px-3 py-1 text-xs font-medium text-white bg-gray-700 hover:bg-gray-800 rounded disabled:bg-gray-300"
+                    title="Preview columns from the master CSV"
+                  >
+                    {isPreviewingCsv ? 'Loading…' : 'Preview Columns'}
+                  </button>
+                  {csvPreview && (
+                    <span className="text-xs text-gray-600">
+                      {csvPreview.headers.length} columns · {csvPreview.row_count} rows
+                    </span>
+                  )}
+                </div>
+                {csvPreview && csvPreview.headers.length > 0 && (
+                  <div className="mt-2 bg-gray-50 border border-gray-200 rounded p-2">
+                    <div className="text-xs text-gray-600 mb-1">Columns:</div>
+                    <div className="flex flex-wrap gap-1">
+                      {csvPreview.headers.slice(0, 24).map((h, i) => (
+                        <span key={i} className="text-[11px] bg-white border border-gray-300 rounded px-2 py-0.5">
+                          {h}
+                        </span>
+                      ))}
+                      {csvPreview.headers.length > 24 && (
+                        <span className="text-[11px] text-gray-500">+{csvPreview.headers.length - 24} more</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">External Join Keys</label>
+                <input
+                  type="text"
+                  value={mappingForm.external_join_keys}
+                  onChange={(e) => handleMappingFormChange('external_join_keys', e.target.value)}
+                  disabled={mappingForm.inherit_defaults}
+                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm disabled:bg-gray-100"
+                  placeholder="Comma separated, e.g. phone_number, account_id"
+                />
+              </div>
+
+              {mappingForm.item_type === 'multi_source' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Internal Join Key</label>
+                  <input
+                    type="text"
+                    value={mappingForm.internal_join_key}
+                    onChange={(e) => handleMappingFormChange('internal_join_key', e.target.value)}
+                    disabled={mappingForm.inherit_defaults}
+                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm disabled:bg-gray-100"
+                    placeholder="Common field between primary and attachments"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Column Aliases</label>
+                <textarea
+                  value={mappingForm.column_aliases}
+                  onChange={(e) => handleMappingFormChange('column_aliases', e.target.value)}
+                  disabled={mappingForm.inherit_defaults}
+                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm disabled:bg-gray-100"
+                  placeholder="Format: ocr_field:master_field, ..."
+                  rows={2}
+                />
+              </div>
+
+              {mappingFormError && (
+                <div className="text-sm text-red-600">{mappingFormError}</div>
+              )}
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={closeMappingModal}
+                className="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
+                disabled={isSavingMappingConfig}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveMappingConfig}
+                disabled={isSavingMappingConfig}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded disabled:bg-blue-300"
+              >
+                {isSavingMappingConfig ? 'Saving...' : 'Save Mapping'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

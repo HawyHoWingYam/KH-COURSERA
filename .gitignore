@@ -40,6 +40,7 @@ venv.bak/
 
 # Specific virtual environment directories
 GeminiOCR/backend/venv/
+GeminiOCR/backend/o365_token.txt
 
 # Database
 *.db
@@ -66,3 +67,4 @@ Thumbs.db
 GeminiOCR/env/.env.local
 GeminiOCR/env/.env.*
 !GeminiOCR/env/env.example
+node_modules/*

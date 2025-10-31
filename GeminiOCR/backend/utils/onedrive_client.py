@@ -106,6 +106,34 @@ class OneDriveClient:
             logger.error(f"❌ Error getting folder {folder_path}: {str(e)}")
             return None
 
+    def download_file_content(self, file_path: str) -> Optional[bytes]:
+        """Download file content by absolute OneDrive path.
+
+        Args:
+            file_path: Path to the file inside the drive (e.g., "HYA-OCR/Master Data/TELECOM_USERS.csv")
+
+        Returns:
+            File content as bytes, or None if not found/error.
+        """
+
+        if not self.drive:
+            logger.error("❌ Drive not connected. Call connect() first.")
+            return None
+
+        try:
+            normalized_path = file_path.strip('/')
+            file_item = self.drive.get_item_by_path(normalized_path)
+            if not file_item or not file_item.is_file:
+                logger.warning(f"⚠️ File not found or path is not a file: {file_path}")
+                return None
+
+            content = file_item.get_content()
+            logger.info(f"✅ Downloaded OneDrive file: {file_path}")
+            return content
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error(f"❌ Error downloading OneDrive file {file_path}: {exc}")
+            return None
+
     def list_new_files(
         self,
         folder: O365Folder,

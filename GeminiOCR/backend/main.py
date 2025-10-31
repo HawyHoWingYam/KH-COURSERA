@@ -1,7 +1,10 @@
 import google.generativeai as genai
 import os
 import PIL.Image
-import cv2
+try:
+    import cv2  # Optional; used only for advanced preprocessing
+except ImportError:  # pragma: no cover - environment without OpenCV
+    cv2 = None
 import numpy as np
 import json
 from datetime import datetime
@@ -161,6 +164,10 @@ def preprocess_image(image_path):
     """
     Enhance image to improve text detection.
     """
+    if cv2 is None:
+        # Fallback: return original path when OpenCV is unavailable
+        return image_path
+
     # Open the image
     image = cv2.imread(image_path)
     if image is None:

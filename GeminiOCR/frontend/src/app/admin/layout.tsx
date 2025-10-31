@@ -32,6 +32,12 @@ export default function AdminLayout({
             Configurations
           </Link>
           <Link
+            href="/admin/mapping"
+            className="block py-2 px-4 rounded hover:bg-slate-700"
+          >
+            Mapping Templates
+          </Link>
+          <Link
             href="/admin/usage"
             className="block py-2 px-4 rounded hover:bg-slate-700"
           >

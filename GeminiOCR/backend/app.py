@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 import os
 import shutil
 import tempfile
@@ -57,6 +57,9 @@ from db.models import (
     OrderStatus,
     OrderItemStatus,
     OneDriveSync,
+    MappingTemplate,
+    CompanyDocMappingDefault,
+    OrderItemType,
 )
 from main import extract_text_from_image, extract_text_from_pdf
 from utils.excel_converter import json_to_excel, json_to_csv
@@ -77,8 +80,15 @@ from utils.order_processor import (
     start_order_processing,
     start_order_ocr_only_processing,
     start_order_mapping_only_processing,
-    escape_excel_formulas
+    escape_excel_formulas,
 )
+from utils.order_processor import OrderProcessor
+from utils.mapping_config import (
+    MappingItemType,
+    normalise_mapping_config,
+    normalise_mapping_override,
+)
+from utils.mapping_config_resolver import MappingConfigResolver
 
 # Cost allocation imports
 from cost_allocation.dynamic_mapping_processor import process_dynamic_mapping_file
@@ -2611,6 +2621,8 @@ class CreateOrderItemRequest(BaseModel):
     company_id: int
     doc_type_id: int
     item_name: Optional[str] = None
+    item_type: Optional[str] = None
+    mapping_config: Optional[Dict[str, Any]] = None
 
 class OrderResponse(BaseModel):
     order_id: int
@@ -2642,14 +2654,77 @@ class OrderItemResponse(BaseModel):
     doc_type_id: int
     item_name: Optional[str]
     status: str
+    item_type: str
     file_count: int
     files: List[OrderItemFileResponse]
     company_name: Optional[str]
     doc_type_name: Optional[str]
     ocr_result_json_path: Optional[str]
     ocr_result_csv_path: Optional[str]
+    mapping_config: Optional[Dict[str, Any]]
+    applied_template_id: Optional[int]
     created_at: str
     updated_at: str
+
+
+class MappingConfigUpdateRequest(BaseModel):
+    item_type: Optional[str] = None
+    mapping_config: Dict[str, Any]
+    inherit_defaults: bool = True
+
+
+class MappingTemplatePayload(BaseModel):
+    template_name: str
+    item_type: MappingItemType
+    config: Dict[str, Any]
+    company_id: Optional[int] = None
+    doc_type_id: Optional[int] = None
+    priority: Optional[int] = 100
+
+
+class MappingTemplateResponse(BaseModel):
+    template_id: int
+    template_name: str
+    item_type: MappingItemType
+    company_id: Optional[int]
+    doc_type_id: Optional[int]
+    priority: int
+    config: Dict[str, Any]
+    created_at: str
+    updated_at: str
+
+
+class MappingDefaultPayload(BaseModel):
+    company_id: int
+    doc_type_id: int
+    item_type: MappingItemType = MappingItemType.SINGLE_SOURCE
+    template_id: Optional[int] = None
+    config_override: Optional[Dict[str, Any]] = None
+
+
+class MappingDefaultResponse(BaseModel):
+    default_id: int
+    company_id: int
+    doc_type_id: int
+    item_type: MappingItemType
+    template_id: Optional[int]
+    config_override: Optional[Dict[str, Any]]
+    created_at: str
+    updated_at: str
+
+
+class MappingTemplateUpdatePayload(BaseModel):
+    template_name: Optional[str] = None
+    item_type: Optional[MappingItemType] = None
+    config: Optional[Dict[str, Any]] = None
+    company_id: Optional[int] = None
+    doc_type_id: Optional[int] = None
+    priority: Optional[int] = None
+
+
+class MappingDefaultUpdatePayload(BaseModel):
+    template_id: Optional[int] = None
+    config_override: Optional[Dict[str, Any]] = None
 
 
 def _serialize_primary_doc_type(doc_type: Optional[DocumentType]) -> Optional[dict]:
@@ -2665,6 +2740,35 @@ def _serialize_primary_doc_type(doc_type: Optional[DocumentType]) -> Optional[di
         "template_json_path": doc_type.template_json_path,
         "template_version": extract_template_version_from_path(doc_type.template_json_path),
         "has_template": bool(doc_type.template_json_path),
+    }
+
+
+def _serialize_mapping_template(template: MappingTemplate) -> Dict[str, Any]:
+    item_type_value = template.item_type.value if isinstance(template.item_type, OrderItemType) else template.item_type
+    return {
+        "template_id": template.template_id,
+        "template_name": template.template_name,
+        "item_type": MappingItemType(item_type_value),
+        "company_id": template.company_id,
+        "doc_type_id": template.doc_type_id,
+        "priority": template.priority,
+        "config": template.config or {},
+        "created_at": template.created_at.isoformat() if template.created_at else None,
+        "updated_at": template.updated_at.isoformat() if template.updated_at else None,
+    }
+
+
+def _serialize_mapping_default(default: CompanyDocMappingDefault) -> Dict[str, Any]:
+    item_type_value = default.item_type.value if isinstance(default.item_type, OrderItemType) else default.item_type
+    return {
+        "default_id": default.default_id,
+        "company_id": default.company_id,
+        "doc_type_id": default.doc_type_id,
+        "item_type": MappingItemType(item_type_value),
+        "template_id": default.template_id,
+        "config_override": default.config_override or {},
+        "created_at": default.created_at.isoformat() if default.created_at else None,
+        "updated_at": default.updated_at.isoformat() if default.updated_at else None,
     }
 
 
@@ -2732,6 +2836,15 @@ def list_orders(
 
         order_data = []
         for order in orders:
+            mapping_summary = [
+                {
+                    "item_id": item.item_id,
+                    "item_type": item.item_type.value if item.item_type else None,
+                    "has_mapping_config": bool(item.mapping_config),
+                    "applied_template_id": item.applied_template_id,
+                }
+                for item in order.items
+            ]
             order_data.append({
                 "order_id": order.order_id,
                 "order_name": order.order_name,
@@ -2744,6 +2857,7 @@ def list_orders(
                 "mapping_file_path": order.mapping_file_path,
                 "mapping_keys": order.mapping_keys,
                 "final_report_paths": order.final_report_paths,
+                "item_mapping_summary": mapping_summary,
                 "created_at": order.created_at.isoformat(),
                 "updated_at": order.updated_at.isoformat()
             })
@@ -2810,6 +2924,7 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
                 "doc_type_id": item.doc_type_id,
                 "item_name": item.item_name,
                 "status": item.status.value,
+                 "item_type": item.item_type.value if item.item_type else OrderItemType.SINGLE_SOURCE.value,
                 "primary_file": primary_file,
                 "attachments": attachments,
                 "attachment_count": len(attachments),
@@ -2817,6 +2932,8 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
                 "doc_type_name": item.document_type.type_name if item.document_type else None,
                 "ocr_result_json_path": item.ocr_result_json_path,
                 "ocr_result_csv_path": item.ocr_result_csv_path,
+                "mapping_config": item.mapping_config,
+                "applied_template_id": item.applied_template_id,
                 "processing_started_at": item.processing_started_at.isoformat() if item.processing_started_at else None,
                 "processing_completed_at": item.processing_completed_at.isoformat() if item.processing_completed_at else None,
                 "processing_time_seconds": item.processing_time_seconds,
@@ -2839,6 +2956,15 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
             "final_report_paths": order.final_report_paths,
             "error_message": order.error_message,
             "items": items_data,
+            "item_mapping_summary": [
+                {
+                    "item_id": item.item_id,
+                    "item_type": item.item_type.value if item.item_type else None,
+                    "has_mapping_config": bool(item.mapping_config),
+                    "applied_template_id": item.applied_template_id,
+                }
+                for item in order.items
+            ],
             "created_at": order.created_at.isoformat(),
             "updated_at": order.updated_at.isoformat()
         }
@@ -2948,13 +3074,33 @@ def create_order_item(order_id: int, request: CreateOrderItemRequest, db: Sessio
         if not doc_type:
             raise HTTPException(status_code=404, detail="Document type not found")
 
+        requested_item_type = (request.item_type or OrderItemType.SINGLE_SOURCE.value).lower()
+        try:
+            item_type_enum = OrderItemType(requested_item_type)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Unsupported item_type")
+
+        resolver = MappingConfigResolver(db)
+        try:
+            resolved_config = resolver.resolve_for_item(
+                company_id=request.company_id,
+                doc_type_id=request.doc_type_id,
+                item_type=item_type_enum,
+                current_config=request.mapping_config,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
         # Create order item
         item = OcrOrderItem(
             order_id=order_id,
             company_id=request.company_id,
             doc_type_id=request.doc_type_id,
             item_name=request.item_name or f"{company.company_name} - {doc_type.type_name}",
-            status=OrderItemStatus.PENDING
+            status=OrderItemStatus.PENDING,
+            item_type=item_type_enum,
+            mapping_config=resolved_config.config if resolved_config else None,
+            applied_template_id=resolved_config.template_id if resolved_config else None,
         )
 
         db.add(item)
@@ -2973,6 +3119,9 @@ def create_order_item(order_id: int, request: CreateOrderItemRequest, db: Sessio
             "doc_type_id": item.doc_type_id,
             "item_name": item.item_name,
             "status": item.status.value,
+            "item_type": item.item_type.value,
+            "mapping_config": item.mapping_config,
+            "applied_template_id": item.applied_template_id,
             "message": "Order item created successfully"
         }
     except HTTPException:
@@ -3062,6 +3211,307 @@ def delete_order_item(
         db.rollback()
         logger.error(f"Failed to delete order item: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to delete order item: {str(e)}")
+
+
+@app.put("/orders/{order_id}/items/{item_id}/mapping-config", response_model=dict)
+def update_order_item_mapping_config(
+    order_id: int,
+    item_id: int,
+    request: MappingConfigUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    """Update mapping configuration for a specific order item."""
+
+    try:
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        item = (
+            db.query(OcrOrderItem)
+            .filter(
+                OcrOrderItem.item_id == item_id,
+                OcrOrderItem.order_id == order_id,
+            )
+            .first()
+        )
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        if order.status not in [OrderStatus.DRAFT, OrderStatus.MAPPING, OrderStatus.OCR_COMPLETED]:
+            raise HTTPException(status_code=400, detail="Mapping configuration can only be updated during DRAFT, OCR_COMPLETED or MAPPING states")
+
+        requested_type = (request.item_type or item.item_type.value).lower()
+        try:
+            item_type_enum = OrderItemType(requested_type)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Unsupported item_type")
+
+        mapping_item_type = MappingItemType(item_type_enum.value)
+
+        resolver = MappingConfigResolver(db)
+        payload_override = request.mapping_config or {}
+
+        if request.inherit_defaults:
+            try:
+                resolved = resolver.resolve_for_item(
+                    company_id=item.company_id,
+                    doc_type_id=item.doc_type_id,
+                    item_type=item_type_enum,
+                    current_config=payload_override,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+
+            if resolved is None:
+                raise HTTPException(status_code=400, detail="No defaults available for this item; provide mapping_config explicitly")
+
+            config_dict = resolved.config
+            applied_template_id = resolved.template_id
+            source = resolved.source
+        else:
+            if not payload_override:
+                raise HTTPException(status_code=400, detail="mapping_config payload is required when inherit_defaults is false")
+            try:
+                config_dict = normalise_mapping_config(mapping_item_type, payload_override)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            applied_template_id = item.applied_template_id
+            source = "manual"
+
+        item.item_type = item_type_enum
+        item.mapping_config = config_dict
+        item.applied_template_id = applied_template_id
+        item.updated_at = datetime.utcnow()
+        order.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(item)
+
+        return {
+            "item_id": item.item_id,
+            "order_id": item.order_id,
+            "item_type": item.item_type.value,
+            "mapping_config": item.mapping_config,
+            "applied_template_id": item.applied_template_id,
+            "source": source,
+            "message": "Mapping configuration updated successfully",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:  # pragma: no cover - defensive logging
+        db.rollback()
+        logger.error(f"Failed to update mapping config for order {order_id} item {item_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update mapping configuration: {str(e)}")
+
+
+@app.post("/mapping/templates", response_model=MappingTemplateResponse)
+def create_mapping_template(payload: MappingTemplatePayload, db: Session = Depends(get_db)):
+    try:
+        item_type_enum = OrderItemType(payload.item_type.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        normalized_config = normalise_mapping_config(payload.item_type, payload.config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    template = MappingTemplate(
+        template_name=payload.template_name,
+        item_type=item_type_enum,
+        config=normalized_config,
+        company_id=payload.company_id,
+        doc_type_id=payload.doc_type_id,
+        priority=payload.priority or 100,
+    )
+
+    db.add(template)
+    db.commit()
+    db.refresh(template)
+
+    return _serialize_mapping_template(template)
+
+
+@app.get("/mapping/templates", response_model=List[MappingTemplateResponse])
+def list_mapping_templates(
+    company_id: Optional[int] = None,
+    doc_type_id: Optional[int] = None,
+    item_type: Optional[MappingItemType] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(MappingTemplate)
+    if company_id is not None:
+        query = query.filter((MappingTemplate.company_id == company_id) | (MappingTemplate.company_id.is_(None)))
+    if doc_type_id is not None:
+        query = query.filter((MappingTemplate.doc_type_id == doc_type_id) | (MappingTemplate.doc_type_id.is_(None)))
+    if item_type is not None:
+        try:
+            item_type_enum = OrderItemType(item_type.value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        query = query.filter(MappingTemplate.item_type == item_type_enum)
+
+    templates = query.order_by(MappingTemplate.priority.asc(), MappingTemplate.template_id.asc()).all()
+    return [_serialize_mapping_template(template) for template in templates]
+
+
+@app.put("/mapping/templates/{template_id}", response_model=MappingTemplateResponse)
+def update_mapping_template(
+    template_id: int,
+    payload: MappingTemplateUpdatePayload,
+    db: Session = Depends(get_db),
+):
+    template = db.query(MappingTemplate).filter(MappingTemplate.template_id == template_id).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    if payload.template_name is not None:
+        template.template_name = payload.template_name
+
+    if payload.item_type is not None:
+        try:
+            template.item_type = OrderItemType(payload.item_type.value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    if payload.company_id is not None:
+        template.company_id = payload.company_id
+    if payload.doc_type_id is not None:
+        template.doc_type_id = payload.doc_type_id
+    if payload.priority is not None:
+        template.priority = payload.priority
+
+    if payload.config is not None:
+        try:
+            mapping_item_type = MappingItemType(template.item_type.value if isinstance(template.item_type, OrderItemType) else template.item_type)
+            template.config = normalise_mapping_config(mapping_item_type, payload.config)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    template.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(template)
+
+    return _serialize_mapping_template(template)
+
+
+@app.delete("/mapping/templates/{template_id}", response_model=dict)
+def delete_mapping_template(template_id: int, db: Session = Depends(get_db)):
+    template = db.query(MappingTemplate).filter(MappingTemplate.template_id == template_id).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    if template.defaults:
+        raise HTTPException(status_code=400, detail="Cannot delete template that is referenced by defaults")
+
+    db.delete(template)
+    db.commit()
+
+    return {"message": "Template deleted successfully"}
+
+
+@app.post("/mapping/defaults", response_model=MappingDefaultResponse)
+def upsert_mapping_default(payload: MappingDefaultPayload, db: Session = Depends(get_db)):
+    try:
+        item_type_enum = OrderItemType(payload.item_type.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    default_record = (
+        db.query(CompanyDocMappingDefault)
+        .filter(
+            CompanyDocMappingDefault.company_id == payload.company_id,
+            CompanyDocMappingDefault.doc_type_id == payload.doc_type_id,
+            CompanyDocMappingDefault.item_type == item_type_enum,
+        )
+        .first()
+    )
+
+    template = None
+    if payload.template_id is not None:
+        template = db.query(MappingTemplate).filter(MappingTemplate.template_id == payload.template_id).first()
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        if template.item_type != item_type_enum:
+            raise HTTPException(status_code=400, detail="Template item_type mismatch with default")
+
+    normalised_override = None
+    if payload.config_override is not None:
+        template_config: Optional[Dict[str, Any]] = None
+        if template and template.config:
+            template_config = template.config
+        elif (
+            default_record
+            and default_record.template
+            and default_record.template.config
+            and payload.template_id is None
+        ):
+            template_config = default_record.template.config
+
+        try:
+            normalised_override = normalise_mapping_override(
+                payload.item_type,
+                payload.config_override,
+                template_config=template_config,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    if default_record:
+        default_record.template_id = payload.template_id
+        default_record.config_override = normalised_override
+        default_record.updated_at = datetime.utcnow()
+    else:
+        default_record = CompanyDocMappingDefault(
+            company_id=payload.company_id,
+            doc_type_id=payload.doc_type_id,
+            item_type=item_type_enum,
+            template_id=payload.template_id,
+            config_override=normalised_override,
+        )
+        db.add(default_record)
+
+    db.commit()
+    db.refresh(default_record)
+
+    return _serialize_mapping_default(default_record)
+
+
+@app.get("/mapping/defaults", response_model=List[MappingDefaultResponse])
+def list_mapping_defaults(
+    company_id: Optional[int] = None,
+    doc_type_id: Optional[int] = None,
+    item_type: Optional[MappingItemType] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(CompanyDocMappingDefault)
+    if company_id is not None:
+        query = query.filter(CompanyDocMappingDefault.company_id == company_id)
+    if doc_type_id is not None:
+        query = query.filter(CompanyDocMappingDefault.doc_type_id == doc_type_id)
+    if item_type is not None:
+        try:
+            item_type_enum = OrderItemType(item_type.value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        query = query.filter(CompanyDocMappingDefault.item_type == item_type_enum)
+
+    defaults = query.order_by(CompanyDocMappingDefault.company_id.asc(), CompanyDocMappingDefault.doc_type_id.asc()).all()
+    return [_serialize_mapping_default(default) for default in defaults]
+
+
+@app.delete("/mapping/defaults/{default_id}", response_model=dict)
+def delete_mapping_default(default_id: int, db: Session = Depends(get_db)):
+    record = db.query(CompanyDocMappingDefault).filter(CompanyDocMappingDefault.default_id == default_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Default not found")
+
+    db.delete(record)
+    db.commit()
+
+    return {"message": "Default deleted successfully"}
 
 @app.post("/orders/{order_id}/submit", response_model=dict)
 def submit_order(order_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -3161,14 +3611,10 @@ def process_order_mapping_only(order_id: int, background_tasks: BackgroundTasks,
             raise HTTPException(status_code=404, detail="Order not found")
 
         if order.status not in [OrderStatus.OCR_COMPLETED, OrderStatus.MAPPING, OrderStatus.COMPLETED]:
-            raise HTTPException(status_code=400, detail="Can only process mapping for orders in OCR_COMPLETED, MAPPING, or COMPLETED status")
-
-        # Check if mapping configuration is complete
-        if not order.mapping_file_path:
-            raise HTTPException(status_code=400, detail="Mapping file is required for mapping processing")
-
-        if not order.mapping_keys or len(order.mapping_keys) == 0:
-            raise HTTPException(status_code=400, detail="Mapping keys are required for mapping processing")
+            raise HTTPException(
+                status_code=400,
+                detail="Can only process mapping for orders in OCR_COMPLETED, MAPPING, or COMPLETED status",
+            )
 
         # Validate that all items have OCR results
         items_without_ocr = db.query(OcrOrderItem).filter(
@@ -3922,158 +4368,51 @@ def upload_mapping_file(
     mapping_file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    """Upload mapping file to order"""
-    try:
-        # Verify order exists and is in DRAFT status
-        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
-        if not order:
-            raise HTTPException(status_code=404, detail="Order not found")
-
-        if order.status not in [OrderStatus.DRAFT, OrderStatus.OCR_COMPLETED]:
-            raise HTTPException(status_code=400, detail="Can only upload mapping file to orders in DRAFT or OCR_COMPLETED status")
-
-        # Validate file type (Excel and CSV supported)
-        if not (mapping_file.filename.lower().endswith('.xlsx') or mapping_file.filename.lower().endswith('.csv')):
-            raise HTTPException(status_code=400, detail="Mapping file must be an Excel (.xlsx) or CSV (.csv) file")
-
-        # Get file storage manager
-        file_storage = get_file_storage()
-
-        try:
-            # Save mapping file to storage using dedicated order mapping system
-            file_path, original_filename = file_storage.save_order_mapping_file(
-                mapping_file, order_id
-            )
-
-            # Update order with mapping file path
-            order.mapping_file_path = file_path
-            order.updated_at = datetime.utcnow()
-
-            db.commit()
-
-            return {
-                "message": "Mapping file uploaded successfully",
-                "mapping_file_path": file_path,
-                "filename": mapping_file.filename
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to save mapping file: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to save mapping file")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to upload mapping file: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to upload mapping file: {str(e)}")
+    """Deprecated: order-level mapping uploads are no longer supported."""
+    raise HTTPException(
+        status_code=410,
+        detail="Order-level mapping file uploads have been removed. Configure mapping per order item instead.",
+    )
 
 @app.get("/orders/{order_id}/mapping-headers", response_model=dict)
 def get_mapping_file_headers(order_id: int, db: Session = Depends(get_db)):
-    """Get headers from uploaded mapping file"""
-    try:
-        # Verify order exists and has mapping file
-        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
-        if not order:
-            raise HTTPException(status_code=404, detail="Order not found")
-
-        if not order.mapping_file_path:
-            raise HTTPException(status_code=404, detail="No mapping file uploaded for this order")
-
-        # Get file storage manager and read Excel headers
-        file_storage = get_file_storage()
-
-        try:
-            import pandas as pd
-            import tempfile
-            import os
-
-            # Determine file type and create temporary file with correct extension
-            file_content = file_storage.download_file(order.mapping_file_path)
-            file_extension = '.csv' if order.mapping_file_path.lower().endswith('.csv') else '.xlsx'
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
-                temp_file.write(file_content)
-                temp_file_path = temp_file.name
-
-            try:
-                sheet_headers = {}
-
-                if file_extension == '.csv':
-                    # Read CSV file and get headers
-                    df = pd.read_csv(temp_file_path, nrows=0)
-                    sheet_headers['Sheet1'] = list(df.columns)
-                else:
-                    # Read Excel file and get sheet names and headers
-                    excel_file = pd.ExcelFile(temp_file_path)
-
-                    for sheet_name in excel_file.sheet_names:
-                        df = pd.read_excel(temp_file_path, sheet_name=sheet_name, nrows=0)
-                        sheet_headers[sheet_name] = list(df.columns)
-
-                return {
-                    "order_id": order_id,
-                    "mapping_file_path": order.mapping_file_path,
-                    "sheet_headers": sheet_headers,
-                    "available_keys": list(set().union(*sheet_headers.values())) if sheet_headers else []
-                }
-
-            finally:
-                # Clean up temp file
-                os.unlink(temp_file_path)
-
-        except Exception as e:
-            logger.error(f"Failed to parse mapping file: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to parse mapping file: {str(e)}")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get mapping file headers: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get mapping file headers: {str(e)}")
+    """Deprecated: order-level mapping headers are no longer available."""
+    raise HTTPException(
+        status_code=410,
+        detail="Order-level mapping headers endpoint has been removed. Configure mapping per order item instead.",
+    )
 
 @app.delete("/orders/{order_id}/mapping-file", response_model=dict)
 def delete_mapping_file(order_id: int, db: Session = Depends(get_db)):
-    """Delete mapping file from order"""
+    """Deprecated: order-level mapping file removal is no longer supported."""
+    raise HTTPException(
+        status_code=410,
+        detail="Order-level mapping file workflow has been removed.",
+    )
+
+@app.get("/mapping/master-csv/preview", response_model=dict)
+def preview_master_csv(path: str = Query(..., description="OneDrive path to master CSV/Excel"), limit: int = Query(10, ge=1, le=100)):
+    """Preview headers and sample rows from a master CSV/Excel stored in OneDrive.
+
+    Lightweight connectivity check used by the UI to help select join keys.
+    """
     try:
-        # Verify order exists and is in DRAFT status
-        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
-        if not order:
-            raise HTTPException(status_code=404, detail="Order not found")
-
-        if order.status != OrderStatus.DRAFT:
-            raise HTTPException(status_code=400, detail="Can only delete mapping file from orders in DRAFT status")
-
-        if not order.mapping_file_path:
-            raise HTTPException(status_code=404, detail="No mapping file to delete")
-
-        # Delete file from storage using order file system
-        try:
-            file_storage = get_file_storage()
-            file_storage.delete_order_file(order.mapping_file_path)
-        except Exception as storage_error:
-            logger.warning(f"Failed to delete order mapping file from storage: {str(storage_error)}")
-            # Continue with database update even if storage deletion fails
-
-        # Clear mapping file info from order
-        order.mapping_file_path = None
-        order.mapping_keys = None
-        order.updated_at = datetime.utcnow()
-
-        db.commit()
-
+        processor = OrderProcessor()
+        # Reuse internal helper to fetch DataFrame from OneDrive; raises on errors
+        df = processor._get_master_csv_dataframe(path)  # pylint: disable=protected-access
+        headers = list(df.columns)
+        sample = df.head(limit).to_dict(orient="records")
         return {
-            "message": "Mapping file deleted successfully",
-            "order_id": order_id
+            "path": path,
+            "headers": headers,
+            "row_count": int(len(df)),
+            "sample": sample,
         }
-
     except HTTPException:
         raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to delete mapping file: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete mapping file: {str(e)}")
-
+    except Exception as exc:
+        logger.error("Failed to preview master CSV at %s: %s", path, exc)
+        raise HTTPException(status_code=400, detail=f"Failed to preview master CSV: {exc}")
 
 @app.get("/orders/{order_id}/items/{item_id}/download/json")
 def download_order_item_json(order_id: int, item_id: int, db: Session = Depends(get_db)):
@@ -4373,7 +4712,17 @@ def download_attachment_csv(order_id: int, item_id: int, file_id: int, db: Sessi
 
 # ========== CSV MERGE BY JOIN KEY ENDPOINT ==========
 @app.post("/orders/{order_id}/items/{item_id}/merge/csv")
-def merge_csv_by_join_key(order_id: int, item_id: int, join_key: str = Form(..., description="Column name to join on"), db: Session = Depends(get_db)):
+def merge_csv_by_join_key(
+    order_id: int,
+    item_id: int,
+    join_key: str = Form(..., description="Column name on the primary dataset to join on"),
+    join_type: str = Form("left", description="Join mode when merging attachments (left, inner, right, outer)"),
+    attachment_join_keys: Optional[str] = Form(
+        None,
+        description="JSON object mapping attachment identifiers to join key definitions",
+    ),
+    db: Session = Depends(get_db),
+):
     """Merge primary CSV with attachment CSVs using specified join key"""
     try:
         # Verify order and item exist
@@ -4406,6 +4755,70 @@ def merge_csv_by_join_key(order_id: int, item_id: int, join_key: str = Form(...,
 
         primary_data = json.loads(primary_content.decode('utf-8'))
 
+        allowed_join_types = {"left", "inner", "right", "outer"}
+        normalized_join_type = (join_type or "left").lower()
+        if normalized_join_type not in allowed_join_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported join_type '{join_type}'. Allowed values: {', '.join(sorted(allowed_join_types))}",
+            )
+
+        attachment_join_config: Dict[str, Any] = {}
+        if attachment_join_keys:
+            try:
+                parsed_config = json.loads(attachment_join_keys)
+                if not isinstance(parsed_config, dict):
+                    raise ValueError("attachment_join_keys must be a JSON object")
+                attachment_join_config = parsed_config
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to parse attachment_join_keys: {exc}",
+                )
+
+        def _resolve_attachment_config(identifier: str, index: int) -> Dict[str, Any]:
+            config_value: Any = None
+            if identifier in attachment_join_config:
+                config_value = attachment_join_config[identifier]
+            elif str(index) in attachment_join_config:
+                config_value = attachment_join_config[str(index)]
+            elif "__default__" in attachment_join_config:
+                config_value = attachment_join_config["__default__"]
+
+            resolved_primary = join_key
+            resolved_attachment = join_key
+            resolved_join_type = normalized_join_type
+
+            if isinstance(config_value, str):
+                resolved_attachment = config_value
+            elif isinstance(config_value, dict):
+                if "primary_key" in config_value and config_value["primary_key"]:
+                    resolved_primary = str(config_value["primary_key"])
+                if "attachment_key" in config_value and config_value["attachment_key"]:
+                    resolved_attachment = str(config_value["attachment_key"])
+                elif "join_key" in config_value and config_value["join_key"]:
+                    resolved_attachment = str(config_value["join_key"])
+
+                custom_join_type = config_value.get("join_type")
+                if isinstance(custom_join_type, str):
+                    lowered = custom_join_type.lower()
+                    if lowered in allowed_join_types:
+                        resolved_join_type = lowered
+                    else:
+                        logger.warning(
+                            f"Ignoring unsupported join_type '{custom_join_type}' for attachment {identifier}"
+                        )
+            elif config_value is not None:
+                logger.warning(
+                    f"Attachment join configuration for {identifier} must be a string or object; got {type(config_value).__name__}"
+                )
+
+            return {
+                "primary_key": resolved_primary,
+                "attachment_key": resolved_attachment,
+                "join_type": resolved_join_type,
+            }
+
         # Get all attachment files for this item
         attachments = db.query(OrderItemFile).filter(
             OrderItemFile.item_id == item_id,
@@ -4418,20 +4831,41 @@ def merge_csv_by_join_key(order_id: int, item_id: int, join_key: str = Form(...,
             return _generate_primary_csv_response(primary_data, order_id, item_id)
 
         # Load attachment data
-        attachment_data_list = []
-        for file_link in attachments:
+        attachment_contexts = []
+        for idx, file_link in enumerate(attachments):
             try:
                 attachment_path = f"upload/results/orders/{item_id // 1000}/items/{item_id}/files/file_{file_link.file_id}_result.json"
                 attachment_content = s3_manager.download_file_by_stored_path(attachment_path)
                 if attachment_content:
                     attachment_data = json.loads(attachment_content.decode('utf-8'))
-                    attachment_data_list.append(attachment_data)
-                    logger.info(f"Loaded attachment {file_link.file_id} for merging")
+                    join_config = _resolve_attachment_config(str(file_link.file_id), idx)
+                    attachment_contexts.append(
+                        {
+                            "data": attachment_data,
+                            "file_id": file_link.file_id,
+                            "primary_key": join_config["primary_key"],
+                            "attachment_key": join_config["attachment_key"],
+                            "join_type": join_config["join_type"],
+                            "label": f"file_{file_link.file_id}",
+                        }
+                    )
+                    logger.info(
+                        "Loaded attachment %s for merging using primary_key=%s, attachment_key=%s, join_type=%s",
+                        file_link.file_id,
+                        join_config["primary_key"],
+                        join_config["attachment_key"],
+                        join_config["join_type"],
+                    )
             except Exception as e:
                 logger.warning(f"Failed to load attachment {file_link.file_id}: {e}")
 
         # Merge data
-        merged_data = _merge_json_by_join_key(primary_data, attachment_data_list, join_key)
+        merged_data = _merge_json_by_join_key(
+            primary_data,
+            attachment_contexts,
+            join_key,
+            join_type=normalized_join_type,
+        )
 
         # Safety improvement: fallback to primary CSV if merge returns empty data
         if not merged_data:
@@ -4603,19 +5037,47 @@ def _series_coalesce(s1, s2):
     return s1c.combine_first(s2c)
 
 
-def _merge_json_by_join_key(primary_data: dict, attachment_data_list: list, join_key: str) -> list:
-    """Merge primary and attachment JSON data using true join-based approach"""
+def _merge_json_by_join_key(
+    primary_data: dict,
+    attachment_data_list: list,
+    join_key: str,
+    *,
+    join_type: str = "left",
+) -> list:
+    """Merge primary and attachment JSON data using join-based approach with per-attachment configuration."""
     try:
-        # Import required dependencies
         from utils.excel_converter import deep_flatten_json_universal
         import pandas as pd
-        from io import StringIO
 
         # Filter out internal columns starting with __
         def filter_internal_columns(data: dict) -> dict:
             return {k: v for k, v in data.items() if not k.startswith('__')}
 
-        # Apply deep flattening to primary data
+        def dataframe_to_rows(df: pd.DataFrame) -> list:
+            rows = []
+            for _, row in df.iterrows():
+                row_dict = {}
+                for col, val in row.items():
+                    if pd.isna(val):
+                        row_dict[col] = None
+                    elif isinstance(val, list):
+                        row_dict[col] = "|".join(str(v) for v in val)
+                    elif isinstance(val, dict):
+                        row_dict[col] = json.dumps(val, ensure_ascii=False)
+                    else:
+                        row_dict[col] = val
+                rows.append(row_dict)
+            return rows
+
+        allowed_join_types = {"left", "inner", "right", "outer"}
+        default_join_type = (join_type or "left").lower()
+        if default_join_type not in allowed_join_types:
+            logger.warning(
+                "Invalid join_type '%s' supplied to _merge_json_by_join_key; defaulting to 'left'",
+                join_type,
+            )
+            default_join_type = "left"
+
         primary_data_filtered = filter_internal_columns(primary_data)
         flattened_primary = deep_flatten_json_universal(primary_data_filtered)
         if not flattened_primary:
@@ -4629,88 +5091,108 @@ def _merge_json_by_join_key(primary_data: dict, attachment_data_list: list, join
             logger.warning(f"Join key '{join_key}' not found in primary data columns: {list(df_primary.columns)}")
             return []
 
-        # Initialize results container (BUGFIX)
-        all_rows: list = []
+        # Normalize attachment payloads so each entry has metadata
+        attachment_contexts = []
+        for idx, entry in enumerate(attachment_data_list or []):
+            if isinstance(entry, dict) and "data" in entry:
+                attachment_data = entry.get("data")
+                primary_key = entry.get("primary_key") or join_key
+                attachment_key = entry.get("attachment_key") or primary_key
+                context_join_type = entry.get("join_type") or default_join_type
+                label = entry.get("label") or f"attachment_{entry.get('file_id', idx + 1)}"
+            else:
+                attachment_data = entry
+                primary_key = join_key
+                attachment_key = join_key
+                context_join_type = default_join_type
+                label = f"attachment_{idx + 1}"
 
-        # Process all attachments with new conflict resolution strategy
-        attachment_dataframes = []
-        for i, attachment_data in enumerate(attachment_data_list):
-            # Apply deep flattening to attachment data
+            if attachment_data is None:
+                logger.warning(f"Attachment {label} has no data, skipping")
+                continue
+
+            normalized_join_type = (
+                context_join_type.lower() if isinstance(context_join_type, str) else default_join_type
+            )
+            if normalized_join_type not in allowed_join_types:
+                logger.warning(
+                    "Invalid join_type '%s' supplied for %s; defaulting to '%s'",
+                    context_join_type,
+                    label,
+                    default_join_type,
+                )
+                normalized_join_type = default_join_type
+
+            attachment_contexts.append(
+                {
+                    "data": attachment_data,
+                    "primary_key": primary_key,
+                    "attachment_key": attachment_key,
+                    "join_type": normalized_join_type,
+                    "label": label,
+                }
+            )
+
+        # No attachments - return primary dataset as rows
+        if not attachment_contexts:
+            return dataframe_to_rows(df_primary)
+
+        df_current = df_primary.copy()
+
+        for context in attachment_contexts:
+            attachment_data = context["data"]
+            left_key = context["primary_key"]
+            right_key = context["attachment_key"]
+            current_join_type = context["join_type"]
+            label = context["label"]
+
             attachment_data_filtered = filter_internal_columns(attachment_data)
             flattened_attachment = deep_flatten_json_universal(attachment_data_filtered)
             if not flattened_attachment:
-                logger.warning(f"Attachment {i+1} has no valid data after flattening")
+                logger.warning(f"{label} has no valid data after flattening, skipping")
                 continue
 
-            # Create attachment DataFrame
             df_attachment = pd.DataFrame(flattened_attachment)
 
-            # Check if join key exists in attachment
-            if join_key not in df_attachment.columns:
-                logger.warning(f"Join key '{join_key}' not found in attachment {i+1}, skipping this attachment")
+            if left_key not in df_current.columns:
+                logger.warning(
+                    "Join key '%s' not present in primary dataset when processing %s; skipping attachment",
+                    left_key,
+                    label,
+                )
+                continue
+            if right_key not in df_attachment.columns:
+                logger.warning(
+                    "Join key '%s' not present in %s; skipping attachment",
+                    right_key,
+                    label,
+                )
                 continue
 
-            attachment_dataframes.append(df_attachment)
+            overlap = (set(df_current.columns) & set(df_attachment.columns)) - {left_key, right_key}
+            suffix = f"__{label}"
+            rename_map = {col: f"{col}{suffix}" for col in overlap}
+            df_attachment_renamed = df_attachment.rename(columns=rename_map)
 
-        # If no valid attachments, return primary data as-is
-        if not attachment_dataframes:
-            logger.info("No valid attachments found, returning primary data")
-            for _, row in df_primary.iterrows():
-                row_dict = {}
-                for col, val in row.items():
-                    if pd.isna(val):
-                        row_dict[col] = None
-                    elif isinstance(val, list):
-                        row_dict[col] = "|".join(str(v) for v in val)
-                    elif isinstance(val, dict):
-                        row_dict[col] = json.dumps(val, ensure_ascii=False)
-                    else:
-                        row_dict[col] = val
-                all_rows.append(row_dict)
-        else:
-            # Concatenate all attachment DataFrames
-            df_attach_all = pd.concat(attachment_dataframes, ignore_index=True)
+            df_merged = pd.merge(
+                df_current,
+                df_attachment_renamed,
+                left_on=left_key,
+                right_on=right_key,
+                how=current_join_type,
+            )
 
-            # Find overlapping column names (excluding join_key)
-            overlap = (set(df_primary.columns) & set(df_attach_all.columns)) - {join_key}
+            if left_key != right_key and right_key in df_merged.columns:
+                df_merged.drop(columns=[right_key], inplace=True)
 
-            # Rename conflicting columns
-            if overlap:
-                df_primary = df_primary.rename({c: f'{c}_1' for c in overlap}, axis=1)
-                df_attach_all = df_attach_all.rename({c: f'{c}_2' for c in overlap}, axis=1)
+            for original_col, renamed_col in rename_map.items():
+                if renamed_col in df_merged.columns:
+                    df_merged[original_col] = _series_coalesce(df_merged[original_col], df_merged[renamed_col])
+                    df_merged.drop(columns=[renamed_col], inplace=True)
 
-            # Perform left join with primary data
-            df_merged = pd.merge(df_primary, df_attach_all, on=join_key, how='left')
+            df_current = df_merged
 
-            # 根据新规则：对重复列，只保留同名列，值始终取主表（*_1），忽略附表（*_2）
-            for base in overlap:
-                c1, c2 = f"{base}_1", f"{base}_2"
-                if c1 in df_merged.columns:
-                    df_merged[base] = df_merged[c1]
-                # 删除后缀列
-                drop_cols = [c for c in (c1, c2) if c in df_merged.columns]
-                if drop_cols:
-                    df_merged.drop(columns=drop_cols, inplace=True)
-
-            # Convert to dictionary records
-            for _, row in df_merged.iterrows():
-                # Convert row to dict, handling NaN values
-                row_dict = {}
-                for col, val in row.items():
-                    if pd.isna(val):
-                        row_dict[col] = None
-                    elif isinstance(val, list):
-                        # Convert arrays to pipe-separated strings
-                        row_dict[col] = "|".join(str(v) for v in val)
-                    elif isinstance(val, dict):
-                        # Convert dicts to JSON strings
-                        row_dict[col] = json.dumps(val, ensure_ascii=False)
-                    else:
-                        row_dict[col] = val
-
-                all_rows.append(row_dict)
-
-        return all_rows
+        return dataframe_to_rows(df_current)
 
     except Exception as e:
         logger.error(f"Error in join-based merging: {str(e)}")
@@ -5475,10 +5957,19 @@ def restart_mapping_processing(order_id: int, db: Session = Depends(get_db)):
 
         # Enhanced logging: Log order details before processing
         logger.info(f"🚀 Order {order_id} mapping processing restarted - Enhanced logging enabled")
-        logger.info(f"   Order details: name='{order.order_name}', status='{order.status}', primary_doc_type_id={order.primary_doc_type_id}")
-        logger.info(f"   Mapping file: {order.mapping_file_path}")
-        logger.info(f"   Mapping keys: {order.mapping_keys}")
-        logger.info(f"   Final reports before restart: {order.final_report_paths}")
+        logger.info(
+            "   Order details: name='%s', status='%s', primary_doc_type_id=%s",
+            order.order_name,
+            order.status,
+            order.primary_doc_type_id,
+        )
+        logger.info("   Final reports before restart: %s", order.final_report_paths)
+
+        item_config_count = db.query(OcrOrderItem).filter(
+            OcrOrderItem.order_id == order_id,
+            OcrOrderItem.mapping_config.isnot(None)
+        ).count()
+        logger.info("   Items with stored mapping config: %s", item_config_count)
 
         # Log template details if available
         if order.primary_doc_type_id:
