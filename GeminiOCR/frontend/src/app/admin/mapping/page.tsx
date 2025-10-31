@@ -132,6 +132,12 @@ export default function MappingAdminPage() {
   const removeDefaultAttachmentRule = (idx: number) => setDefaultAttachmentRules(prev => prev.filter((_, i) => i !== idx));
   const [isSubmittingTemplate, setIsSubmittingTemplate] = useState(false);
   const [isSubmittingDefault, setIsSubmittingDefault] = useState(false);
+  // Master CSV preview state (template)
+  const [tplCsvPreview, setTplCsvPreview] = useState<{ headers: string[]; row_count: number } | null>(null);
+  const [isPreviewingTplCsv, setIsPreviewingTplCsv] = useState(false);
+  // Master CSV preview state (default override)
+  const [defCsvPreview, setDefCsvPreview] = useState<{ headers: string[]; row_count: number } | null>(null);
+  const [isPreviewingDefCsv, setIsPreviewingDefCsv] = useState(false);
 
   const companyLookup = useMemo(() => {
     const map = new Map<number, Company>();
@@ -199,6 +205,30 @@ export default function MappingAdminPage() {
       [field]: value,
     }));
   };
+  const parseTplJoinKeys = (): string[] => templateForm.external_join_keys.split(',').map(k => k.trim()).filter(Boolean);
+  const toggleTplJoinKey = (key: string) => {
+    const set = new Set(parseTplJoinKeys());
+    set.has(key) ? set.delete(key) : set.add(key);
+    setTemplateForm(prev => ({ ...prev, external_join_keys: Array.from(set).join(', ') }));
+  };
+  const previewTplCsv = async () => {
+    if (!templateForm.master_csv_path.trim()) return;
+    setIsPreviewingTplCsv(true);
+    try {
+      const resp = await fetch(`/api/mapping/master-csv/preview?path=${encodeURIComponent(templateForm.master_csv_path.trim())}`);
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || 'Failed to preview master CSV');
+      }
+      const data = await resp.json();
+      setTplCsvPreview({ headers: data.headers || [], row_count: data.row_count || 0 });
+    } catch (e) {
+      console.error(e);
+      setTplCsvPreview(null);
+    } finally {
+      setIsPreviewingTplCsv(false);
+    }
+  };
 
   // Attachment rules for template config (multi-source)
   type AttachmentRule = { filename_contains?: string; join_key?: string };
@@ -221,6 +251,30 @@ export default function MappingAdminPage() {
       ...prev,
       [field]: value,
     }));
+  };
+  const parseDefJoinKeys = (): string[] => defaultForm.external_join_keys.split(',').map(k => k.trim()).filter(Boolean);
+  const toggleDefJoinKey = (key: string) => {
+    const set = new Set(parseDefJoinKeys());
+    set.has(key) ? set.delete(key) : set.add(key);
+    setDefaultForm(prev => ({ ...prev, external_join_keys: Array.from(set).join(', ') }));
+  };
+  const previewDefCsv = async () => {
+    if (!defaultForm.master_csv_path.trim()) return;
+    setIsPreviewingDefCsv(true);
+    try {
+      const resp = await fetch(`/api/mapping/master-csv/preview?path=${encodeURIComponent(defaultForm.master_csv_path.trim())}`);
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || 'Failed to preview master CSV');
+      }
+      const data = await resp.json();
+      setDefCsvPreview({ headers: data.headers || [], row_count: data.row_count || 0 });
+    } catch (e) {
+      console.error(e);
+      setDefCsvPreview(null);
+    } finally {
+      setIsPreviewingDefCsv(false);
+    }
   };
 
   const submitTemplate = async (event: React.FormEvent) => {
@@ -510,6 +564,43 @@ export default function MappingAdminPage() {
                   placeholder="OneDrive path, e.g. HYA-OCR/Master Data/TELECOM_USERS.csv"
                   required
                 />
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={previewTplCsv}
+                    disabled={isPreviewingTplCsv || !templateForm.master_csv_path.trim()}
+                    className="px-3 py-1 text-xs font-medium text-white bg-gray-700 hover:bg-gray-800 rounded disabled:bg-gray-300"
+                  >
+                    {isPreviewingTplCsv ? 'Loading…' : 'Preview Columns'}
+                  </button>
+                  {tplCsvPreview && (
+                    <span className="text-xs text-gray-600">{tplCsvPreview.headers.length} columns · {tplCsvPreview.row_count} rows</span>
+                  )}
+                </div>
+                {tplCsvPreview && tplCsvPreview.headers.length > 0 && (
+                  <div className="mt-2 bg-gray-50 border border-gray-200 rounded p-2">
+                    <div className="text-xs text-gray-600 mb-1">Columns (click to toggle in External Join Keys):</div>
+                    <div className="flex flex-wrap gap-1">
+                      {tplCsvPreview.headers.slice(0, 24).map((h, i) => {
+                        const selected = parseTplJoinKeys().includes(h);
+                        return (
+                          <button
+                            type="button"
+                            key={i}
+                            onClick={() => toggleTplJoinKey(h)}
+                            className={`text-[11px] border rounded px-2 py-0.5 ${selected ? 'bg-blue-600 text-white border-blue-700' : 'bg-white text-gray-800 border-gray-300'}`}
+                            title={selected ? 'Remove from join keys' : 'Add to join keys'}
+                          >
+                            {h}
+                          </button>
+                        );
+                      })}
+                      {tplCsvPreview.headers.length > 24 && (
+                        <span className="text-[11px] text-gray-500">+{tplCsvPreview.headers.length - 24} more</span>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -760,16 +851,53 @@ export default function MappingAdminPage() {
 
               {defaultForm.override_enabled && (
                 <>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Master CSV Override</label>
-                    <input
-                      type="text"
-                      value={defaultForm.master_csv_path}
-                      onChange={(e) => handleDefaultInput('master_csv_path', e.target.value)}
-                      className="w-full border border-gray-300 rounded px-3 py-2"
-                      placeholder="Override path if different for this company/doc type"
-                    />
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Master CSV Override</label>
+                <input
+                  type="text"
+                  value={defaultForm.master_csv_path}
+                  onChange={(e) => handleDefaultInput('master_csv_path', e.target.value)}
+                  className="w-full border border-gray-300 rounded px-3 py-2"
+                  placeholder="Override path if different for this company/doc type"
+                />
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={previewDefCsv}
+                    disabled={isPreviewingDefCsv || !defaultForm.master_csv_path.trim()}
+                    className="px-3 py-1 text-xs font-medium text-white bg-gray-700 hover:bg-gray-800 rounded disabled:bg-gray-300"
+                  >
+                    {isPreviewingDefCsv ? 'Loading…' : 'Preview Columns'}
+                  </button>
+                  {defCsvPreview && (
+                    <span className="text-xs text-gray-600">{defCsvPreview.headers.length} columns · {defCsvPreview.row_count} rows</span>
+                  )}
+                </div>
+                {defCsvPreview && defCsvPreview.headers.length > 0 && (
+                  <div className="mt-2 bg-gray-50 border border-gray-200 rounded p-2">
+                    <div className="text-xs text-gray-600 mb-1">Columns (click to toggle in External Join Keys):</div>
+                    <div className="flex flex-wrap gap-1">
+                      {defCsvPreview.headers.slice(0, 24).map((h, i) => {
+                        const selected = parseDefJoinKeys().includes(h);
+                        return (
+                          <button
+                            type="button"
+                            key={i}
+                            onClick={() => toggleDefJoinKey(h)}
+                            className={`text-[11px] border rounded px-2 py-0.5 ${selected ? 'bg-blue-600 text-white border-blue-700' : 'bg-white text-gray-800 border-gray-300'}`}
+                            title={selected ? 'Remove from join keys' : 'Add to join keys'}
+                          >
+                            {h}
+                          </button>
+                        );
+                      })}
+                      {defCsvPreview.headers.length > 24 && (
+                        <span className="text-[11px] text-gray-500">+{defCsvPreview.headers.length - 24} more</span>
+                      )}
+                    </div>
                   </div>
+                )}
+              </div>
 
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">External Join Keys Override</label>
@@ -782,18 +910,51 @@ export default function MappingAdminPage() {
                     />
                   </div>
 
-                  {defaultForm.item_type === 'multi_source' && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Internal Join Key Override</label>
-                      <input
-                        type="text"
-                        value={defaultForm.internal_join_key}
-                        onChange={(e) => handleDefaultInput('internal_join_key', e.target.value)}
-                        className="w-full border border-gray-300 rounded px-3 py-2"
-                        placeholder="e.g. phone_number"
-                      />
+              {defaultForm.item_type === 'multi_source' && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Internal Join Key Override</label>
+                    <input
+                      type="text"
+                      value={defaultForm.internal_join_key}
+                      onChange={(e) => handleDefaultInput('internal_join_key', e.target.value)}
+                      className="w-full border border-gray-300 rounded px-3 py-2"
+                      placeholder="e.g. phone_number"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Attachment Rules Override</label>
+                    <div className="space-y-2">
+                      {defaultAttachmentRules.map((rule, idx) => (
+                        <div key={idx} className="flex items-end gap-2">
+                          <div className="flex-1">
+                            <label className="block text-xs text-gray-600 mb-1">Filename Contains</label>
+                            <input
+                              type="text"
+                              value={rule.filename_contains || ''}
+                              onChange={(e) => updateDefaultAttachmentRule(idx, 'filename_contains', e.target.value)}
+                              className="w-full border border-gray-300 rounded px-3 py-2"
+                              placeholder="e.g. INV-"
+                            />
+                          </div>
+                          <div className="flex-1">
+                            <label className="block text-xs text-gray-600 mb-1">Join Key</label>
+                            <input
+                              type="text"
+                              value={rule.join_key || ''}
+                              onChange={(e) => updateDefaultAttachmentRule(idx, 'join_key', e.target.value)}
+                              className="w-full border border-gray-300 rounded px-3 py-2"
+                              placeholder="e.g. invoice_no"
+                            />
+                          </div>
+                          <button type="button" onClick={() => removeDefaultAttachmentRule(idx)} className="px-3 py-2 text-sm bg-red-600 text-white rounded">Remove</button>
+                        </div>
+                      ))}
+                      <button type="button" onClick={addDefaultAttachmentRule} className="px-3 py-2 text-sm bg-gray-700 text-white rounded">+ Add Rule</button>
                     </div>
-                  )}
+                  </div>
+                </>
+              )}
 
                   <div className="md:col-span-2">
                     <label className="block text-sm font-medium text-gray-700 mb-1">Column Aliases Override</label>

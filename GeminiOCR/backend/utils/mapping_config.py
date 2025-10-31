@@ -99,10 +99,12 @@ class MultiSourceMappingConfig(BaseMappingConfig):
 
     @validator("attachment_sources")
     def _validate_sources(
-        cls, value: List[AttachmentSource]
+        cls, value: List[AttachmentSource], values
     ) -> List[AttachmentSource]:  # pylint: disable=no-self-argument
-        if not value:
-            raise ValueError("At least one attachment source must be provided for multi source mapping")
+        # Allow empty when a default internal_join_key is provided; otherwise require at least one rule
+        default_key = values.get("internal_join_key") if isinstance(values, dict) else None
+        if not value and not default_key:
+            raise ValueError("At least one attachment source or a default internal_join_key is required for multi-source mapping")
         return value
 
     @validator("attachment_sources")
