@@ -25,23 +25,26 @@ interface OrderFinalReportPaths {
   [key: string]: string | undefined;
 }
 
-type MappingAttachmentSource = {
-  kind: string;
-  path: string;
-  label?: string | null;
-  metadata?: Record<string, any>;
-};
+  type MappingAttachmentSource = {
+    kind: string;
+    path: string;
+    label?: string | null;
+    metadata?: Record<string, any>;
+    // New optional fields aligned with backend schema
+    join_key?: string;
+    filename_contains?: string;
+  };
 
-interface ItemMappingConfig {
-  item_type?: string;
-  master_csv_path?: string;
-  external_join_keys?: string[];
-  internal_join_key?: string;
-  column_aliases?: Record<string, string>;
-  attachment_sources?: MappingAttachmentSource[];
-  notes?: string | null;
-  [key: string]: any;
-}
+  interface ItemMappingConfig {
+    item_type?: string;
+    master_csv_path?: string;
+    external_join_keys?: string[];
+    internal_join_key?: string;
+    column_aliases?: Record<string, string>;
+    attachment_sources?: MappingAttachmentSource[];
+    notes?: string | null;
+    [key: string]: any;
+  }
 
 interface OrderItem {
   item_id: number;
@@ -184,6 +187,7 @@ export default function OrderDetailsPage() {
     internal_join_key: '',
     column_aliases: '',
     inherit_defaults: true,
+    attachment_sources: [] as Array<{ filename_contains?: string; join_key?: string }>,
   });
   const [mappingFormError, setMappingFormError] = useState('');
   const [isSavingMappingConfig, setIsSavingMappingConfig] = useState(false);
@@ -533,6 +537,10 @@ export default function OrderDetailsPage() {
             .join(', ')
         : '',
       inherit_defaults: !config,
+      attachment_sources: (config?.attachment_sources || []).map((s: any) => ({
+        filename_contains: s?.filename_contains || '',
+        join_key: s?.join_key || '',
+      })),
     });
     setMappingFormError('');
     setMappingModalItem(item);
@@ -573,9 +581,13 @@ export default function OrderDetailsPage() {
         return;
       }
 
-      if (mappingForm.item_type === 'multi_source' && !mappingForm.internal_join_key.trim()) {
-        setMappingFormError('Internal join key is required for multiple source mapping.');
-        return;
+      if (mappingForm.item_type === 'multi_source') {
+        const hasDefaultInternal = !!mappingForm.internal_join_key.trim();
+        const hasAnyRule = (mappingForm.attachment_sources || []).some(r => (r.join_key || '').trim().length > 0);
+        if (!hasDefaultInternal && !hasAnyRule) {
+          setMappingFormError('Provide a default internal join key or at least one attachment rule with join key.');
+          return;
+        }
       }
     }
 
@@ -596,7 +608,19 @@ export default function OrderDetailsPage() {
       };
 
       if (mappingForm.item_type === 'multi_source') {
-        payload.mapping_config.internal_join_key = mappingForm.internal_join_key.trim();
+        if (mappingForm.internal_join_key.trim()) {
+          payload.mapping_config.internal_join_key = mappingForm.internal_join_key.trim();
+        }
+        if ((mappingForm.attachment_sources || []).length > 0) {
+          payload.mapping_config.attachment_sources = (mappingForm.attachment_sources || [])
+            .filter(r => (r.join_key || '').trim().length > 0 || (r.filename_contains || '').trim().length > 0)
+            .map(r => ({
+              kind: 'onedrive',
+              path: '', // path can be left empty when using filename matching; backend will still process attachments from linked files
+              join_key: (r.join_key || '').trim() || undefined,
+              filename_contains: (r.filename_contains || '').trim() || undefined,
+            }));
+        }
       }
     }
 
@@ -650,6 +674,37 @@ export default function OrderDetailsPage() {
     } finally {
       setIsPreviewingCsv(false);
     }
+  };
+
+  const parseExternalJoinKeys = (): string[] =>
+    mappingForm.external_join_keys
+      .split(',')
+      .map((k) => k.trim())
+      .filter(Boolean);
+
+  const toggleExternalJoinKey = (key: string) => {
+    const keys = new Set(parseExternalJoinKeys());
+    if (keys.has(key)) {
+      keys.delete(key);
+    } else {
+      keys.add(key);
+    }
+    handleMappingFormChange('external_join_keys', Array.from(keys).join(', '));
+  };
+
+  const addAttachmentRule = () => {
+    const next = [...mappingForm.attachment_sources, { filename_contains: '', join_key: '' }];
+    handleMappingFormChange('attachment_sources', next);
+  };
+  const updateAttachmentRule = (index: number, field: 'filename_contains' | 'join_key', value: string) => {
+    const next = mappingForm.attachment_sources.slice();
+    next[index] = { ...next[index], [field]: value };
+    handleMappingFormChange('attachment_sources', next);
+  };
+  const removeAttachmentRule = (index: number) => {
+    const next = mappingForm.attachment_sources.slice();
+    next.splice(index, 1);
+    handleMappingFormChange('attachment_sources', next);
   };
 
   const formatMappingType = (value: string) => {
@@ -1965,13 +2020,22 @@ export default function OrderDetailsPage() {
                 </div>
                 {csvPreview && csvPreview.headers.length > 0 && (
                   <div className="mt-2 bg-gray-50 border border-gray-200 rounded p-2">
-                    <div className="text-xs text-gray-600 mb-1">Columns:</div>
+                    <div className="text-xs text-gray-600 mb-1">Columns (click to toggle in External Join Keys):</div>
                     <div className="flex flex-wrap gap-1">
-                      {csvPreview.headers.slice(0, 24).map((h, i) => (
-                        <span key={i} className="text-[11px] bg-white border border-gray-300 rounded px-2 py-0.5">
-                          {h}
-                        </span>
-                      ))}
+                      {csvPreview.headers.slice(0, 24).map((h, i) => {
+                        const selected = parseExternalJoinKeys().includes(h);
+                        return (
+                          <button
+                            type="button"
+                            key={i}
+                            onClick={() => toggleExternalJoinKey(h)}
+                            className={`text-[11px] border rounded px-2 py-0.5 ${selected ? 'bg-blue-600 text-white border-blue-700' : 'bg-white text-gray-800 border-gray-300'}`}
+                            title={selected ? 'Remove from join keys' : 'Add to join keys'}
+                          >
+                            {h}
+                          </button>
+                        );
+                      })}
                       {csvPreview.headers.length > 24 && (
                         <span className="text-[11px] text-gray-500">+{csvPreview.headers.length - 24} more</span>
                       )}
@@ -1979,6 +2043,57 @@ export default function OrderDetailsPage() {
                   </div>
                 )}
               </div>
+
+              {mappingForm.item_type === 'multi_source' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Attachment Rules</label>
+                  <div className="space-y-2">
+                    {(mappingForm.attachment_sources || []).map((rule, idx) => (
+                      <div key={idx} className="flex items-end gap-2">
+                        <div className="flex-1">
+                          <label className="block text-xs text-gray-600 mb-1">Filename Contains</label>
+                          <input
+                            type="text"
+                            value={rule.filename_contains || ''}
+                            onChange={(e) => updateAttachmentRule(idx, 'filename_contains', e.target.value)}
+                            disabled={mappingForm.inherit_defaults}
+                            className="w-full border border-gray-300 rounded px-3 py-2 text-sm disabled:bg-gray-100"
+                            placeholder="e.g. INV-"
+                          />
+                        </div>
+                        <div className="flex-1">
+                          <label className="block text-xs text-gray-600 mb-1">Join Key</label>
+                          <input
+                            type="text"
+                            value={rule.join_key || ''}
+                            onChange={(e) => updateAttachmentRule(idx, 'join_key', e.target.value)}
+                            disabled={mappingForm.inherit_defaults}
+                            className="w-full border border-gray-300 rounded px-3 py-2 text-sm disabled:bg-gray-100"
+                            placeholder="e.g. invoice_no"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeAttachmentRule(idx)}
+                          disabled={mappingForm.inherit_defaults}
+                          className="px-3 py-2 text-sm bg-red-600 text-white rounded disabled:bg-gray-300"
+                          title="Remove rule"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={addAttachmentRule}
+                      disabled={mappingForm.inherit_defaults}
+                      className="px-3 py-2 text-sm bg-gray-700 text-white rounded disabled:bg-gray-300"
+                    >
+                      + Add Rule
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">External Join Keys</label>
