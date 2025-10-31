@@ -5314,111 +5314,25 @@ def _render_merged_csv(merged_data: list, column_order: list = None) -> str:
 
 
 # =============================================================================
-# Auto-Mapping Configuration APIs
+# Auto-Mapping Configuration APIs (Removed)
 # =============================================================================
 
 @app.get("/companies/{company_id}/document-types/{doc_type_id}/auto-mapping-config", response_model=dict)
-def get_auto_mapping_config(
-    company_id: int,
-    doc_type_id: int,
-    db: Session = Depends(get_db)
-):
-    """Get auto-mapping configuration for a company and document type"""
-    try:
-        config = db.query(CompanyDocumentConfig).filter(
-            CompanyDocumentConfig.company_id == company_id,
-            CompanyDocumentConfig.doc_type_id == doc_type_id,
-            CompanyDocumentConfig.active == True
-        ).first()
-
-        if not config:
-            raise HTTPException(status_code=404, detail="Company document configuration not found")
-
-        return {
-            "company_id": company_id,
-            "doc_type_id": doc_type_id,
-            "auto_mapping_enabled": config.auto_mapping_enabled or False,
-            "default_mapping_keys": config.default_mapping_keys or [],
-            # "cross_field_mappings": config.cross_field_mappings or {},  # Removed - cross-field mapping no longer supported
-            "updated_at": config.updated_at.isoformat() if config.updated_at else None
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get auto-mapping config: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get auto-mapping config: {str(e)}")
+def get_auto_mapping_config(company_id: int, doc_type_id: int):
+    raise HTTPException(status_code=410, detail="Auto-mapping configuration has been removed. Use Mapping Templates & Defaults.")
 
 
 @app.put("/companies/{company_id}/document-types/{doc_type_id}/auto-mapping-config", response_model=dict)
-def update_auto_mapping_config(
-    company_id: int,
-    doc_type_id: int,
-    request: dict,
-    db: Session = Depends(get_db)
-):
-    """Update auto-mapping configuration for a company and document type"""
-    try:
-        config = db.query(CompanyDocumentConfig).filter(
-            CompanyDocumentConfig.company_id == company_id,
-            CompanyDocumentConfig.doc_type_id == doc_type_id,
-            CompanyDocumentConfig.active == True
-        ).first()
-
-        if not config:
-            raise HTTPException(status_code=404, detail="Company document configuration not found")
-
-        # Validate input
-        auto_mapping_enabled = request.get('auto_mapping_enabled', False)
-        default_mapping_keys = request.get('default_mapping_keys', [])
-        # cross_field_mappings = request.get('cross_field_mappings', {})  # Removed - cross-field mapping no longer supported
-
-        if not isinstance(auto_mapping_enabled, bool):
-            raise HTTPException(status_code=400, detail="auto_mapping_enabled must be a boolean")
-
-        if not isinstance(default_mapping_keys, list):
-            raise HTTPException(status_code=400, detail="default_mapping_keys must be a list")
-
-        if len(default_mapping_keys) > 3:
-            raise HTTPException(status_code=400, detail="Maximum 3 default mapping keys allowed")
-
-        # if not isinstance(cross_field_mappings, dict):  # Removed - cross-field mapping no longer supported
-        #     raise HTTPException(status_code=400, detail="cross_field_mappings must be a dictionary")
-
-        # Update configuration
-        config.auto_mapping_enabled = auto_mapping_enabled
-        config.default_mapping_keys = default_mapping_keys
-        # config.cross_field_mappings = cross_field_mappings  # Removed - cross-field mapping no longer supported
-        config.updated_at = datetime.utcnow()
-
-        db.commit()
-
-        logger.info(f"Auto-mapping config updated for company {company_id}, doc_type {doc_type_id}")
-        return {
-            "company_id": company_id,
-            "doc_type_id": doc_type_id,
-            "auto_mapping_enabled": auto_mapping_enabled,
-            "default_mapping_keys": default_mapping_keys,
-            # "cross_field_mappings": cross_field_mappings,  # Removed - cross-field mapping no longer supported
-            "message": "Auto-mapping configuration updated successfully"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to update auto-mapping config: {str(e)}")
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to update auto-mapping config: {str(e)}")
+def update_auto_mapping_config(company_id: int, doc_type_id: int):
+    raise HTTPException(status_code=410, detail="Auto-mapping configuration has been removed. Use Mapping Templates & Defaults.")
 
 
 @app.post("/companies/{company_id}/document-types/{doc_type_id}/test-auto-mapping", response_model=dict)
-def test_auto_mapping_config(
-    company_id: int,
-    doc_type_id: int,
-    request: dict,
-    db: Session = Depends(get_db)
-):
-    """Test auto-mapping configuration with sample data"""
+def test_auto_mapping_config(company_id: int, doc_type_id: int):
+    """Deprecated: removed."""
+        raise HTTPException(status_code=410, detail="Auto-mapping test endpoint has been removed.")
+
+    # legacy code retained for reference but unreachable
     try:
         # Get configuration
         config = db.query(CompanyDocumentConfig).filter(

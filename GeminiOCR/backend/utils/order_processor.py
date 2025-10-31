@@ -928,18 +928,15 @@ class OrderProcessor:
 
             return primary_file_data, attachment_files
 
-    async def _generate_item_csv_with_default_mapping(self, item_id: int,
-                                                      primary_result: Optional[Dict],
-                                                      attachment_results: List[Dict]) -> Optional[str]:
-        """Generate CSV for item using primary file + attachments with default mapping keys.
+    async def _generate_item_csv_quick(self, item_id: int,
+                                       primary_result: Optional[Dict],
+                                       attachment_results: List[Dict]) -> Optional[str]:
+        """Generate a quick CSV snapshot per item (OCR-only stage), without default_mapping_keys.
 
-        Args:
-            item_id: Item ID
-            primary_result: OCR result from primary file
-            attachment_results: List of OCR results from attachments
-
-        Returns:
-            S3 path to the generated CSV, or None if generation failed
+        - If primary row exists, include it as the first row.
+        - Each attachment will be appended as its own row.
+        - All internal fields starting with '__' are stripped.
+        This CSV is only a convenience artifact before full mapping joins are run later.
         """
         try:
             from sqlalchemy.orm import Session
@@ -948,13 +945,6 @@ class OrderProcessor:
                 if not item:
                     logger.error(f"Item {item_id} not found for CSV generation")
                     return None
-
-                config = db.query(CompanyDocumentConfig).filter(
-                    CompanyDocumentConfig.company_id == item.company_id,
-                    CompanyDocumentConfig.doc_type_id == item.doc_type_id
-                ).first()
-
-                default_mapping_keys = config.default_mapping_keys if config else None
 
                 # Prepare data for CSV
                 csv_rows = []
@@ -965,25 +955,10 @@ class OrderProcessor:
                     primary_row = {k: v for k, v in primary_result.items() if not k.startswith('__')}
                     csv_rows.append(primary_row)
 
-                # Add attachment results with prefixing or as separate rows
-                if default_mapping_keys and primary_row:
-                    # Merge attachment fields into primary row with attachment_ prefix
-                    for attach_result in attachment_results:
-                        merged_row = dict(primary_row)
-                        for k, v in attach_result.items():
-                            if not k.startswith('__'):
-                                merged_row[f"attachment_{k}"] = v
-                        # Replace with merged row if this is the first attachment
-                        if attach_result == attachment_results[0]:
-                            csv_rows[0] = merged_row
-                        else:
-                            # Additional attachments as separate rows
-                            csv_rows.append(merged_row)
-                else:
-                    # No mapping keys or no primary, add attachments as independent rows
-                    for attach_result in attachment_results:
-                        row = {k: v for k, v in attach_result.items() if not k.startswith('__')}
-                        csv_rows.append(row)
+                # Append each attachment as its own row
+                for attach_result in attachment_results:
+                    row = {k: v for k, v in attach_result.items() if not k.startswith('__')}
+                    csv_rows.append(row)
 
                 if not csv_rows:
                     logger.warning(f"No data for CSV generation for item {item_id}")
@@ -1303,7 +1278,7 @@ class OrderProcessor:
                     json_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{json_s3_key}"
 
             # Generate CSV results using new mapping function
-            csv_path = await self._generate_item_csv_with_default_mapping(item_id, primary_result, attachment_results)
+            csv_path = await self._generate_item_csv_quick(item_id, primary_result, attachment_results)
 
             # Update item with result paths
             with Session(engine) as db:
