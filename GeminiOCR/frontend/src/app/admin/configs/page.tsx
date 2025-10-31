@@ -16,9 +16,7 @@ interface ConfigType {
     updated_at: string;
     company_name?: string;  // Joined from companies
     type_name?: string;     // Joined from document_types
-    // Auto-mapping fields
-    auto_mapping_enabled?: boolean;
-    default_mapping_keys?: string[];
+    // Auto-mapping fields removed
     }
 // Get base URL and port from config
 const API_BASE_URL = '/api';
@@ -98,9 +96,6 @@ export default function ConfigsPage() {
         prompt_path: '',
         schema_path: '',
         active: true,
-        // Auto-mapping fields
-        auto_mapping_enabled: false,
-        default_mapping_keys: [] as string[]
     });
 
     const [promptFile, setPromptFile] = useState<File | null>(null);
@@ -155,32 +150,7 @@ export default function ConfigsPage() {
         }));
     };
 
-    // Handle default mapping keys changes
-    const handleMappingKeyChange = (index: number, value: string) => {
-        setFormData(prev => {
-            const newKeys = [...prev.default_mapping_keys];
-            newKeys[index] = value;
-            return { ...prev, default_mapping_keys: newKeys };
-        });
-    };
-
-    // Add new mapping key (max 3)
-    const addMappingKey = () => {
-        if (formData.default_mapping_keys.length < 3) {
-            setFormData(prev => ({
-                ...prev,
-                default_mapping_keys: [...prev.default_mapping_keys, '']
-            }));
-        }
-    };
-
-    // Remove mapping key
-    const removeMappingKey = (index: number) => {
-        setFormData(prev => ({
-            ...prev,
-            default_mapping_keys: prev.default_mapping_keys.filter((_, i) => i !== index)
-        }));
-    };
+    // Legacy auto-mapping UI removed
 
     
     // Handle file selection
@@ -198,30 +168,12 @@ export default function ConfigsPage() {
     const handleEdit = async (config: ConfigType) => {
         setEditingConfig(config);
 
-        // Load auto-mapping configuration
-        let autoMappingData = {
-            auto_mapping_enabled: false,
-            default_mapping_keys: [] as string[]
-        };
-
-        try {
-            const autoMappingRes = await fetch(`${API_BASE_URL}/companies/${config.company_id}/document-types/${config.doc_type_id}/auto-mapping-config`);
-            if (autoMappingRes.ok) {
-                autoMappingData = await autoMappingRes.json();
-            }
-        } catch (err) {
-            console.warn('Failed to load auto-mapping configuration:', err);
-        }
-
         setFormData({
             company_id: config.company_id,
             doc_type_id: config.doc_type_id,
             prompt_path: config.prompt_path,
             schema_path: config.schema_path,
             active: config.active,
-            // Auto-mapping fields
-            auto_mapping_enabled: autoMappingData.auto_mapping_enabled || false,
-            default_mapping_keys: autoMappingData.default_mapping_keys || []
         });
         setIsCreating(false);
         setPromptFile(null);
@@ -276,22 +228,6 @@ export default function ConfigsPage() {
                     prompt_path, schema_path, active
                 });
 
-                // Update auto-mapping configuration
-                const autoMappingConfig = {
-                    auto_mapping_enabled: formData.auto_mapping_enabled,
-                    default_mapping_keys: formData.default_mapping_keys
-                };
-
-                const response = await fetch(`${API_BASE_URL}/companies/${editingConfig.company_id}/document-types/${editingConfig.doc_type_id}/auto-mapping-config`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(autoMappingConfig)
-                });
-
-                if (!response.ok) {
-                    throw new Error('Failed to update auto-mapping configuration');
-                }
-
                 setConfigs(prev =>
                     prev.map(c => c.config_id === editingConfig.config_id ? updated : c)
                 );
@@ -299,22 +235,6 @@ export default function ConfigsPage() {
             } else {
                 // Create new config
                 const created = await createConfig(updatedFormData);
-
-                // Set auto-mapping configuration for new config
-                const autoMappingConfig = {
-                    auto_mapping_enabled: formData.auto_mapping_enabled,
-                    default_mapping_keys: formData.default_mapping_keys
-                };
-
-                const response = await fetch(`${API_BASE_URL}/companies/${formData.company_id}/document-types/${formData.doc_type_id}/auto-mapping-config`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(autoMappingConfig)
-                });
-
-                if (!response.ok) {
-                    throw new Error('Failed to set auto-mapping configuration');
-                }
 
                 setConfigs(prev => [...prev, created]);
                 setIsCreating(false);
@@ -327,10 +247,6 @@ export default function ConfigsPage() {
                 prompt_path: '',
                 schema_path: '',
                 active: true,
-                // Auto-mapping fields
-                auto_mapping_enabled: false,
-                default_mapping_keys: [],
-                cross_field_mappings: {}
             });
             setPromptFile(null);
             setSchemaFile(null);
@@ -379,10 +295,6 @@ export default function ConfigsPage() {
             prompt_path: '',
             schema_path: '',
             active: true,
-            // Auto-mapping fields
-            auto_mapping_enabled: false,
-            default_mapping_keys: [],
-            cross_field_mappings: {}
         });
         setPromptFile(null);
         setSchemaFile(null);

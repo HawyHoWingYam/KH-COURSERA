@@ -100,6 +100,7 @@ const defaultDefaultFormState: DefaultFormState = {
 };
 
 const formatDate = (value: string) => new Date(value).toLocaleString();
+const formatMappingType = (value: string) => value === 'multi_source' ? 'Multiple Source' : 'Single Source';
 
 const formatJoinKeys = (keys?: unknown) =>
   Array.isArray(keys) ? keys.join(', ') : typeof keys === 'string' ? keys : '—';
@@ -118,6 +119,17 @@ export default function MappingAdminPage() {
 
   const [templateForm, setTemplateForm] = useState<TemplateFormState>(defaultTemplateFormState);
   const [defaultForm, setDefaultForm] = useState<DefaultFormState>(defaultDefaultFormState);
+  // Attachment rules for defaults override
+  const [defaultAttachmentRules, setDefaultAttachmentRules] = useState<Array<{ filename_contains?: string; join_key?: string }>>([]);
+  const addDefaultAttachmentRule = () => setDefaultAttachmentRules(prev => [...prev, { filename_contains: '', join_key: '' }]);
+  const updateDefaultAttachmentRule = (idx: number, field: 'filename_contains' | 'join_key', value: string) => {
+    setDefaultAttachmentRules(prev => {
+      const next = prev.slice();
+      next[idx] = { ...next[idx], [field]: value };
+      return next;
+    });
+  };
+  const removeDefaultAttachmentRule = (idx: number) => setDefaultAttachmentRules(prev => prev.filter((_, i) => i !== idx));
   const [isSubmittingTemplate, setIsSubmittingTemplate] = useState(false);
   const [isSubmittingDefault, setIsSubmittingDefault] = useState(false);
 
@@ -188,6 +200,19 @@ export default function MappingAdminPage() {
     }));
   };
 
+  // Attachment rules for template config (multi-source)
+  type AttachmentRule = { filename_contains?: string; join_key?: string };
+  const [attachmentRules, setAttachmentRules] = useState<AttachmentRule[]>([]);
+  const addAttachmentRule = () => setAttachmentRules((prev) => [...prev, { filename_contains: '', join_key: '' }]);
+  const updateAttachmentRule = (idx: number, field: keyof AttachmentRule, value: string) => {
+    setAttachmentRules((prev) => {
+      const next = prev.slice();
+      next[idx] = { ...next[idx], [field]: value };
+      return next;
+    });
+  };
+  const removeAttachmentRule = (idx: number) => setAttachmentRules((prev) => prev.filter((_, i) => i !== idx));
+
   const handleDefaultInput = (
     field: keyof DefaultFormState,
     value: string | boolean,
@@ -212,12 +237,13 @@ export default function MappingAdminPage() {
       return;
     }
 
-    if (
-      templateForm.item_type === 'multi_source' &&
-      !templateForm.internal_join_key.trim()
-    ) {
-      setError('Internal join key is required for multiple source templates.');
-      return;
+    if (templateForm.item_type === 'multi_source') {
+      const hasDefaultInternal = !!templateForm.internal_join_key.trim();
+      const hasAnyRule = attachmentRules.some(r => (r.join_key || '').trim().length > 0);
+      if (!hasDefaultInternal && !hasAnyRule) {
+        setError('Provide a default internal join key or at least one attachment rule with join key.');
+        return;
+      }
     }
 
     const payload: any = {
@@ -236,7 +262,15 @@ export default function MappingAdminPage() {
     };
 
     if (templateForm.item_type === 'multi_source') {
-      payload.config.internal_join_key = templateForm.internal_join_key.trim();
+      if (templateForm.internal_join_key.trim()) {
+        payload.config.internal_join_key = templateForm.internal_join_key.trim();
+      }
+      const cleaned = attachmentRules
+        .filter(r => (r.join_key || '').trim().length > 0 || (r.filename_contains || '').trim().length > 0)
+        .map(r => ({ kind: 'onedrive', path: '', join_key: r.join_key?.trim() || undefined, filename_contains: r.filename_contains?.trim() || undefined }));
+      if (cleaned.length > 0) {
+        payload.config.attachment_sources = cleaned;
+      }
     }
 
     if (templateForm.company_id) {
@@ -254,6 +288,7 @@ export default function MappingAdminPage() {
         body: JSON.stringify(payload),
       });
       setTemplateForm(defaultTemplateFormState);
+      setAttachmentRules([]);
       await loadData();
     } catch (err) {
       console.error(err);
@@ -272,15 +307,9 @@ export default function MappingAdminPage() {
       return;
     }
 
-    if (
-      defaultForm.override_enabled &&
-      defaultForm.override_enabled &&
-      defaultForm.item_type === 'multi_source' &&
-      !defaultForm.internal_join_key.trim()
-    ) {
-      setError('Internal join key override is required for multiple source mapping.');
-      return;
-    }
+    // attachment override rules
+    const hasDefaultInternal = !!defaultForm.internal_join_key.trim();
+    // parse later from UI (below) – simple validation will be done when sending payload
 
     const payload: any = {
       company_id: Number(defaultForm.company_id),
@@ -299,8 +328,17 @@ export default function MappingAdminPage() {
           .filter(Boolean),
         column_aliases: parseColumnAliases(defaultForm.column_aliases),
       };
-      if (defaultForm.item_type === 'multi_source') {
+      if (defaultForm.item_type === 'multi_source' && defaultForm.internal_join_key.trim()) {
         payload.config_override.internal_join_key = defaultForm.internal_join_key.trim();
+      }
+      // Include attachment_sources override if present
+      if (defaultForm.item_type === 'multi_source' && (defaultAttachmentRules.length > 0)) {
+        const cleaned = defaultAttachmentRules
+          .filter(r => (r.join_key || '').trim().length > 0 || (r.filename_contains || '').trim().length > 0)
+          .map(r => ({ kind: 'onedrive', path: '', join_key: r.join_key?.trim() || undefined, filename_contains: r.filename_contains?.trim() || undefined }));
+        if (cleaned.length > 0) {
+          payload.config_override.attachment_sources = cleaned;
+        }
       }
     }
 
@@ -312,6 +350,7 @@ export default function MappingAdminPage() {
         body: JSON.stringify(payload),
       });
       setDefaultForm(defaultDefaultFormState);
+      setDefaultAttachmentRules([]);
       await loadData();
     } catch (err) {
       console.error(err);
@@ -485,15 +524,48 @@ export default function MappingAdminPage() {
               </div>
 
               {templateForm.item_type === 'multi_source' && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Internal Join Key</label>
-                  <input
-                    type="text"
-                    value={templateForm.internal_join_key}
-                    onChange={(e) => handleTemplateInput('internal_join_key', e.target.value)}
-                    className="w-full border border-gray-300 rounded px-3 py-2"
-                    placeholder="Field shared between primary and attachment OCR data"
-                  />
+                <div className="md:col-span-2 space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Internal Join Key (default)</label>
+                    <input
+                      type="text"
+                      value={templateForm.internal_join_key}
+                      onChange={(e) => handleTemplateInput('internal_join_key', e.target.value)}
+                      className="w-full border border-gray-300 rounded px-3 py-2"
+                      placeholder="Field shared between primary and attachments (optional if rules set)"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Attachment Rules</label>
+                    <div className="space-y-2">
+                      {attachmentRules.map((rule, idx) => (
+                        <div key={idx} className="flex items-end gap-2">
+                          <div className="flex-1">
+                            <label className="block text-xs text-gray-600 mb-1">Filename Contains</label>
+                            <input
+                              type="text"
+                              value={rule.filename_contains || ''}
+                              onChange={(e) => updateAttachmentRule(idx, 'filename_contains', e.target.value)}
+                              className="w-full border border-gray-300 rounded px-3 py-2"
+                              placeholder="e.g. INV-"
+                            />
+                          </div>
+                          <div className="flex-1">
+                            <label className="block text-xs text-gray-600 mb-1">Join Key</label>
+                            <input
+                              type="text"
+                              value={rule.join_key || ''}
+                              onChange={(e) => updateAttachmentRule(idx, 'join_key', e.target.value)}
+                              className="w-full border border-gray-300 rounded px-3 py-2"
+                              placeholder="e.g. invoice_no"
+                            />
+                          </div>
+                          <button type="button" onClick={() => removeAttachmentRule(idx)} className="px-3 py-2 text-sm bg-red-600 text-white rounded">Remove</button>
+                        </div>
+                      ))}
+                      <button type="button" onClick={addAttachmentRule} className="px-3 py-2 text-sm bg-gray-700 text-white rounded">+ Add Rule</button>
+                    </div>
+                  </div>
                 </div>
               )}
 

@@ -40,6 +40,17 @@
 
 > 老的“订单级映射文件上传/选择映射 Key”端点已废弃，调用会返回 HTTP 410。请改用新的模板 + 订单项配置流程。
 
+#### 推荐做法（仅使用模板与默认值）
+
+- 使用 Admin → Mapping 定义 Mapping Templates：
+  - 单源或多源；填写 OneDrive 主 CSV 路径、external_join_keys、可选 internal_join_key；
+  - 多源可配置“附件规则”（filename_contains + join_key），允许不同附件按不同键匹配；未匹配规则时使用默认 internal_join_key（若提供）。
+- 使用 Mapping Defaults 将模板分配到“公司 + 文档类型 + 模式”，并可对模板做局部覆盖（包括附件规则）。
+- 前台订单项仅在需要时局部调整；否则直接继承默认模板。
+
+已移除/弃用：
+- Auto‑Mapping（default_mapping_keys 等）已移除，相关 API 返回 410；请使用 Mapping Templates & Defaults 统一承载 join keys 与映射规则。
+
 ---
 
 ## 🚀 本地开发（Anaconda 推荐）
