@@ -3092,6 +3092,8 @@ def create_order_item(order_id: int, request: CreateOrderItemRequest, db: Sessio
             raise HTTPException(status_code=400, detail=str(exc))
 
         # Create order item
+        # Ensure mapping_config is a JSON object to satisfy DB CHECK constraints
+        effective_config = resolved_config.config if resolved_config else {}
         item = OcrOrderItem(
             order_id=order_id,
             company_id=request.company_id,
@@ -3099,7 +3101,7 @@ def create_order_item(order_id: int, request: CreateOrderItemRequest, db: Sessio
             item_name=request.item_name or f"{company.company_name} - {doc_type.type_name}",
             status=OrderItemStatus.PENDING,
             item_type=item_type_enum,
-            mapping_config=resolved_config.config if resolved_config else None,
+            mapping_config=effective_config,
             applied_template_id=resolved_config.template_id if resolved_config else None,
         )
 
