@@ -690,6 +690,8 @@ class OrderProcessor:
         attachment_rows = [row for row in records if not row.get("__is_primary")]
         grouped: Dict[str, List[Dict[str, Any]]] = {}
 
+        mapping_debug = os.getenv("MAPPING_DEBUG", "false").lower() in ("1", "true", "yes")
+
         def _pick_join_key(filename: Optional[str]) -> Optional[str]:
             fname = (filename or "").lower()
             for rule in rules:
@@ -706,9 +708,23 @@ class OrderProcessor:
             clean_record = self._strip_metadata(record)
             join_key = _pick_join_key(record.get("__filename"))
             if not join_key:
-                # Nothing to join on; skip this attachment safely
-                continue
+                if mapping_debug:
+                    logger.warning(
+                        "[MAPPING_DEBUG] Item %s attachment '%s': no join_key resolved (rules=%s, default=%s)",
+                        item.item_id,
+                        record.get("__filename"),
+                        rules,
+                        default_internal_join_key,
+                    )
+                continue  # Nothing to join on; skip this attachment safely
             if join_key not in primary_df.columns:
+                if mapping_debug:
+                    logger.warning(
+                        "[MAPPING_DEBUG] Item %s missing internal join key '%s' in primary columns: %s",
+                        item.item_id,
+                        join_key,
+                        list(primary_df.columns),
+                    )
                 raise RuntimeError(f"Primary data missing internal join key '{join_key}'")
 
             grouped.setdefault(join_key, []).append(record)
@@ -795,13 +811,33 @@ class OrderProcessor:
         if missing_right:
             raise RuntimeError(f"Master CSV missing required join columns: {missing_right}")
 
+        # Coerce join columns to strings on both sides to avoid dtype mismatch
+        def _as_str_series(series: pd.Series) -> pd.Series:
+            try:
+                return series.astype(str).replace({"nan": "", "None": ""}).str.strip()
+            except Exception:
+                return series.astype("string").fillna("").str.strip()
+
+        left_tmp_cols: List[str] = []
+        right_tmp_cols: List[str] = []
+        for i, (lcol, rcol) in enumerate(zip(left_on, right_on)):
+            ltmp = f"__join_left_{i}__"
+            rtmp = f"__join_right_{i}__"
+            item_df[ltmp] = _as_str_series(item_df[lcol])
+            master_df[rtmp] = _as_str_series(master_df[rcol])
+            left_tmp_cols.append(ltmp)
+            right_tmp_cols.append(rtmp)
+
         merged_df = item_df.merge(
             master_df,
-            left_on=left_on,
-            right_on=right_on,
+            left_on=left_tmp_cols,
+            right_on=right_tmp_cols,
             how="left",
             suffixes=("", "_master"),
         )
+
+        # Drop temp join columns
+        merged_df = merged_df.drop(columns=left_tmp_cols + right_tmp_cols, errors="ignore")
 
         return merged_df
 
