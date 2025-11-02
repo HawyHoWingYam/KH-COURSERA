@@ -131,6 +131,9 @@ const stringifyConfig = (config: Record<string, any> | null) =>
 export default function MappingAdminPage() {
   const [templates, setTemplates] = useState<MappingTemplate[]>([]);
   const [defaults, setDefaults] = useState<MappingDefault[]>([]);
+  // Defaults pagination
+  const [defPage, setDefPage] = useState<number>(1);
+  const [defPageSize, setDefPageSize] = useState<number>(10);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [docTypes, setDocTypes] = useState<DocumentType[]>([]);
 
@@ -204,6 +207,11 @@ export default function MappingAdminPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  // Reset page when defaults change
+  useEffect(() => {
+    setDefPage(1);
+  }, [defaults.length]);
 
   const parseColumnAliases = (value: string) => {
     if (!value.trim()) {
@@ -530,6 +538,29 @@ export default function MappingAdminPage() {
   const startEditTemplate = (template: MappingTemplate) => {
     const cfg = template.config || {};
     setEditingTemplateOriginalConfig(cfg);
+    // Build output_meta_rows from cfg.output_meta mapping
+    const omRows: Array<{ dest: string; srcType: 'ctx' | 'col'; srcKey: string }> = [];
+    if (cfg && typeof cfg === 'object' && cfg.output_meta && typeof cfg.output_meta === 'object') {
+      Object.entries(cfg.output_meta).forEach(([dest, src]: any) => {
+        if (typeof dest === 'string' && typeof src === 'string' && (src.startsWith('ctx:') || src.startsWith('col:'))) {
+          const [prefix, key] = src.split(':', 2);
+          omRows.push({ dest, srcType: prefix as any, srcKey: key || '' });
+        }
+      });
+    }
+
+    // Join normalize values
+    const strip = !!(cfg.join_normalize && cfg.join_normalize.strip_non_digits);
+    let zfillSimple = '';
+    let zfillAdv = '';
+    if (cfg.join_normalize && typeof cfg.join_normalize.zfill !== 'undefined') {
+      if (typeof cfg.join_normalize.zfill === 'number') {
+        zfillSimple = String(cfg.join_normalize.zfill);
+      } else if (cfg.join_normalize.zfill && typeof cfg.join_normalize.zfill === 'object') {
+        try { zfillAdv = JSON.stringify(cfg.join_normalize.zfill); } catch {}
+      }
+    }
+
     setTemplateForm({
       template_name: template.template_name,
       item_type: template.item_type,
@@ -544,6 +575,11 @@ export default function MappingAdminPage() {
             .join(', ')
         : '',
       priority: String(template.priority || 100),
+      normalize_strip_non_digits: strip,
+      normalize_zfill: zfillSimple,
+      normalize_zfill_adv: zfillAdv,
+      output_meta_rows: omRows,
+      merge_suffix: (cfg.merge_suffix || ''),
     });
     // Only map filename/join_key rules for UI; ignore path/label/metadata
     const rules = Array.isArray(cfg.attachment_sources)
@@ -557,7 +593,6 @@ export default function MappingAdminPage() {
       : [];
     setAttachmentRules(rules);
     setEditingTemplateId(template.template_id);
-    setTemplateForm(prev => ({ ...prev, merge_suffix: (cfg.merge_suffix || '') }))
     setError('');
     setTplCsvPreview(null);
   };
@@ -941,7 +976,7 @@ export default function MappingAdminPage() {
                 {/* Output meta mapping */}
                 <div className="mt-4 text-sm">
                   <div className="font-medium text-gray-700 mb-1">Output Columns (optional)</div>
-                  {templateForm.output_meta_rows.map((row, idx) => (
+                  {(templateForm.output_meta_rows || []).map((row, idx) => (
                     <div key={idx} className="flex items-end gap-2 mb-2">
                       <div>
                         <label className="block text-xs text-gray-600 mb-1">Dest Column</label>
@@ -1458,7 +1493,7 @@ export default function MappingAdminPage() {
               {/* Output meta override */}
               <div className="text-sm">
                 <div className="font-medium text-gray-700 mb-1">Output Columns (override)</div>
-                {defaultForm.output_meta_rows.map((row, idx) => (
+                {(defaultForm.output_meta_rows || []).map((row, idx) => (
                   <div key={idx} className="flex items-end gap-2 mb-2">
                     <div>
                       <label className="block text-xs text-gray-600 mb-1">Dest Column</label>
@@ -1640,6 +1675,43 @@ export default function MappingAdminPage() {
               <div className="text-sm text-gray-500">No mapping defaults configured yet.</div>
             ) : (
               <div className="overflow-x-auto">
+                {/* Pagination controls */}
+                <div className="flex items-center justify-between mb-2 text-sm">
+                  <div>
+                    <span className="text-gray-600">Total:</span> {defaults.length}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-gray-600">Rows:</label>
+                    <select
+                      value={defPageSize}
+                      onChange={(e) => { setDefPageSize(parseInt(e.target.value, 10) || 10); setDefPage(1); }}
+                      className="border border-gray-300 rounded px-2 py-1"
+                    >
+                      <option value={5}>5</option>
+                      <option value={10}>10</option>
+                      <option value={20}>20</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => setDefPage((p) => Math.max(1, p - 1))}
+                      className="px-2 py-1 border rounded disabled:opacity-50"
+                      disabled={defPage === 1}
+                    >
+                      Prev
+                    </button>
+                    <span className="text-gray-600">
+                      Page {defPage} / {Math.max(1, Math.ceil(defaults.length / defPageSize))}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setDefPage((p) => Math.min(Math.ceil(defaults.length / defPageSize) || 1, p + 1))}
+                      className="px-2 py-1 border rounded disabled:opacity-50"
+                      disabled={defPage >= (Math.ceil(defaults.length / defPageSize) || 1)}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
                 <table className="min-w-full border border-gray-200 text-sm">
                   <thead className="bg-gray-50 text-left">
                     <tr>
@@ -1653,7 +1725,7 @@ export default function MappingAdminPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {defaults.map((record) => {
+                    {defaults.slice((defPage - 1) * defPageSize, (defPage) * defPageSize).map((record) => {
                       const companyName = companyLookup.get(record.company_id)?.company_name || `Company #${record.company_id}`;
                       const docTypeName = docTypeLookup.get(record.doc_type_id)?.type_name || `DocType #${record.doc_type_id}`;
                       const templateName = record.template_id
