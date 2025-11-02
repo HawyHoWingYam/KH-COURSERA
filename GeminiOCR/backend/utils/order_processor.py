@@ -1331,16 +1331,28 @@ class OrderProcessor:
 
                             item_results_content = self.s3_manager.download_file(s3_key)
                             if item_results_content:
-                                item_results = json.loads(item_results_content.decode('utf-8'))
+                                loaded = json.loads(item_results_content.decode('utf-8'))
 
-                                # Add item metadata to each result
+                                # Normalise to a list of dicts
+                                if isinstance(loaded, dict):
+                                    item_results = [loaded]
+                                elif isinstance(loaded, list):
+                                    item_results = loaded
+                                else:
+                                    raise ValueError("Unexpected results JSON structure (must be object or array)")
+
+                                # Add item metadata to each result (defensive: only dicts)
+                                annotated = []
                                 for result in item_results:
+                                    if not isinstance(result, dict):
+                                        continue
                                     result['__item_id'] = item.item_id
                                     result['__item_name'] = item.item_name
                                     result['__company'] = item.company.company_name if item.company else None
                                     result['__doc_type'] = item.document_type.type_name if item.document_type else None
+                                    annotated.append(result)
 
-                                all_consolidated_results.extend(item_results)
+                                all_consolidated_results.extend(annotated)
 
                     except Exception as e:
                         logger.error(f"Error loading results for item {item.item_id}: {str(e)}")
