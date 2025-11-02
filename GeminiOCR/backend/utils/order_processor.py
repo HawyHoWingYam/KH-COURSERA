@@ -513,10 +513,10 @@ class OrderProcessor:
         self.onedrive_client = client
         return client
 
-    def _apply_output_metadata(self, df: pd.DataFrame, context: Dict[str, Any]) -> None:
+    def _apply_output_metadata(self, df: pd.DataFrame, context: Dict[str, Any], mapping_spec: Optional[Dict[str, Any]] = None) -> None:
         """Augment output DataFrame with metadata columns per configuration.
 
-        Configure via env var MAPPING_OUTPUT_META_MAP, e.g.:
+        Configure via mapping_config.output_meta (preferred) or env var MAPPING_OUTPUT_META_MAP, e.g.:
         - "order=ctx:order_id,item=col:__item_id,company=ctx:company_name"
 
         Each pair is dest=src where src is one of:
@@ -525,17 +525,25 @@ class OrderProcessor:
         Existing columns are not overwritten. If spec is missing or invalid, no-op.
         """
         try:
-            spec = os.getenv("MAPPING_OUTPUT_META_MAP", "").strip()
-            if not spec:
+            # Prefer mapping_spec (from mapping_config.output_meta)
+            spec_map: Dict[str, str] = {}
+            if isinstance(mapping_spec, dict) and mapping_spec:
+                spec_map = {str(k): str(v) for k, v in mapping_spec.items()}
+            else:
+                spec = os.getenv("MAPPING_OUTPUT_META_MAP", "").strip()
+                if spec:
+                    pairs = [p.strip() for p in spec.split(',') if p.strip()]
+                    for token in pairs:
+                        if '=' not in token:
+                            continue
+                        dest, src = token.split('=', 1)
+                        spec_map[dest.strip()] = src.strip()
+
+            if not spec_map:
                 return
-            pairs = [p.strip() for p in spec.split(',') if p.strip()]
-            for token in pairs:
-                if '=' not in token:
-                    continue
-                dest, src = token.split('=', 1)
-                dest = dest.strip()
-                src = src.strip()
-                if not dest or not src or dest in df.columns:
+
+            for dest, src in spec_map.items():
+                if not dest or dest in df.columns or not isinstance(src, str):
                     continue
                 if src.startswith('ctx:'):
                     key = src[4:]
@@ -1757,7 +1765,13 @@ class OrderProcessor:
                     item.error_message = None
 
                     annotated_df = merged_df.copy()
-                    # Optional: augment with metadata columns based on mapping spec
+                    # Optional: augment with metadata columns based on mapping spec defined in mapping_config.output_meta
+                    mapping_spec = None
+                    try:
+                        if isinstance(item.mapping_config, dict):
+                            mapping_spec = item.mapping_config.get("output_meta")
+                    except Exception:
+                        mapping_spec = None
                     self._apply_output_metadata(
                         annotated_df,
                         {
@@ -1767,6 +1781,7 @@ class OrderProcessor:
                             "company_id": item.company_id,
                             "doc_type_id": item.doc_type_id,
                         },
+                        mapping_spec,
                     )
                     aggregated_frames.append(annotated_df)
 

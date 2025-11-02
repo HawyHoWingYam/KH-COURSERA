@@ -67,6 +67,14 @@ class BaseMappingConfig(BaseModel):
     notes: Optional[str] = Field(
         default=None, description="Optional free-form notes for operators",
     )
+    join_normalize: Optional[dict] = Field(
+        default=None,
+        description="Join value normalization options: {strip_non_digits: bool, zfill: int | {key: int}}",
+    )
+    output_meta: Optional[dict] = Field(
+        default=None,
+        description="Output column mapping: {dest: 'ctx:order_id' | 'col:__item_id', ...}",
+    )
 
     @validator("master_csv_path")
     def _validate_master_path(cls, value: str) -> str:  # pylint: disable=no-self-argument
@@ -134,7 +142,40 @@ def normalise_mapping_config(
         raise ValueError(f"Unsupported mapping item type: {item_type}")
 
     # use dict() with exclude_none to keep payload lean and serialisable
-    return model.model_dump(exclude_none=True)
+    data = model.model_dump(exclude_none=True)
+
+    # Validate join_normalize
+    jn = data.get("join_normalize")
+    if isinstance(jn, dict):
+        snd = jn.get("strip_non_digits")
+        if snd is not None and not isinstance(snd, bool):
+            raise ValueError("join_normalize.strip_non_digits must be a boolean")
+        zf = jn.get("zfill")
+        if zf is not None:
+            if isinstance(zf, int):
+                if zf < 0:
+                    raise ValueError("join_normalize.zfill must be >= 0")
+            elif isinstance(zf, dict):
+                for k, v in zf.items():
+                    if not isinstance(k, str) or not isinstance(v, int) or v < 0:
+                        raise ValueError("join_normalize.zfill per-key map must be {str: int>=0}")
+            else:
+                raise ValueError("join_normalize.zfill must be int or {key:int}")
+    elif jn is not None:
+        raise ValueError("join_normalize must be an object")
+
+    # Validate output_meta
+    om = data.get("output_meta")
+    if isinstance(om, dict):
+        for dest, src in om.items():
+            if not isinstance(dest, str) or not dest:
+                raise ValueError("output_meta keys must be non-empty strings")
+            if not isinstance(src, str) or not (src.startswith("ctx:") or src.startswith("col:")):
+                raise ValueError("output_meta values must start with 'ctx:' or 'col:'")
+    elif om is not None:
+        raise ValueError("output_meta must be an object mapping dest->'ctx:'|'col:' source")
+
+    return data
 
 
 def merge_mapping_configs(

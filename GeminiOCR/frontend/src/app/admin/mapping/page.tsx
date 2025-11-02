@@ -40,6 +40,9 @@ interface TemplateFormState {
   internal_join_key: string;
   column_aliases: string;
   priority: string;
+  normalize_strip_non_digits: boolean;
+  normalize_zfill: string;
+  output_meta_rows: Array<{ dest: string; srcType: 'ctx' | 'col'; srcKey: string }>;
 }
 
 interface DefaultFormState {
@@ -52,6 +55,9 @@ interface DefaultFormState {
   external_join_keys: string;
   internal_join_key: string;
   column_aliases: string;
+  normalize_strip_non_digits: boolean;
+  normalize_zfill: string;
+  output_meta_rows: Array<{ dest: string; srcType: 'ctx' | 'col'; srcKey: string }>;
 }
 
 const ITEM_TYPE_OPTIONS: Array<{ value: MappingItemType; label: string }> = [
@@ -85,6 +91,9 @@ const defaultTemplateFormState: TemplateFormState = {
   internal_join_key: '',
   column_aliases: '',
   priority: '100',
+  normalize_strip_non_digits: false,
+  normalize_zfill: '',
+  output_meta_rows: [],
 };
 
 const defaultDefaultFormState: DefaultFormState = {
@@ -97,6 +106,9 @@ const defaultDefaultFormState: DefaultFormState = {
   external_join_keys: '',
   internal_join_key: '',
   column_aliases: '',
+  normalize_strip_non_digits: false,
+  normalize_zfill: '',
+  output_meta_rows: [],
 };
 
 const formatDate = (value: string) => new Date(value).toLocaleString();
@@ -361,6 +373,31 @@ export default function MappingAdminPage() {
       column_aliases: parseColumnAliases(templateForm.column_aliases),
     };
 
+    // join_normalize from UI
+    if (templateForm.normalize_strip_non_digits || (templateForm.normalize_zfill || '').trim().length > 0) {
+      const jn: any = {};
+      if (templateForm.normalize_strip_non_digits) jn.strip_non_digits = true;
+      const zf = (templateForm.normalize_zfill || '').trim();
+      if (zf) {
+        const val = parseInt(zf, 10);
+        if (!Number.isNaN(val) && val >= 0) jn.zfill = val;
+      }
+      if (Object.keys(jn).length > 0) nextConfig.join_normalize = jn; else delete nextConfig.join_normalize;
+    } else {
+      delete nextConfig.join_normalize;
+    }
+
+    // output_meta mapping rows
+    const om: Record<string, string> = {};
+    for (const row of templateForm.output_meta_rows) {
+      const dest = (row.dest || '').trim();
+      const srcKey = (row.srcKey || '').trim();
+      if (dest && srcKey && (row.srcType === 'ctx' || row.srcType === 'col')) {
+        om[dest] = `${row.srcType}:${srcKey}`;
+      }
+    }
+    if (Object.keys(om).length > 0) nextConfig.output_meta = om; else delete nextConfig.output_meta;
+
     if (templateForm.item_type === 'multi_source') {
       if (templateForm.internal_join_key.trim()) {
         nextConfig.internal_join_key = templateForm.internal_join_key.trim();
@@ -527,6 +564,27 @@ export default function MappingAdminPage() {
           .filter(Boolean),
         column_aliases: parseColumnAliases(defaultForm.column_aliases),
       };
+      // join_normalize override
+      if (defaultForm.normalize_strip_non_digits || (defaultForm.normalize_zfill || '').trim().length > 0) {
+        const jn: any = {};
+        if (defaultForm.normalize_strip_non_digits) jn.strip_non_digits = true;
+        const zf = (defaultForm.normalize_zfill || '').trim();
+        if (zf) {
+          const val = parseInt(zf, 10);
+          if (!Number.isNaN(val) && val >= 0) jn.zfill = val;
+        }
+        if (Object.keys(jn).length > 0) payload.config_override.join_normalize = jn;
+      }
+      // output_meta override
+      const om: Record<string, string> = {};
+      for (const row of defaultForm.output_meta_rows) {
+        const dest = (row.dest || '').trim();
+        const srcKey = (row.srcKey || '').trim();
+        if (dest && srcKey && (row.srcType === 'ctx' || row.srcType === 'col')) {
+          om[dest] = `${row.srcType}:${srcKey}`;
+        }
+      }
+      if (Object.keys(om).length > 0) payload.config_override.output_meta = om;
       if (defaultForm.item_type === 'multi_source' && defaultForm.internal_join_key.trim()) {
         payload.config_override.internal_join_key = defaultForm.internal_join_key.trim();
       }
@@ -799,6 +857,88 @@ export default function MappingAdminPage() {
                   className="w-full border border-gray-300 rounded px-3 py-2"
                   placeholder="Comma separated, e.g. phone_number, account_id"
                 />
+                {/* Join normalization controls */}
+                <div className="mt-3 text-sm">
+                  <div className="font-medium text-gray-700 mb-1">Join Value Normalization</div>
+                  <label className="inline-flex items-center gap-2 mr-4">
+                    <input
+                      type="checkbox"
+                      checked={templateForm.normalize_strip_non_digits}
+                      onChange={(e) => handleTemplateInput('normalize_strip_non_digits', e.target.checked)}
+                    />
+                    <span>Strip non-digits</span>
+                  </label>
+                  <label className="inline-flex items-center gap-2">
+                    <span>ZFill</span>
+                    <input
+                      type="number"
+                      min={0}
+                      value={templateForm.normalize_zfill}
+                      onChange={(e) => handleTemplateInput('normalize_zfill', e.target.value)}
+                      className="w-24 border border-gray-300 rounded px-2 py-1"
+                      placeholder="e.g. 8"
+                    />
+                  </label>
+                  <div className="text-xs text-gray-500 mt-1">Applies to all external join keys. Use Defaults override to customize per company/doc as needed.</div>
+                </div>
+
+                {/* Output meta mapping */}
+                <div className="mt-4 text-sm">
+                  <div className="font-medium text-gray-700 mb-1">Output Columns (optional)</div>
+                  {templateForm.output_meta_rows.map((row, idx) => (
+                    <div key={idx} className="flex items-end gap-2 mb-2">
+                      <div>
+                        <label className="block text-xs text-gray-600 mb-1">Dest Column</label>
+                        <input
+                          type="text"
+                          value={row.dest}
+                          onChange={(e) => {
+                            const next = templateForm.output_meta_rows.slice();
+                            next[idx] = { ...row, dest: e.target.value };
+                            setTemplateForm(prev => ({ ...prev, output_meta_rows: next }));
+                          }}
+                          className="w-40 border border-gray-300 rounded px-2 py-1"
+                          placeholder="e.g. order_id"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-600 mb-1">Source</label>
+                        <select
+                          value={row.srcType}
+                          onChange={(e) => {
+                            const next = templateForm.output_meta_rows.slice();
+                            next[idx] = { ...row, srcType: e.target.value as any };
+                            setTemplateForm(prev => ({ ...prev, output_meta_rows: next }));
+                          }}
+                          className="w-28 border border-gray-300 rounded px-2 py-1"
+                        >
+                          <option value="ctx">Context</option>
+                          <option value="col">Existing Column</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-600 mb-1">Key</label>
+                        <input
+                          type="text"
+                          value={row.srcKey}
+                          onChange={(e) => {
+                            const next = templateForm.output_meta_rows.slice();
+                            next[idx] = { ...row, srcKey: e.target.value };
+                            setTemplateForm(prev => ({ ...prev, output_meta_rows: next }));
+                          }}
+                          className="w-40 border border-gray-300 rounded px-2 py-1"
+                          placeholder="e.g. order_id or __item_id"
+                        />
+                      </div>
+                      <button type="button" onClick={() => {
+                        const next = templateForm.output_meta_rows.slice();
+                        next.splice(idx, 1);
+                        setTemplateForm(prev => ({ ...prev, output_meta_rows: next }));
+                      }} className="px-3 py-1 text-xs bg-red-600 text-white rounded">Remove</button>
+                    </div>
+                  ))}
+                  <button type="button" onClick={() => setTemplateForm(prev => ({ ...prev, output_meta_rows: [...prev.output_meta_rows, { dest: '', srcType: 'ctx', srcKey: '' }] }))} className="px-3 py-1 text-xs bg-gray-700 text-white rounded">+ Add Output Column</button>
+                </div>
                 {/* Sample Primary Preview for Admins */}
                 <div className="mt-3 border-t pt-3">
                   <div className="flex items-end gap-2 mb-2">
