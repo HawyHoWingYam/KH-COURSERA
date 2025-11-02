@@ -138,6 +138,11 @@ export default function MappingAdminPage() {
   // Master CSV preview state (template)
   const [tplCsvPreview, setTplCsvPreview] = useState<{ headers: string[]; row_count: number } | null>(null);
   const [isPreviewingTplCsv, setIsPreviewingTplCsv] = useState(false);
+  // Primary preview (sample item)
+  const [sampleOrderId, setSampleOrderId] = useState<string>('');
+  const [sampleItemId, setSampleItemId] = useState<string>('');
+  const [samplePrimaryHeaders, setSamplePrimaryHeaders] = useState<string[] | null>(null);
+  const [isPreviewingSamplePrimary, setIsPreviewingSamplePrimary] = useState(false);
   // Master CSV preview state (default override)
   const [defCsvPreview, setDefCsvPreview] = useState<{ headers: string[]; row_count: number } | null>(null);
   const [isPreviewingDefCsv, setIsPreviewingDefCsv] = useState(false);
@@ -230,6 +235,29 @@ export default function MappingAdminPage() {
       setTplCsvPreview(null);
     } finally {
       setIsPreviewingTplCsv(false);
+    }
+  };
+
+  const previewSamplePrimary = async () => {
+    if (!sampleOrderId.trim() || !sampleItemId.trim()) return;
+    setIsPreviewingSamplePrimary(true);
+    setError('');
+    try {
+      const url = `/api/orders/${encodeURIComponent(sampleOrderId.trim())}/items/${encodeURIComponent(sampleItemId.trim())}/primary/csv/headers`;
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || 'Failed to load primary headers');
+      }
+      const data = await resp.json();
+      const headers: string[] = Array.isArray(data.headers) ? data.headers : [];
+      setSamplePrimaryHeaders(headers);
+    } catch (e) {
+      console.error(e);
+      setSamplePrimaryHeaders(null);
+      setError(e instanceof Error ? e.message : 'Failed to load primary headers');
+    } finally {
+      setIsPreviewingSamplePrimary(false);
     }
   };
 
@@ -771,6 +799,63 @@ export default function MappingAdminPage() {
                   className="w-full border border-gray-300 rounded px-3 py-2"
                   placeholder="Comma separated, e.g. phone_number, account_id"
                 />
+                {/* Sample Primary Preview for Admins */}
+                <div className="mt-3 border-t pt-3">
+                  <div className="flex items-end gap-2 mb-2">
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Sample Order ID</label>
+                      <input
+                        type="text"
+                        value={sampleOrderId}
+                        onChange={(e) => setSampleOrderId(e.target.value)}
+                        className="w-32 border border-gray-300 rounded px-2 py-1 text-sm"
+                        placeholder="e.g. 137"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Sample Item ID</label>
+                      <input
+                        type="text"
+                        value={sampleItemId}
+                        onChange={(e) => setSampleItemId(e.target.value)}
+                        className="w-32 border border-gray-300 rounded px-2 py-1 text-sm"
+                        placeholder="e.g. 177"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={previewSamplePrimary}
+                      disabled={isPreviewingSamplePrimary || !sampleOrderId.trim() || !sampleItemId.trim()}
+                      className="px-3 py-1 text-xs font-medium text-white bg-gray-700 hover:bg-gray-800 rounded disabled:bg-gray-300"
+                    >
+                      {isPreviewingSamplePrimary ? 'Loading…' : 'Preview Primary Columns'}
+                    </button>
+                  </div>
+                  {samplePrimaryHeaders && samplePrimaryHeaders.length > 0 && (
+                    <div className="bg-gray-50 border border-gray-200 rounded p-2">
+                      <div className="text-xs text-gray-600 mb-1">Click to toggle in External Join Keys:</div>
+                      <div className="flex flex-wrap gap-1">
+                        {samplePrimaryHeaders.slice(0, 24).map((h, i) => {
+                          const selected = parseTplJoinKeys().includes(h);
+                          return (
+                            <button
+                              type="button"
+                              key={i}
+                              onClick={() => toggleTplJoinKey(h)}
+                              className={`text-[11px] border rounded px-2 py-0.5 ${selected ? 'bg-blue-600 text-white border-blue-700' : 'bg-white text-gray-800 border-gray-300'}`}
+                              title={selected ? 'Remove from join keys' : 'Add to join keys'}
+                            >
+                              {h}
+                            </button>
+                          );
+                        })}
+                        {samplePrimaryHeaders.length > 24 && (
+                          <span className="text-[11px] text-gray-500">+{samplePrimaryHeaders.length - 24} more</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
 
               {templateForm.item_type === 'multi_source' && (
