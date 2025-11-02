@@ -187,7 +187,7 @@ export default function OrderDetailsPage() {
     internal_join_key: '',
     column_aliases: '',
     inherit_defaults: true,
-    attachment_sources: [] as Array<{ filename_contains?: string; join_key?: string }>,
+    attachment_sources: [] as Array<{ path?: string; filename_contains?: string; join_key?: string; label?: string; metadata?: string }>,
   });
   const [mappingFormError, setMappingFormError] = useState('');
   const [isSavingMappingConfig, setIsSavingMappingConfig] = useState(false);
@@ -538,8 +538,11 @@ export default function OrderDetailsPage() {
         : '',
       inherit_defaults: !config,
       attachment_sources: (config?.attachment_sources || []).map((s: any) => ({
+        path: s?.path || '',
         filename_contains: s?.filename_contains || '',
         join_key: s?.join_key || '',
+        label: s?.label || '',
+        metadata: s?.metadata ? JSON.stringify(s.metadata) : '',
       })),
     });
     setMappingFormError('');
@@ -583,9 +586,16 @@ export default function OrderDetailsPage() {
 
       if (mappingForm.item_type === 'multi_source') {
         const hasDefaultInternal = !!mappingForm.internal_join_key.trim();
-        const hasAnyRule = (mappingForm.attachment_sources || []).some(r => (r.join_key || '').trim().length > 0);
+        const cleanedRules = (mappingForm.attachment_sources || []).filter(r => (r.path || r.join_key || r.filename_contains));
+        const hasAnyRule = cleanedRules.some(r => (r.join_key || '').trim().length > 0);
         if (!hasDefaultInternal && !hasAnyRule) {
           setMappingFormError('Provide a default internal join key or at least one attachment rule with join key.');
+          return;
+        }
+        // If rules provided, require OneDrive path
+        const missingPath = cleanedRules.some(r => !(r.path || '').trim().length);
+        if (cleanedRules.length > 0 && missingPath) {
+          setMappingFormError('Each attachment rule must include a OneDrive path.');
           return;
         }
       }
@@ -612,14 +622,50 @@ export default function OrderDetailsPage() {
           payload.mapping_config.internal_join_key = mappingForm.internal_join_key.trim();
         }
         if ((mappingForm.attachment_sources || []).length > 0) {
-          payload.mapping_config.attachment_sources = (mappingForm.attachment_sources || [])
-            .filter(r => (r.join_key || '').trim().length > 0 || (r.filename_contains || '').trim().length > 0)
-            .map(r => ({
-              kind: 'onedrive',
-              path: '', // path can be left empty when using filename matching; backend will still process attachments from linked files
-              join_key: (r.join_key || '').trim() || undefined,
-              filename_contains: (r.filename_contains || '').trim() || undefined,
-            }));
+          // Validate metadata JSON
+          for (const r of mappingForm.attachment_sources) {
+            const text = (r.metadata || '').trim();
+            if (text.length > 0) {
+              try {
+                const parsed = JSON.parse(text);
+                if (!(parsed && typeof parsed === 'object' && !Array.isArray(parsed))) {
+                  throw new Error('Metadata must be a JSON object');
+                }
+              } catch (e) {
+                setMappingFormError('Invalid metadata JSON in attachment rules. Provide a valid JSON object.');
+                setIsSavingMappingConfig(false);
+                return;
+              }
+            }
+          }
+
+          const cleaned = (mappingForm.attachment_sources || [])
+            .filter(r => (r.path || '').trim().length > 0 || (r.join_key || '').trim().length > 0 || (r.filename_contains || '').trim().length > 0)
+            .map(r => {
+              const obj: any = {
+                kind: 'onedrive',
+                path: (r.path || '').trim(),
+                join_key: (r.join_key || '').trim() || undefined,
+                filename_contains: (r.filename_contains || '').trim() || undefined,
+              };
+              const label = (r.label || '').trim();
+              if (label) obj.label = label;
+              const metaText = (r.metadata || '').trim();
+              if (metaText) {
+                try {
+                  const parsed = JSON.parse(metaText);
+                  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    obj.metadata = parsed;
+                  }
+                } catch {}
+              }
+              return obj;
+            })
+            .filter(r => r.path.length > 0);
+
+          if (cleaned.length > 0) {
+            payload.mapping_config.attachment_sources = cleaned;
+          }
         }
       }
     }
@@ -693,10 +739,10 @@ export default function OrderDetailsPage() {
   };
 
   const addAttachmentRule = () => {
-    const next = [...mappingForm.attachment_sources, { filename_contains: '', join_key: '' }];
+    const next = [...mappingForm.attachment_sources, { path: '', filename_contains: '', join_key: '', label: '', metadata: '' }];
     handleMappingFormChange('attachment_sources', next);
   };
-  const updateAttachmentRule = (index: number, field: 'filename_contains' | 'join_key', value: string) => {
+  const updateAttachmentRule = (index: number, field: 'path' | 'filename_contains' | 'join_key' | 'label' | 'metadata', value: string) => {
     const next = mappingForm.attachment_sources.slice();
     next[index] = { ...next[index], [field]: value };
     handleMappingFormChange('attachment_sources', next);
@@ -1611,7 +1657,7 @@ export default function OrderDetailsPage() {
                               {item.mapping_config.attachment_sources.map((source, index) => (
                                 <span key={index}>
                                   {source.path}{source.metadata?.month ? ` (${source.metadata.month})` : ''}
-                                  {index < (item.mapping_config.attachment_sources?.length ?? 0) - 1 ? ', ' : ''}
+                                  {index < ((item.mapping_config?.attachment_sources?.length ?? 0) - 1) ? ', ' : ''}
                                 </span>
                               ))}
                             </div>
@@ -2049,8 +2095,19 @@ export default function OrderDetailsPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">Attachment Rules</label>
                   <div className="space-y-2">
                     {(mappingForm.attachment_sources || []).map((rule, idx) => (
-                      <div key={idx} className="flex items-end gap-2">
-                        <div className="flex-1">
+                      <div key={idx} className="grid md:grid-cols-5 gap-3 items-end">
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1">OneDrive Path</label>
+                          <input
+                            type="text"
+                            value={rule.path || ''}
+                            onChange={(e) => updateAttachmentRule(idx, 'path', e.target.value)}
+                            disabled={mappingForm.inherit_defaults}
+                            className="w-full border border-gray-300 rounded px-3 py-2 text-sm disabled:bg-gray-100"
+                            placeholder="e.g. HYA-OCR/Attachments/2025-10/"
+                          />
+                        </div>
+                        <div>
                           <label className="block text-xs text-gray-600 mb-1">Filename Contains</label>
                           <input
                             type="text"
@@ -2061,7 +2118,7 @@ export default function OrderDetailsPage() {
                             placeholder="e.g. INV-"
                           />
                         </div>
-                        <div className="flex-1">
+                        <div>
                           <label className="block text-xs text-gray-600 mb-1">Join Key</label>
                           <input
                             type="text"
@@ -2070,6 +2127,28 @@ export default function OrderDetailsPage() {
                             disabled={mappingForm.inherit_defaults}
                             className="w-full border border-gray-300 rounded px-3 py-2 text-sm disabled:bg-gray-100"
                             placeholder="e.g. invoice_no"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1">Label</label>
+                          <input
+                            type="text"
+                            value={rule.label || ''}
+                            onChange={(e) => updateAttachmentRule(idx, 'label', e.target.value)}
+                            disabled={mappingForm.inherit_defaults}
+                            className="w-full border border-gray-300 rounded px-3 py-2 text-sm disabled:bg-gray-100"
+                            placeholder="Optional label"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1">Metadata (JSON)</label>
+                          <input
+                            type="text"
+                            value={rule.metadata || ''}
+                            onChange={(e) => updateAttachmentRule(idx, 'metadata', e.target.value)}
+                            disabled={mappingForm.inherit_defaults}
+                            className="w-full border border-gray-300 rounded px-3 py-2 text-sm disabled:bg-gray-100"
+                            placeholder='e.g. {"month":"202510"}'
                           />
                         </div>
                         <button

@@ -120,9 +120,9 @@ export default function MappingAdminPage() {
   const [templateForm, setTemplateForm] = useState<TemplateFormState>(defaultTemplateFormState);
   const [defaultForm, setDefaultForm] = useState<DefaultFormState>(defaultDefaultFormState);
   // Attachment rules for defaults override
-  const [defaultAttachmentRules, setDefaultAttachmentRules] = useState<Array<{ path?: string; filename_contains?: string; join_key?: string }>>([]);
-  const addDefaultAttachmentRule = () => setDefaultAttachmentRules(prev => [...prev, { path: '', filename_contains: '', join_key: '' }]);
-  const updateDefaultAttachmentRule = (idx: number, field: 'path' | 'filename_contains' | 'join_key', value: string) => {
+  const [defaultAttachmentRules, setDefaultAttachmentRules] = useState<Array<{ path?: string; filename_contains?: string; join_key?: string; label?: string; metadata?: string }>>([]);
+  const addDefaultAttachmentRule = () => setDefaultAttachmentRules(prev => [...prev, { path: '', filename_contains: '', join_key: '', label: '', metadata: '' }]);
+  const updateDefaultAttachmentRule = (idx: number, field: 'path' | 'filename_contains' | 'join_key' | 'label' | 'metadata', value: string) => {
     setDefaultAttachmentRules(prev => {
       const next = prev.slice();
       next[idx] = { ...next[idx], [field]: value };
@@ -234,7 +234,7 @@ export default function MappingAdminPage() {
   };
 
   // Attachment rules for template config (multi-source)
-  type AttachmentRule = { path?: string; filename_contains?: string; join_key?: string };
+  type AttachmentRule = { path?: string; filename_contains?: string; join_key?: string; label?: string; metadata?: string };
   const [attachmentRules, setAttachmentRules] = useState<AttachmentRule[]>([]);
   const addAttachmentRule = () => setAttachmentRules((prev) => [...prev, { path: '', filename_contains: '', join_key: '' }]);
   const updateAttachmentRule = (idx: number, field: keyof AttachmentRule, value: string) => {
@@ -340,14 +340,47 @@ export default function MappingAdminPage() {
         delete nextConfig.internal_join_key;
       }
       // Build attachment_sources from UI rules; require non-empty path when a rule is present
+      // Validate metadata JSON if provided
+      for (const r of attachmentRules) {
+        const text = (r.metadata || '').trim();
+        if (text.length > 0) {
+          try {
+            const parsed = JSON.parse(text);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              // ok
+            } else {
+              throw new Error('Metadata must be a JSON object');
+            }
+          } catch (e) {
+            setError('Invalid metadata JSON in attachment rules. Please provide a valid JSON object.');
+            setIsSubmittingTemplate(false);
+            return;
+          }
+        }
+      }
+
       const cleaned = attachmentRules
         .filter(r => ((r.join_key || '').trim().length > 0 || (r.filename_contains || '').trim().length > 0 || (r.path || '').trim().length > 0))
-        .map(r => ({
-          kind: 'onedrive',
-          path: (r.path || '').trim(),
-          join_key: r.join_key?.trim() || undefined,
-          filename_contains: r.filename_contains?.trim() || undefined,
-        }))
+        .map(r => {
+          const obj: any = {
+            kind: 'onedrive',
+            path: (r.path || '').trim(),
+            join_key: r.join_key?.trim() || undefined,
+            filename_contains: r.filename_contains?.trim() || undefined,
+          };
+          const label = (r.label || '').trim();
+          if (label) obj.label = label;
+          const metaText = (r.metadata || '').trim();
+          if (metaText) {
+            try {
+              const parsed = JSON.parse(metaText);
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                obj.metadata = parsed;
+              }
+            } catch {}
+          }
+          return obj;
+        })
         .filter(r => r.path.length > 0);
       if (cleaned.length > 0) {
         nextConfig.attachment_sources = cleaned;
@@ -426,6 +459,8 @@ export default function MappingAdminPage() {
           path: r?.path || '',
           filename_contains: r?.filename_contains || '',
           join_key: r?.join_key || '',
+          label: r?.label || '',
+          metadata: r?.metadata ? JSON.stringify(r.metadata) : '',
         }))
       : [];
     setAttachmentRules(rules);
@@ -469,6 +504,23 @@ export default function MappingAdminPage() {
       }
       // Include attachment_sources override if present
       if (defaultForm.item_type === 'multi_source' && (defaultAttachmentRules.length > 0)) {
+        // Validate metadata JSON if provided
+        for (const r of defaultAttachmentRules) {
+          const text = (r.metadata || '').trim();
+          if (text.length > 0) {
+            try {
+              const parsed = JSON.parse(text);
+              if (!(parsed && typeof parsed === 'object' && !Array.isArray(parsed))) {
+                throw new Error('Metadata must be a JSON object');
+              }
+            } catch (e) {
+              setIsSubmittingDefault(false);
+              setError('Invalid metadata JSON in default attachment rules. Please provide a valid JSON object.');
+              return;
+            }
+          }
+        }
+
         const missingPath = defaultAttachmentRules
           .filter(r => (r.join_key || r.filename_contains))
           .some(r => !(r.path || '').trim().length);
@@ -479,7 +531,23 @@ export default function MappingAdminPage() {
         }
         const cleaned = defaultAttachmentRules
           .filter(r => ((r.path || '').trim().length > 0 || (r.join_key || '').trim().length > 0 || (r.filename_contains || '').trim().length > 0))
-          .map(r => ({ kind: 'onedrive', path: (r.path || '').trim(), join_key: r.join_key?.trim() || undefined, filename_contains: r.filename_contains?.trim() || undefined }))
+          .map(r => {
+            const obj: any = { kind: 'onedrive', path: (r.path || '').trim() };
+            if ((r.join_key || '').trim().length > 0) obj.join_key = r.join_key!.trim();
+            if ((r.filename_contains || '').trim().length > 0) obj.filename_contains = r.filename_contains!.trim();
+            const label = (r.label || '').trim();
+            if (label) obj.label = label;
+            const metaText = (r.metadata || '').trim();
+            if (metaText) {
+              try {
+                const parsed = JSON.parse(metaText);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                  obj.metadata = parsed;
+                }
+              } catch {}
+            }
+            return obj;
+          })
           .filter(r => r.path.length > 0);
         if (cleaned.length > 0) {
           payload.config_override.attachment_sources = cleaned;
@@ -721,7 +789,7 @@ export default function MappingAdminPage() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Attachment Rules</label>
                     <div className="space-y-2">
                       {attachmentRules.map((rule, idx) => (
-                        <div key={idx} className="grid md:grid-cols-3 gap-3 items-end">
+                        <div key={idx} className="grid md:grid-cols-5 gap-3 items-end">
                           <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">OneDrive Path</label>
                             <input
@@ -750,6 +818,26 @@ export default function MappingAdminPage() {
                               onChange={(e) => updateAttachmentRule(idx, 'join_key', e.target.value)}
                               className="w-full border border-gray-300 rounded px-3 py-2"
                               placeholder="e.g. invoice_no"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Label</label>
+                            <input
+                              type="text"
+                              value={rule.label || ''}
+                              onChange={(e) => updateAttachmentRule(idx, 'label', e.target.value)}
+                              className="w-full border border-gray-300 rounded px-3 py-2"
+                              placeholder="Optional label"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Metadata (JSON)</label>
+                            <input
+                              type="text"
+                              value={rule.metadata || ''}
+                              onChange={(e) => updateAttachmentRule(idx, 'metadata', e.target.value)}
+                              className="w-full border border-gray-300 rounded px-3 py-2"
+                              placeholder='e.g. {"month":"202510"}'
                             />
                           </div>
                           <button type="button" onClick={() => removeAttachmentRule(idx)} className="px-3 py-2 text-sm bg-red-600 text-white rounded">Remove</button>
@@ -1036,7 +1124,7 @@ export default function MappingAdminPage() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Attachment Rules Override</label>
                     <div className="space-y-2">
                       {defaultAttachmentRules.map((rule, idx) => (
-                        <div key={idx} className="grid md:grid-cols-3 gap-3 items-end">
+                        <div key={idx} className="grid md:grid-cols-5 gap-3 items-end">
                           <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">OneDrive Path</label>
                             <input
@@ -1065,6 +1153,26 @@ export default function MappingAdminPage() {
                               onChange={(e) => updateDefaultAttachmentRule(idx, 'join_key', e.target.value)}
                               className="w-full border border-gray-300 rounded px-3 py-2"
                               placeholder="e.g. invoice_no"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Label</label>
+                            <input
+                              type="text"
+                              value={rule.label || ''}
+                              onChange={(e) => updateDefaultAttachmentRule(idx, 'label', e.target.value)}
+                              className="w-full border border-gray-300 rounded px-3 py-2"
+                              placeholder="Optional label"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Metadata (JSON)</label>
+                            <input
+                              type="text"
+                              value={rule.metadata || ''}
+                              onChange={(e) => updateDefaultAttachmentRule(idx, 'metadata', e.target.value)}
+                              className="w-full border border-gray-300 rounded px-3 py-2"
+                              placeholder='e.g. {"month":"202510"}'
                             />
                           </div>
                           <button type="button" onClick={() => removeDefaultAttachmentRule(idx)} className="px-3 py-2 text-sm bg-red-600 text-white rounded">Remove</button>
