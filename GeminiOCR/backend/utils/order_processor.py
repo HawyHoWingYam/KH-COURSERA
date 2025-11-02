@@ -1694,17 +1694,19 @@ class OrderProcessor:
 
         with Session(engine) as db:
             resolver = MappingConfigResolver(db)
+            # Allow re-mapping for items that already have OCR results even if previous mapping failed
             items = db.query(OcrOrderItem).filter(
                 OcrOrderItem.order_id == order_id,
-                OcrOrderItem.status == OrderItemStatus.COMPLETED,
+                OcrOrderItem.ocr_result_json_path.isnot(None),
+                OcrOrderItem.status.in_([OrderItemStatus.COMPLETED, OrderItemStatus.FAILED]),
             ).all()
 
             if not items:
-                logger.warning(f"Order {order_id} has no completed items to map")
+                logger.warning(f"Order {order_id} has no items with OCR results to map")
                 order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
                 if order:
                     order.status = OrderStatus.FAILED
-                    order.error_message = "No completed items available for mapping"
+                    order.error_message = "No items with OCR results available for mapping"
                     order.updated_at = datetime.utcnow()
                     db.commit()
                 return
