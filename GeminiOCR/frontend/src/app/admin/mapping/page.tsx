@@ -42,6 +42,7 @@ interface TemplateFormState {
   priority: string;
   normalize_strip_non_digits: boolean;
   normalize_zfill: string;
+  normalize_zfill_adv: string; // JSON for per-key zfill, e.g. {"service_number":8}
   output_meta_rows: Array<{ dest: string; srcType: 'ctx' | 'col'; srcKey: string }>;
   merge_suffix: string;
 }
@@ -58,6 +59,7 @@ interface DefaultFormState {
   column_aliases: string;
   normalize_strip_non_digits: boolean;
   normalize_zfill: string;
+  normalize_zfill_adv: string; // JSON for per-key zfill
   output_meta_rows: Array<{ dest: string; srcType: 'ctx' | 'col'; srcKey: string }>;
   merge_suffix: string;
 }
@@ -95,6 +97,7 @@ const defaultTemplateFormState: TemplateFormState = {
   priority: '100',
   normalize_strip_non_digits: false,
   normalize_zfill: '',
+  normalize_zfill_adv: '',
   output_meta_rows: [],
   merge_suffix: '',
 };
@@ -111,6 +114,7 @@ const defaultDefaultFormState: DefaultFormState = {
   column_aliases: '',
   normalize_strip_non_digits: false,
   normalize_zfill: '',
+  normalize_zfill_adv: '',
   output_meta_rows: [],
   merge_suffix: '',
 };
@@ -378,11 +382,26 @@ export default function MappingAdminPage() {
     };
 
     // join_normalize from UI
-    if (templateForm.normalize_strip_non_digits || (templateForm.normalize_zfill || '').trim().length > 0) {
+    if (
+      templateForm.normalize_strip_non_digits ||
+      (templateForm.normalize_zfill || '').trim().length > 0 ||
+      (templateForm.normalize_zfill_adv || '').trim().length > 0
+    ) {
       const jn: any = {};
       if (templateForm.normalize_strip_non_digits) jn.strip_non_digits = true;
       const zf = (templateForm.normalize_zfill || '').trim();
-      if (zf) {
+      const zfAdv = (templateForm.normalize_zfill_adv || '').trim();
+      if (zfAdv) {
+        try {
+          const obj = JSON.parse(zfAdv);
+          // basic validation: keys string, values non-negative int
+          const ok = obj && typeof obj === 'object' && !Array.isArray(obj) && Object.entries(obj).every(([k, v]) => typeof k === 'string' && Number.isInteger(v) && v >= 0);
+          if (ok) jn.zfill = obj;
+        } catch (e) {
+          setError('Invalid per-key zfill JSON. Expecting {"key": number>=0}');
+          return;
+        }
+      } else if (zf) {
         const val = parseInt(zf, 10);
         if (!Number.isNaN(val) && val >= 0) jn.zfill = val;
       }
@@ -574,11 +593,26 @@ export default function MappingAdminPage() {
         column_aliases: parseColumnAliases(defaultForm.column_aliases),
       };
       // join_normalize override
-      if (defaultForm.normalize_strip_non_digits || (defaultForm.normalize_zfill || '').trim().length > 0) {
+      if (
+        defaultForm.normalize_strip_non_digits ||
+        (defaultForm.normalize_zfill || '').trim().length > 0 ||
+        (defaultForm.normalize_zfill_adv || '').trim().length > 0
+      ) {
         const jn: any = {};
         if (defaultForm.normalize_strip_non_digits) jn.strip_non_digits = true;
         const zf = (defaultForm.normalize_zfill || '').trim();
-        if (zf) {
+        const zfAdv = (defaultForm.normalize_zfill_adv || '').trim();
+        if (zfAdv) {
+          try {
+            const obj = JSON.parse(zfAdv);
+            const ok = obj && typeof obj === 'object' && !Array.isArray(obj) && Object.entries(obj).every(([k, v]) => typeof k === 'string' && Number.isInteger(v) && v >= 0);
+            if (ok) jn.zfill = obj;
+          } catch (e) {
+            setError('Invalid per-key zfill JSON in overrides. Expecting {"key": number>=0}');
+            setIsSubmittingDefault(false);
+            return;
+          }
+        } else if (zf) {
           const val = parseInt(zf, 10);
           if (!Number.isNaN(val) && val >= 0) jn.zfill = val;
         }
@@ -891,6 +925,16 @@ export default function MappingAdminPage() {
                       placeholder="e.g. 8"
                     />
                   </label>
+                  <div className="mt-2">
+                    <label className="block text-xs text-gray-600 mb-1">Per-key ZFill (advanced JSON)</label>
+                    <textarea
+                      value={templateForm.normalize_zfill_adv}
+                      onChange={(e) => handleTemplateInput('normalize_zfill_adv', e.target.value)}
+                      className="w-full border border-gray-300 rounded px-3 py-2 text-xs"
+                      placeholder='Example: {"service_number": 8, "account_id": 10}'
+                      rows={2}
+                    />
+                  </div>
                   <div className="text-xs text-gray-500 mt-1">Applies to all external join keys. Use Defaults override to customize per company/doc as needed.</div>
                 </div>
 
@@ -1399,6 +1443,16 @@ export default function MappingAdminPage() {
                     placeholder="e.g. 8"
                   />
                 </label>
+                <div className="mt-2">
+                  <label className="block text-xs text-gray-600 mb-1">Per-key ZFill (advanced JSON)</label>
+                  <textarea
+                    value={defaultForm.normalize_zfill_adv}
+                    onChange={(e) => handleDefaultInput('normalize_zfill_adv', e.target.value)}
+                    className="w-full border border-gray-300 rounded px-3 py-2 text-xs"
+                    placeholder='Example: {"service_number": 8, "account_id": 10}'
+                    rows={2}
+                  />
+                </div>
               </div>
 
               {/* Output meta override */}
@@ -1457,6 +1511,19 @@ export default function MappingAdminPage() {
                   </div>
                 ))}
                 <button type="button" onClick={() => setDefaultForm(prev => ({ ...prev, output_meta_rows: [...prev.output_meta_rows, { dest: '', srcType: 'ctx', srcKey: '' }] }))} className="px-3 py-1 text-xs bg-gray-700 text-white rounded">+ Add Output Column</button>
+              </div>
+
+              {/* Merge suffix override */}
+              <div className="text-sm">
+                <div className="font-medium text-gray-700 mb-1">Merge Suffix (override)</div>
+                <input
+                  type="text"
+                  value={defaultForm.merge_suffix}
+                  onChange={(e) => handleDefaultInput('merge_suffix', e.target.value)}
+                  className="w-40 border border-gray-300 rounded px-2 py-1"
+                  placeholder="e.g. _right"
+                />
+                <div className="text-xs text-gray-500 mt-1">Suffix for conflicting columns from master CSV.</div>
               </div>
 
               {defaultForm.item_type === 'multi_source' && (
