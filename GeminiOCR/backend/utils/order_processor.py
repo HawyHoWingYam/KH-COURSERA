@@ -719,22 +719,42 @@ class OrderProcessor:
             aggregated: Dict[Any, Dict[str, Any]] = {}
             prefix_counters: Dict[str, int] = {}
             for index, record in enumerate(recs):
-                clean_record = self._strip_metadata(record)
-                join_value = clean_record.get(join_key)
-                if join_value is None:
-                    continue
-                prefix_base = self._sanitise_prefix(record.get("__filename"), f"attachment_{index + 1}")
-                prefix_count = prefix_counters.get(prefix_base, 0)
-                prefix_counters[prefix_base] = prefix_count + 1
-                prefix = prefix_base if prefix_count == 0 else f"{prefix_base}_{prefix_count + 1}"
+                # Deep‑flatten each attachment record so nested fields are available for joining
+                try:
+                    from utils.excel_converter import deep_flatten_json_universal
+                    flat_rows = deep_flatten_json_universal(self._strip_metadata(record))
+                    # Ensure at least one row exists
+                    if not flat_rows:
+                        flat_rows = [self._strip_metadata(record)]
+                except Exception:
+                    flat_rows = [self._strip_metadata(record)]
 
-                entry = aggregated.setdefault(join_value, {})
-                for key, value in clean_record.items():
-                    if key == join_key:
+                for sub_idx, clean_record in enumerate(flat_rows):
+                    if not isinstance(clean_record, dict):
                         continue
-                    column_name = f"{prefix}__{key}"
-                    if column_name not in entry:
-                        entry[column_name] = value
+
+                    # Obtain join value; fallback to keys whose last segment matches join_key
+                    join_value = clean_record.get(join_key)
+                    if join_value is None:
+                        alt_key = next((k for k in clean_record.keys() if isinstance(k, str) and k.split(".")[-1] == join_key), None)
+                        if alt_key is not None:
+                            join_value = clean_record.get(alt_key)
+                    if join_value is None:
+                        continue
+
+                    prefix_base = self._sanitise_prefix(record.get("__filename"), f"attachment_{index + 1}")
+                    prefix_count = prefix_counters.get(prefix_base, 0)
+                    prefix_counters[prefix_base] = prefix_count + 1
+                    prefix = prefix_base if prefix_count == 0 else f"{prefix_base}_{prefix_count + 1}"
+
+                    entry = aggregated.setdefault(join_value, {})
+                    for key, value in clean_record.items():
+                        # Skip the exact join_key column and the alt dotted key variant
+                        if key == join_key or (isinstance(key, str) and key.split(".")[-1] == join_key):
+                            continue
+                        column_name = f"{prefix}__{key}"
+                        if column_name not in entry:
+                            entry[column_name] = value
 
             if aggregated:
                 rows = []
