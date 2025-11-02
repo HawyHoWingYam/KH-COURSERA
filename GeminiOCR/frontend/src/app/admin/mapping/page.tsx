@@ -43,6 +43,7 @@ interface TemplateFormState {
   normalize_strip_non_digits: boolean;
   normalize_zfill: string;
   output_meta_rows: Array<{ dest: string; srcType: 'ctx' | 'col'; srcKey: string }>;
+  merge_suffix: string;
 }
 
 interface DefaultFormState {
@@ -58,6 +59,7 @@ interface DefaultFormState {
   normalize_strip_non_digits: boolean;
   normalize_zfill: string;
   output_meta_rows: Array<{ dest: string; srcType: 'ctx' | 'col'; srcKey: string }>;
+  merge_suffix: string;
 }
 
 const ITEM_TYPE_OPTIONS: Array<{ value: MappingItemType; label: string }> = [
@@ -94,6 +96,7 @@ const defaultTemplateFormState: TemplateFormState = {
   normalize_strip_non_digits: false,
   normalize_zfill: '',
   output_meta_rows: [],
+  merge_suffix: '',
 };
 
 const defaultDefaultFormState: DefaultFormState = {
@@ -109,6 +112,7 @@ const defaultDefaultFormState: DefaultFormState = {
   normalize_strip_non_digits: false,
   normalize_zfill: '',
   output_meta_rows: [],
+  merge_suffix: '',
 };
 
 const formatDate = (value: string) => new Date(value).toLocaleString();
@@ -398,6 +402,10 @@ export default function MappingAdminPage() {
     }
     if (Object.keys(om).length > 0) nextConfig.output_meta = om; else delete nextConfig.output_meta;
 
+    // merge_suffix
+    const ms = (templateForm.merge_suffix || '').trim();
+    if (ms) nextConfig.merge_suffix = ms; else delete nextConfig.merge_suffix;
+
     if (templateForm.item_type === 'multi_source') {
       if (templateForm.internal_join_key.trim()) {
         nextConfig.internal_join_key = templateForm.internal_join_key.trim();
@@ -530,6 +538,7 @@ export default function MappingAdminPage() {
       : [];
     setAttachmentRules(rules);
     setEditingTemplateId(template.template_id);
+    setTemplateForm(prev => ({ ...prev, merge_suffix: (cfg.merge_suffix || '') }))
     setError('');
     setTplCsvPreview(null);
   };
@@ -585,6 +594,9 @@ export default function MappingAdminPage() {
         }
       }
       if (Object.keys(om).length > 0) payload.config_override.output_meta = om;
+      // merge_suffix override
+      const ms = (defaultForm.merge_suffix || '').trim();
+      if (ms) payload.config_override.merge_suffix = ms;
       if (defaultForm.item_type === 'multi_source' && defaultForm.internal_join_key.trim()) {
         payload.config_override.internal_join_key = defaultForm.internal_join_key.trim();
       }
@@ -938,6 +950,19 @@ export default function MappingAdminPage() {
                     </div>
                   ))}
                   <button type="button" onClick={() => setTemplateForm(prev => ({ ...prev, output_meta_rows: [...prev.output_meta_rows, { dest: '', srcType: 'ctx', srcKey: '' }] }))} className="px-3 py-1 text-xs bg-gray-700 text-white rounded">+ Add Output Column</button>
+                </div>
+
+                {/* Merge suffix */}
+                <div className="mt-4 text-sm">
+                  <div className="font-medium text-gray-700 mb-1">Merge Suffix (optional)</div>
+                  <input
+                    type="text"
+                    value={templateForm.merge_suffix}
+                    onChange={(e) => handleTemplateInput('merge_suffix', e.target.value)}
+                    className="w-40 border border-gray-300 rounded px-2 py-1"
+                    placeholder="e.g. _right"
+                  />
+                  <div className="text-xs text-gray-500 mt-1">Suffix used for conflicting columns from master CSV. Default '_master'.</div>
                 </div>
                 {/* Sample Primary Preview for Admins */}
                 <div className="mt-3 border-t pt-3">

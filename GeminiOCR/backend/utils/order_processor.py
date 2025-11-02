@@ -833,6 +833,7 @@ class OrderProcessor:
         external_join_keys: List[str],
         column_aliases: Optional[Dict[str, str]] = None,
         join_normalize: Optional[Dict[str, Any]] = None,
+        merge_suffix: Optional[str] = None,
     ) -> pd.DataFrame:
         if not external_join_keys:
             return item_df
@@ -897,12 +898,15 @@ class OrderProcessor:
             left_tmp_cols.append(ltmp)
             right_tmp_cols.append(rtmp)
 
+        # Choose suffix for right-side conflicting columns
+        right_suffix = merge_suffix if isinstance(merge_suffix, str) and merge_suffix else "_master"
+
         merged_df = item_df.merge(
             master_df,
             left_on=left_tmp_cols,
             right_on=right_tmp_cols,
             how="left",
-            suffixes=("", (item.mapping_config.get("merge_suffix") if isinstance(getattr(item, 'mapping_config', None), dict) and item.mapping_config.get("merge_suffix") else "_master")),
+            suffixes=("", right_suffix),
         )
 
         # Drop temp join columns
@@ -1756,6 +1760,7 @@ class OrderProcessor:
                         item.mapping_config.get("external_join_keys", []),
                         item.mapping_config.get("column_aliases"),
                         item.mapping_config.get("join_normalize") or item.mapping_config.get("join_value_normalization"),
+                        item.mapping_config.get("merge_suffix"),
                     )
 
                     mapped_path = self._persist_item_mapping_result(order_id, item, merged_df)
