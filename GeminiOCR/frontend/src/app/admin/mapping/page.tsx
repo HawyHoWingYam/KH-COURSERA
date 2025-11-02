@@ -120,9 +120,9 @@ export default function MappingAdminPage() {
   const [templateForm, setTemplateForm] = useState<TemplateFormState>(defaultTemplateFormState);
   const [defaultForm, setDefaultForm] = useState<DefaultFormState>(defaultDefaultFormState);
   // Attachment rules for defaults override
-  const [defaultAttachmentRules, setDefaultAttachmentRules] = useState<Array<{ filename_contains?: string; join_key?: string }>>([]);
-  const addDefaultAttachmentRule = () => setDefaultAttachmentRules(prev => [...prev, { filename_contains: '', join_key: '' }]);
-  const updateDefaultAttachmentRule = (idx: number, field: 'filename_contains' | 'join_key', value: string) => {
+  const [defaultAttachmentRules, setDefaultAttachmentRules] = useState<Array<{ path?: string; filename_contains?: string; join_key?: string }>>([]);
+  const addDefaultAttachmentRule = () => setDefaultAttachmentRules(prev => [...prev, { path: '', filename_contains: '', join_key: '' }]);
+  const updateDefaultAttachmentRule = (idx: number, field: 'path' | 'filename_contains' | 'join_key', value: string) => {
     setDefaultAttachmentRules(prev => {
       const next = prev.slice();
       next[idx] = { ...next[idx], [field]: value };
@@ -132,6 +132,9 @@ export default function MappingAdminPage() {
   const removeDefaultAttachmentRule = (idx: number) => setDefaultAttachmentRules(prev => prev.filter((_, i) => i !== idx));
   const [isSubmittingTemplate, setIsSubmittingTemplate] = useState(false);
   const [isSubmittingDefault, setIsSubmittingDefault] = useState(false);
+  // Template editing state
+  const [editingTemplateId, setEditingTemplateId] = useState<number | null>(null);
+  const [editingTemplateOriginalConfig, setEditingTemplateOriginalConfig] = useState<Record<string, any> | null>(null);
   // Master CSV preview state (template)
   const [tplCsvPreview, setTplCsvPreview] = useState<{ headers: string[]; row_count: number } | null>(null);
   const [isPreviewingTplCsv, setIsPreviewingTplCsv] = useState(false);
@@ -231,9 +234,9 @@ export default function MappingAdminPage() {
   };
 
   // Attachment rules for template config (multi-source)
-  type AttachmentRule = { filename_contains?: string; join_key?: string };
+  type AttachmentRule = { path?: string; filename_contains?: string; join_key?: string };
   const [attachmentRules, setAttachmentRules] = useState<AttachmentRule[]>([]);
-  const addAttachmentRule = () => setAttachmentRules((prev) => [...prev, { filename_contains: '', join_key: '' }]);
+  const addAttachmentRule = () => setAttachmentRules((prev) => [...prev, { path: '', filename_contains: '', join_key: '' }]);
   const updateAttachmentRule = (idx: number, field: keyof AttachmentRule, value: string) => {
     setAttachmentRules((prev) => {
       const next = prev.slice();
@@ -293,9 +296,16 @@ export default function MappingAdminPage() {
 
     if (templateForm.item_type === 'multi_source') {
       const hasDefaultInternal = !!templateForm.internal_join_key.trim();
-      const hasAnyRule = attachmentRules.some(r => (r.join_key || '').trim().length > 0);
+      const cleanedRules = attachmentRules.filter(r => ((r.path || '').trim().length > 0 || (r.join_key || '').trim().length > 0 || (r.filename_contains || '').trim().length > 0));
+      const hasAnyRule = cleanedRules.some(r => (r.join_key || '').trim().length > 0);
       if (!hasDefaultInternal && !hasAnyRule) {
         setError('Provide a default internal join key or at least one attachment rule with join key.');
+        return;
+      }
+      // If rules are provided, enforce path is present (backend requires path)
+      const missingPath = cleanedRules.some(r => !(r.path || '').trim().length);
+      if (cleanedRules.length > 0 && missingPath) {
+        setError('Each attachment rule must include a OneDrive path.');
         return;
       }
     }
@@ -303,31 +313,56 @@ export default function MappingAdminPage() {
     const payload: any = {
       template_name: templateForm.template_name.trim(),
       item_type: templateForm.item_type,
-      config: {
-        item_type: templateForm.item_type,
-        master_csv_path: templateForm.master_csv_path.trim(),
-        external_join_keys: templateForm.external_join_keys
-          .split(',')
-          .map((key) => key.trim())
-          .filter(Boolean),
-        column_aliases: parseColumnAliases(templateForm.column_aliases),
-      },
+      config: {} as Record<string, any>,
       priority: Number.parseInt(templateForm.priority, 10) || 100,
+    };
+
+    // For updates, preserve original config fields we don't expose in UI (e.g., attachment_sources with path)
+    const baseConfig = editingTemplateId && editingTemplateOriginalConfig
+      ? { ...editingTemplateOriginalConfig }
+      : {};
+
+    const nextConfig: Record<string, any> = {
+      ...baseConfig,
+      item_type: templateForm.item_type,
+      master_csv_path: templateForm.master_csv_path.trim(),
+      external_join_keys: templateForm.external_join_keys
+        .split(',')
+        .map((key) => key.trim())
+        .filter(Boolean),
+      column_aliases: parseColumnAliases(templateForm.column_aliases),
     };
 
     if (templateForm.item_type === 'multi_source') {
       if (templateForm.internal_join_key.trim()) {
-        payload.config.internal_join_key = templateForm.internal_join_key.trim();
+        nextConfig.internal_join_key = templateForm.internal_join_key.trim();
+      } else {
+        delete nextConfig.internal_join_key;
       }
+      // Build attachment_sources from UI rules; require non-empty path when a rule is present
       const cleaned = attachmentRules
-        .filter(r => (r.join_key || '').trim().length > 0 || (r.filename_contains || '').trim().length > 0)
-        .map(r => ({ kind: 'onedrive', path: '', join_key: r.join_key?.trim() || undefined, filename_contains: r.filename_contains?.trim() || undefined }));
+        .filter(r => ((r.join_key || '').trim().length > 0 || (r.filename_contains || '').trim().length > 0 || (r.path || '').trim().length > 0))
+        .map(r => ({
+          kind: 'onedrive',
+          path: (r.path || '').trim(),
+          join_key: r.join_key?.trim() || undefined,
+          filename_contains: r.filename_contains?.trim() || undefined,
+        }))
+        .filter(r => r.path.length > 0);
       if (cleaned.length > 0) {
-        payload.config.attachment_sources = cleaned;
+        nextConfig.attachment_sources = cleaned;
+      } else {
+        delete nextConfig.attachment_sources;
       }
+    } else {
+      // Single source: remove multi-source only fields if any
+      delete nextConfig.internal_join_key;
+      delete nextConfig.attachment_sources;
     }
 
-    if (templateForm.company_id) {
+    payload.config = nextConfig;
+
+  if (templateForm.company_id) {
       payload.company_id = Number(templateForm.company_id);
     }
     if (templateForm.doc_type_id) {
@@ -336,20 +371,67 @@ export default function MappingAdminPage() {
 
     setIsSubmittingTemplate(true);
     try {
-      await fetchJson<MappingTemplate>('/mapping/templates', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      if (editingTemplateId) {
+        await fetchJson<MappingTemplate>(`/mapping/templates/${editingTemplateId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await fetchJson<MappingTemplate>('/mapping/templates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      }
       setTemplateForm(defaultTemplateFormState);
       setAttachmentRules([]);
+      setEditingTemplateId(null);
       await loadData();
     } catch (err) {
       console.error(err);
-      setError(err instanceof Error ? err.message : 'Failed to create mapping template');
+      setError(
+        err instanceof Error
+          ? err.message
+          : editingTemplateId
+          ? 'Failed to update mapping template'
+          : 'Failed to create mapping template'
+      );
     } finally {
       setIsSubmittingTemplate(false);
     }
+  };
+
+  const startEditTemplate = (template: MappingTemplate) => {
+    const cfg = template.config || {};
+    setEditingTemplateOriginalConfig(cfg);
+    setTemplateForm({
+      template_name: template.template_name,
+      item_type: template.item_type,
+      company_id: template.company_id != null ? String(template.company_id) : '',
+      doc_type_id: template.doc_type_id != null ? String(template.doc_type_id) : '',
+      master_csv_path: cfg.master_csv_path || '',
+      external_join_keys: Array.isArray(cfg.external_join_keys) ? cfg.external_join_keys.join(', ') : '',
+      internal_join_key: cfg.internal_join_key || '',
+      column_aliases: cfg.column_aliases
+        ? Object.entries(cfg.column_aliases)
+            .map(([k, v]: any) => `${k}:${v}`)
+            .join(', ')
+        : '',
+      priority: String(template.priority || 100),
+    });
+    // Only map filename/join_key rules for UI; ignore path/label/metadata
+    const rules = Array.isArray(cfg.attachment_sources)
+      ? cfg.attachment_sources.map((r: any) => ({
+          path: r?.path || '',
+          filename_contains: r?.filename_contains || '',
+          join_key: r?.join_key || '',
+        }))
+      : [];
+    setAttachmentRules(rules);
+    setEditingTemplateId(template.template_id);
+    setError('');
+    setTplCsvPreview(null);
   };
 
   const submitDefault = async (event: React.FormEvent) => {
@@ -387,9 +469,18 @@ export default function MappingAdminPage() {
       }
       // Include attachment_sources override if present
       if (defaultForm.item_type === 'multi_source' && (defaultAttachmentRules.length > 0)) {
+        const missingPath = defaultAttachmentRules
+          .filter(r => (r.join_key || r.filename_contains))
+          .some(r => !(r.path || '').trim().length);
+        if (missingPath) {
+          setIsSubmittingDefault(false);
+          setError('Each default attachment rule must include a OneDrive path.');
+          return;
+        }
         const cleaned = defaultAttachmentRules
-          .filter(r => (r.join_key || '').trim().length > 0 || (r.filename_contains || '').trim().length > 0)
-          .map(r => ({ kind: 'onedrive', path: '', join_key: r.join_key?.trim() || undefined, filename_contains: r.filename_contains?.trim() || undefined }));
+          .filter(r => ((r.path || '').trim().length > 0 || (r.join_key || '').trim().length > 0 || (r.filename_contains || '').trim().length > 0))
+          .map(r => ({ kind: 'onedrive', path: (r.path || '').trim(), join_key: r.join_key?.trim() || undefined, filename_contains: r.filename_contains?.trim() || undefined }))
+          .filter(r => r.path.length > 0);
         if (cleaned.length > 0) {
           payload.config_override.attachment_sources = cleaned;
         }
@@ -630,19 +721,29 @@ export default function MappingAdminPage() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Attachment Rules</label>
                     <div className="space-y-2">
                       {attachmentRules.map((rule, idx) => (
-                        <div key={idx} className="flex items-end gap-2">
-                          <div className="flex-1">
-                            <label className="block text-xs text-gray-600 mb-1">Filename Contains</label>
+                        <div key={idx} className="grid md:grid-cols-3 gap-3 items-end">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">OneDrive Path</label>
+                            <input
+                              type="text"
+                              value={rule.path || ''}
+                              onChange={(e) => updateAttachmentRule(idx, 'path', e.target.value)}
+                              className="w-full border border-gray-300 rounded px-3 py-2"
+                              placeholder="e.g. HYA-OCR/Attachments/2025-10/"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Filename Contains</label>
                             <input
                               type="text"
                               value={rule.filename_contains || ''}
                               onChange={(e) => updateAttachmentRule(idx, 'filename_contains', e.target.value)}
                               className="w-full border border-gray-300 rounded px-3 py-2"
-                              placeholder="e.g. INV-"
+                              placeholder="Optional, e.g. INV-"
                             />
                           </div>
-                          <div className="flex-1">
-                            <label className="block text-xs text-gray-600 mb-1">Join Key</label>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Join Key</label>
                             <input
                               type="text"
                               value={rule.join_key || ''}
@@ -676,18 +777,21 @@ export default function MappingAdminPage() {
                   type="button"
                   onClick={() => {
                     setTemplateForm(defaultTemplateFormState);
+                    setAttachmentRules([]);
+                    setEditingTemplateId(null);
+                    setEditingTemplateOriginalConfig(null);
                     setError('');
                   }}
                   className="px-4 py-2 text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
                 >
-                  Reset
+                  {editingTemplateId ? 'Cancel' : 'Reset'}
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmittingTemplate}
                   className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-blue-300"
                 >
-                  {isSubmittingTemplate ? 'Saving...' : 'Create Template'}
+                  {isSubmittingTemplate ? 'Saving...' : editingTemplateId ? 'Update Template' : 'Create Template'}
                 </button>
               </div>
             </form>
@@ -739,7 +843,13 @@ export default function MappingAdminPage() {
                           <td className="px-4 py-2 border-b align-top">{config.master_csv_path || '—'}</td>
                           <td className="px-4 py-2 border-b align-top">{formatJoinKeys(config.external_join_keys)}</td>
                           <td className="px-4 py-2 border-b align-top text-xs text-gray-500">{formatDate(template.updated_at)}</td>
-                          <td className="px-4 py-2 border-b align-top">
+                          <td className="px-4 py-2 border-b align-top space-x-3">
+                            <button
+                              onClick={() => startEditTemplate(template)}
+                              className="text-blue-600 hover:text-blue-800 text-xs"
+                            >
+                              Edit
+                            </button>
                             <button
                               onClick={() => deleteTemplate(template.template_id)}
                               className="text-red-600 hover:text-red-800 text-xs"
@@ -926,9 +1036,19 @@ export default function MappingAdminPage() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Attachment Rules Override</label>
                     <div className="space-y-2">
                       {defaultAttachmentRules.map((rule, idx) => (
-                        <div key={idx} className="flex items-end gap-2">
-                          <div className="flex-1">
-                            <label className="block text-xs text-gray-600 mb-1">Filename Contains</label>
+                        <div key={idx} className="grid md:grid-cols-3 gap-3 items-end">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">OneDrive Path</label>
+                            <input
+                              type="text"
+                              value={rule.path || ''}
+                              onChange={(e) => updateDefaultAttachmentRule(idx, 'path', e.target.value)}
+                              className="w-full border border-gray-300 rounded px-3 py-2"
+                              placeholder="e.g. HYA-OCR/Attachments/2025-10/"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Filename Contains</label>
                             <input
                               type="text"
                               value={rule.filename_contains || ''}
@@ -937,8 +1057,8 @@ export default function MappingAdminPage() {
                               placeholder="e.g. INV-"
                             />
                           </div>
-                          <div className="flex-1">
-                            <label className="block text-xs text-gray-600 mb-1">Join Key</label>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Join Key</label>
                             <input
                               type="text"
                               value={rule.join_key || ''}

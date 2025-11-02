@@ -3529,10 +3529,12 @@ def submit_order(order_id: int, background_tasks: BackgroundTasks, db: Session =
         if order.total_items == 0:
             raise HTTPException(status_code=400, detail="Cannot submit order with no items")
 
-        # Check if all items have files
+        # Check if every item has at least a primary file or attachments
+        # Previous logic only checked attachments (file_count), causing false negatives
         items_without_files = db.query(OcrOrderItem).filter(
             OcrOrderItem.order_id == order_id,
-            OcrOrderItem.file_count == 0
+            OcrOrderItem.primary_file_id.is_(None),
+            OcrOrderItem.file_count == 0,
         ).count()
 
         if items_without_files > 0:
@@ -3573,10 +3575,11 @@ def process_order_ocr_only(order_id: int, background_tasks: BackgroundTasks, db:
         if order.total_items == 0:
             raise HTTPException(status_code=400, detail="Cannot process order with no items")
 
-        # Check if all items have files
+        # Check if every item has at least a primary file or attachments
         items_without_files = db.query(OcrOrderItem).filter(
             OcrOrderItem.order_id == order_id,
-            OcrOrderItem.file_count == 0
+            OcrOrderItem.primary_file_id.is_(None),
+            OcrOrderItem.file_count == 0,
         ).count()
 
         if items_without_files > 0:
@@ -5330,101 +5333,7 @@ def update_auto_mapping_config(company_id: int, doc_type_id: int):
 @app.post("/companies/{company_id}/document-types/{doc_type_id}/test-auto-mapping", response_model=dict)
 def test_auto_mapping_config(company_id: int, doc_type_id: int):
     """Deprecated: removed."""
-        raise HTTPException(status_code=410, detail="Auto-mapping test endpoint has been removed.")
-
-    # legacy code retained for reference but unreachable
-    try:
-        # Get configuration
-        config = db.query(CompanyDocumentConfig).filter(
-            CompanyDocumentConfig.company_id == company_id,
-            CompanyDocumentConfig.doc_type_id == doc_type_id,
-            CompanyDocumentConfig.active == True
-        ).first()
-
-        if not config:
-            raise HTTPException(status_code=404, detail="Company document configuration not found")
-
-        if not config.auto_mapping_enabled:
-            raise HTTPException(status_code=400, detail="Auto-mapping is not enabled for this configuration")
-
-        # Get sample OCR data from request
-        sample_ocr_data = request.get('sample_ocr_data', [])
-        sample_mapping_data = request.get('sample_mapping_data', [])
-
-        if not sample_ocr_data or not sample_mapping_data:
-            raise HTTPException(status_code=400, detail="Both sample_ocr_data and sample_mapping_data are required")
-
-        # Simulate auto-mapping logic
-        from utils.order_processor import OrderProcessor
-        processor = OrderProcessor()
-
-        # Create a mock matching result
-        test_results = {
-            "auto_mapping_enabled": config.auto_mapping_enabled,
-            "default_mapping_keys": config.default_mapping_keys or [],
-            # "cross_field_mappings": config.cross_field_mappings or {},  # Removed - cross-field mapping no longer supported
-            "sample_matches": [],
-            "match_statistics": {
-                "total_ocr_records": len(sample_ocr_data),
-                "potential_matches": 0,
-                "cross_field_matches": 0  # Keep for compatibility but will be 0
-            }
-        }
-
-        # Basic matching simulation
-        default_keys = config.default_mapping_keys or []
-        # cross_mappings = config.cross_field_mappings or {}  # Removed - cross-field mapping no longer supported
-        cross_mappings = {}  # Empty for compatibility
-
-        for ocr_record in sample_ocr_data[:5]:  # Limit to first 5 for testing
-            matches = []
-            for mapping_record in sample_mapping_data:
-                # Test direct key matches
-                for key in default_keys:
-                    if key in mapping_record and key in ocr_record:
-                        if str(ocr_record[key]).strip() == str(mapping_record[key]).strip():
-                            matches.append({
-                                "strategy": "direct_match",
-                                "field": key,
-                                "ocr_value": ocr_record[key],
-                                "mapping_value": mapping_record[key]
-                            })
-
-                # Test cross-field matches
-                for ocr_field, mapping_field in cross_mappings.items():
-                    if ocr_field in ocr_record and mapping_field in mapping_record:
-                        if str(ocr_record[ocr_field]).strip() == str(mapping_record[mapping_field]).strip():
-                            matches.append({
-                                "strategy": "cross_field_match",
-                                "ocr_field": ocr_field,
-                                "mapping_field": mapping_field,
-                                "ocr_value": ocr_record[ocr_field],
-                                "mapping_value": mapping_record[mapping_field]
-                            })
-
-            if matches:
-                test_results["sample_matches"].append({
-                    "ocr_record": ocr_record,
-                    "matches": matches
-                })
-                test_results["match_statistics"]["potential_matches"] += len(matches)
-
-        test_results["match_statistics"]["cross_field_matches"] = len([
-            m for match_set in test_results["sample_matches"]
-            for m in match_set["matches"]
-            if m["strategy"] == "cross_field_match"
-        ])
-
-        return test_results
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to test auto-mapping config: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to test auto-mapping config: {str(e)}")
-
-
-# NOTE: get_mapping_analytics endpoint removed - mapping key recommendation functionality no longer needed
+    raise HTTPException(status_code=410, detail="Auto-mapping test endpoint has been removed.")
 
 
 @app.get("/orders/{order_id}/download/mapped-csv")
