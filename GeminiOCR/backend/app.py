@@ -3615,10 +3615,10 @@ def process_order_mapping_only(order_id: int, background_tasks: BackgroundTasks,
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
 
-        if order.status not in [OrderStatus.OCR_COMPLETED, OrderStatus.MAPPING, OrderStatus.COMPLETED]:
+        if order.status not in [OrderStatus.OCR_COMPLETED, OrderStatus.MAPPING, OrderStatus.COMPLETED, OrderStatus.FAILED]:
             raise HTTPException(
                 status_code=400,
-                detail="Can only process mapping for orders in OCR_COMPLETED, MAPPING, or COMPLETED status",
+                detail="Can only process mapping for orders in OCR_COMPLETED, MAPPING, COMPLETED, or FAILED status",
             )
 
         # Validate that all items have OCR results
@@ -5766,7 +5766,7 @@ def restart_mapping_processing(order_id: int, db: Session = Depends(get_db)):
         if order.status == OrderStatus.LOCKED:
             raise HTTPException(status_code=400, detail="Cannot restart mapping for locked order")
 
-        if order.status not in [OrderStatus.OCR_COMPLETED, OrderStatus.MAPPING, OrderStatus.COMPLETED]:
+        if order.status not in [OrderStatus.OCR_COMPLETED, OrderStatus.MAPPING, OrderStatus.COMPLETED, OrderStatus.FAILED]:
             raise HTTPException(
                 status_code=400,
                 detail=f"Cannot restart mapping for order in {order.status} status"

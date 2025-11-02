@@ -831,12 +831,12 @@ export default function MappingAdminPage() {
                       {isPreviewingSamplePrimary ? 'Loading…' : 'Preview Primary Columns'}
                     </button>
                   </div>
-                  {samplePrimaryHeaders && samplePrimaryHeaders.length > 0 && (
-                    <div className="bg-gray-50 border border-gray-200 rounded p-2">
-                      <div className="text-xs text-gray-600 mb-1">Click to toggle in External Join Keys:</div>
-                      <div className="flex flex-wrap gap-1">
-                        {samplePrimaryHeaders.slice(0, 24).map((h, i) => {
-                          const selected = parseTplJoinKeys().includes(h);
+                {samplePrimaryHeaders && samplePrimaryHeaders.length > 0 && (
+                  <div className="bg-gray-50 border border-gray-200 rounded p-2">
+                    <div className="text-xs text-gray-600 mb-1">Click to toggle in External Join Keys:</div>
+                    <div className="flex flex-wrap gap-1">
+                      {samplePrimaryHeaders.slice(0, 24).map((h, i) => {
+                        const selected = parseTplJoinKeys().includes(h);
                           return (
                             <button
                               type="button"
@@ -853,8 +853,27 @@ export default function MappingAdminPage() {
                           <span className="text-[11px] text-gray-500">+{samplePrimaryHeaders.length - 24} more</span>
                         )}
                       </div>
-                    </div>
-                  )}
+                      {/* Quick set internal join key (for multi-source templates) */}
+                      {templateForm.item_type === 'multi_source' && (
+                        <div className="mt-2">
+                          <div className="text-xs text-gray-600 mb-1">Set Internal Join Key:</div>
+                          <div className="flex flex-wrap gap-1">
+                            {samplePrimaryHeaders.slice(0, 24).map((h, i) => (
+                              <button
+                                type="button"
+                                key={`tpl-internal-${i}`}
+                                onClick={() => handleTemplateInput('internal_join_key', h)}
+                                className={`text-[11px] border rounded px-2 py-0.5 ${templateForm.internal_join_key === h ? 'bg-indigo-600 text-white border-indigo-700' : 'bg-white text-gray-800 border-gray-300'}`}
+                                title="Set as internal join key"
+                              >
+                                {h}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                  </div>
+                )}
                 </div>
               </div>
 

@@ -513,6 +513,41 @@ class OrderProcessor:
         self.onedrive_client = client
         return client
 
+    def _apply_output_metadata(self, df: pd.DataFrame, context: Dict[str, Any]) -> None:
+        """Augment output DataFrame with metadata columns per configuration.
+
+        Configure via env var MAPPING_OUTPUT_META_MAP, e.g.:
+        - "order=ctx:order_id,item=col:__item_id,company=ctx:company_name"
+
+        Each pair is dest=src where src is one of:
+        - ctx:<key>   -> value from provided context dict (broadcast to all rows)
+        - col:<name>  -> copy from existing DataFrame column if present
+        Existing columns are not overwritten. If spec is missing or invalid, no-op.
+        """
+        try:
+            spec = os.getenv("MAPPING_OUTPUT_META_MAP", "").strip()
+            if not spec:
+                return
+            pairs = [p.strip() for p in spec.split(',') if p.strip()]
+            for token in pairs:
+                if '=' not in token:
+                    continue
+                dest, src = token.split('=', 1)
+                dest = dest.strip()
+                src = src.strip()
+                if not dest or not src or dest in df.columns:
+                    continue
+                if src.startswith('ctx:'):
+                    key = src[4:]
+                    if key in context:
+                        df[dest] = context[key]
+                elif src.startswith('col:'):
+                    col = src[4:]
+                    if col in df.columns:
+                        df[dest] = df[col]
+        except Exception as e:
+            logger.warning(f"Failed to apply output metadata mapping: {e}")
+
     def _get_master_csv_dataframe(self, path: str) -> pd.DataFrame:
         cached = self._master_csv_cache.get(path)
         if cached is not None:
@@ -633,8 +668,7 @@ class OrderProcessor:
             # On any flattening error, fall back to original behaviour
             df = pd.DataFrame(primary_rows)
 
-        df.insert(0, "item_id", item.item_id)
-        df.insert(1, "item_name", item.item_name or "")
+        # Do not hardcode metadata columns; caller may choose to augment via mapping
         return df
 
     def _build_multi_source_dataframe(
@@ -781,8 +815,7 @@ class OrderProcessor:
                 attachments_df = pd.DataFrame(rows)
                 merged_df = merged_df.merge(attachments_df, on=join_key, how="left")
 
-        merged_df.insert(0, "item_id", item.item_id)
-        merged_df.insert(1, "item_name", item.item_name or "")
+        # Do not hardcode metadata columns; caller may choose to augment via mapping
         return merged_df
 
     def _join_with_master_csv(
@@ -791,6 +824,7 @@ class OrderProcessor:
         master_df: pd.DataFrame,
         external_join_keys: List[str],
         column_aliases: Optional[Dict[str, str]] = None,
+        join_normalize: Optional[Dict[str, Any]] = None,
     ) -> pd.DataFrame:
         if not external_join_keys:
             return item_df
@@ -812,19 +846,46 @@ class OrderProcessor:
             raise RuntimeError(f"Master CSV missing required join columns: {missing_right}")
 
         # Coerce join columns to strings on both sides to avoid dtype mismatch
-        def _as_str_series(series: pd.Series) -> pd.Series:
+        def _normalize_text(s: str, opts: Optional[Dict[str, Any]], key_name: Optional[str] = None) -> str:
+            if opts is None:
+                return s
+            out = s
             try:
-                return series.astype(str).replace({"nan": "", "None": ""}).str.strip()
+                if isinstance(out, str):
+                    if opts.get('strip_non_digits'):
+                        import re
+                        out = re.sub(r"\D+", "", out)
+                    # zfill: int or per-key map
+                    zfill = opts.get('zfill')
+                    if isinstance(zfill, int) and zfill > 0:
+                        out = out.zfill(zfill)
+                    elif isinstance(zfill, dict) and key_name and key_name in zfill:
+                        length = int(zfill[key_name])
+                        if length > 0:
+                            out = out.zfill(length)
             except Exception:
-                return series.astype("string").fillna("").str.strip()
+                return s
+            return out
+
+        def _as_str_series(series: pd.Series, key_name: Optional[str]) -> pd.Series:
+            try:
+                s = series.astype(str).replace({"nan": "", "None": ""}).str.strip()
+                if join_normalize:
+                    return s.apply(lambda v: _normalize_text(v, join_normalize, key_name))
+                return s
+            except Exception:
+                s = series.astype("string").fillna("").str.strip()
+                if join_normalize:
+                    return s.apply(lambda v: _normalize_text(v, join_normalize, key_name))
+                return s
 
         left_tmp_cols: List[str] = []
         right_tmp_cols: List[str] = []
-        for i, (lcol, rcol) in enumerate(zip(left_on, right_on)):
+        for i, (lcol, rcol, key_name) in enumerate(zip(left_on, right_on, external_join_keys)):
             ltmp = f"__join_left_{i}__"
             rtmp = f"__join_right_{i}__"
-            item_df[ltmp] = _as_str_series(item_df[lcol])
-            master_df[rtmp] = _as_str_series(master_df[rcol])
+            item_df[ltmp] = _as_str_series(item_df[lcol], key_name)
+            master_df[rtmp] = _as_str_series(master_df[rcol], key_name)
             left_tmp_cols.append(ltmp)
             right_tmp_cols.append(rtmp)
 
@@ -1686,6 +1747,7 @@ class OrderProcessor:
                         master_df,
                         item.mapping_config.get("external_join_keys", []),
                         item.mapping_config.get("column_aliases"),
+                        item.mapping_config.get("join_normalize") or item.mapping_config.get("join_value_normalization"),
                     )
 
                     mapped_path = self._persist_item_mapping_result(order_id, item, merged_df)
@@ -1695,9 +1757,17 @@ class OrderProcessor:
                     item.error_message = None
 
                     annotated_df = merged_df.copy()
-                    annotated_df.insert(0, "item_name", item.item_name or "")
-                    annotated_df.insert(0, "item_id", item.item_id)
-                    annotated_df.insert(0, "order_id", order_id)
+                    # Optional: augment with metadata columns based on mapping spec
+                    self._apply_output_metadata(
+                        annotated_df,
+                        {
+                            "order_id": order_id,
+                            "item_id": item.item_id,
+                            "item_name": item.item_name or "",
+                            "company_id": item.company_id,
+                            "doc_type_id": item.doc_type_id,
+                        },
+                    )
                     aggregated_frames.append(annotated_df)
 
                 except Exception as exc:
