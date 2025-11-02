@@ -596,15 +596,43 @@ class OrderProcessor:
         item: OcrOrderItem,
         records: List[Dict[str, Any]],
     ) -> pd.DataFrame:
-        primary_rows = [self._strip_metadata(row) for row in records if row.get("__is_primary")]
+        """Build primary dataframe for single-source mapping.
+
+        Notes:
+        - Normalises OCR JSON by deep-flattening nested objects/arrays so that
+          external join keys like 'service_number' are available as columns.
+        - Strips internal metadata keys (prefix '__') before flattening.
+        """
+        primary_rows = [self._strip_metadata(row) for row in records if isinstance(row, dict) and row.get("__is_primary")]
 
         if not primary_rows:
-            primary_rows = [self._strip_metadata(row) for row in records]
+            primary_rows = [self._strip_metadata(row) for row in records if isinstance(row, dict)]
 
         if not primary_rows:
             raise RuntimeError("No OCR data available for mapping")
 
-        df = pd.DataFrame(primary_rows)
+        # Deep-flatten each row to expose nested fields as columns
+        try:
+            from utils.excel_converter import deep_flatten_json_universal
+            flattened: List[Dict[str, Any]] = []
+            for row in primary_rows:
+                # deep_flatten_json_universal returns a list of row dicts
+                flat_rows = deep_flatten_json_universal(row)
+                for fr in flat_rows:
+                    if isinstance(fr, dict):
+                        # Ensure internal meta keys are not present post-flatten
+                        cleaned = {k: v for k, v in fr.items() if not k.startswith("__")}
+                        flattened.append(cleaned)
+
+            if not flattened:
+                # Fallback to non-flattened rows if flattening produced nothing
+                flattened = primary_rows
+
+            df = pd.DataFrame(flattened)
+        except Exception:
+            # On any flattening error, fall back to original behaviour
+            df = pd.DataFrame(primary_rows)
+
         df.insert(0, "item_id", item.item_id)
         df.insert(1, "item_name", item.item_name or "")
         return df
