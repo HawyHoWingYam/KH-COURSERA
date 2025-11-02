@@ -1341,16 +1341,98 @@ export default function MappingAdminPage() {
                 )}
               </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">External Join Keys Override</label>
-                    <input
-                      type="text"
-                      value={defaultForm.external_join_keys}
-                      onChange={(e) => handleDefaultInput('external_join_keys', e.target.value)}
-                      className="w-full border border-gray-300 rounded px-3 py-2"
-                      placeholder="Comma separated list"
-                    />
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">External Join Keys Override</label>
+                <input
+                  type="text"
+                  value={defaultForm.external_join_keys}
+                  onChange={(e) => handleDefaultInput('external_join_keys', e.target.value)}
+                  className="w-full border border-gray-300 rounded px-3 py-2"
+                  placeholder="Comma separated list"
+                />
+              </div>
+
+              {/* Join normalization override */}
+              <div className="text-sm">
+                <div className="font-medium text-gray-700 mb-1">Join Value Normalization (override)</div>
+                <label className="inline-flex items-center gap-2 mr-4">
+                  <input
+                    type="checkbox"
+                    checked={defaultForm.normalize_strip_non_digits}
+                    onChange={(e) => handleDefaultInput('normalize_strip_non_digits', e.target.checked)}
+                  />
+                  <span>Strip non-digits</span>
+                </label>
+                <label className="inline-flex items-center gap-2">
+                  <span>ZFill</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={defaultForm.normalize_zfill}
+                    onChange={(e) => handleDefaultInput('normalize_zfill', e.target.value)}
+                    className="w-24 border border-gray-300 rounded px-2 py-1"
+                    placeholder="e.g. 8"
+                  />
+                </label>
+              </div>
+
+              {/* Output meta override */}
+              <div className="text-sm">
+                <div className="font-medium text-gray-700 mb-1">Output Columns (override)</div>
+                {defaultForm.output_meta_rows.map((row, idx) => (
+                  <div key={idx} className="flex items-end gap-2 mb-2">
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Dest Column</label>
+                      <input
+                        type="text"
+                        value={row.dest}
+                        onChange={(e) => {
+                          const next = defaultForm.output_meta_rows.slice();
+                          next[idx] = { ...row, dest: e.target.value };
+                          setDefaultForm(prev => ({ ...prev, output_meta_rows: next }));
+                        }}
+                        className="w-40 border border-gray-300 rounded px-2 py-1"
+                        placeholder="e.g. order_id"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Source</label>
+                      <select
+                        value={row.srcType}
+                        onChange={(e) => {
+                          const next = defaultForm.output_meta_rows.slice();
+                          next[idx] = { ...row, srcType: e.target.value as any };
+                          setDefaultForm(prev => ({ ...prev, output_meta_rows: next }));
+                        }}
+                        className="w-28 border border-gray-300 rounded px-2 py-1"
+                      >
+                        <option value="ctx">Context</option>
+                        <option value="col">Existing Column</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Key</label>
+                      <input
+                        type="text"
+                        value={row.srcKey}
+                        onChange={(e) => {
+                          const next = defaultForm.output_meta_rows.slice();
+                          next[idx] = { ...row, srcKey: e.target.value };
+                          setDefaultForm(prev => ({ ...prev, output_meta_rows: next }));
+                        }}
+                        className="w-40 border border-gray-300 rounded px-2 py-1"
+                        placeholder="e.g. order_id or __item_id"
+                      />
+                    </div>
+                    <button type="button" onClick={() => {
+                      const next = defaultForm.output_meta_rows.slice();
+                      next.splice(idx, 1);
+                      setDefaultForm(prev => ({ ...prev, output_meta_rows: next }));
+                    }} className="px-3 py-1 text-xs bg-red-600 text-white rounded">Remove</button>
                   </div>
+                ))}
+                <button type="button" onClick={() => setDefaultForm(prev => ({ ...prev, output_meta_rows: [...prev.output_meta_rows, { dest: '', srcType: 'ctx', srcKey: '' }] }))} className="px-3 py-1 text-xs bg-gray-700 text-white rounded">+ Add Output Column</button>
+              </div>
 
               {defaultForm.item_type === 'multi_source' && (
                 <>

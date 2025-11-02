@@ -1823,6 +1823,23 @@ class OrderProcessor:
                 current_paths = order.final_report_paths or {}
                 if mapped_path:
                     current_paths['mapped_csv'] = mapped_path
+
+                # Attempt to generate Special CSV if template is configured on primary_doc_type
+                special_csv_path = None
+                try:
+                    if order.primary_doc_type and order.primary_doc_type.template_json_path:
+                        template_path = order.primary_doc_type.template_json_path
+                        template_json = self.special_csv_generator.load_template_from_s3(template_path)
+                        self.special_csv_generator.validate_template(template_json)
+                        special_df = self.special_csv_generator.generate_special_csv(combined_df, template_json)
+                        # Upload special CSV
+                        special_key = f"{s3_base}/order_{order_id}_special.csv"
+                        special_csv_bytes = special_df.to_csv(index=False).encode('utf-8')
+                        if self.s3_manager.upload_file(special_csv_bytes, special_key):
+                            special_csv_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{special_key}"
+                            current_paths['special_csv'] = special_csv_path
+                except Exception as exc:
+                    logger.warning(f"Special CSV generation skipped for order {order_id}: {exc}")
                 order.final_report_paths = current_paths
                 flag_modified(order, 'final_report_paths')
 
