@@ -158,6 +158,8 @@ export default function MappingAdminPage() {
   // Template editing state
   const [editingTemplateId, setEditingTemplateId] = useState<number | null>(null);
   const [editingTemplateOriginalConfig, setEditingTemplateOriginalConfig] = useState<Record<string, any> | null>(null);
+  // Defaults editing state
+  const [editingDefaultId, setEditingDefaultId] = useState<number | null>(null);
   // Master CSV preview state (template)
   const [tplCsvPreview, setTplCsvPreview] = useState<{ headers: string[]; row_count: number } | null>(null);
   const [isPreviewingTplCsv, setIsPreviewingTplCsv] = useState(false);
@@ -592,6 +594,146 @@ export default function MappingAdminPage() {
     setEditingTemplateId(template.template_id);
     setError('');
     setTplCsvPreview(null);
+  };
+
+  const startEditDefault = (record: MappingDefault) => {
+    // Load defaults form from an existing Default record
+    const cfg = record.config_override || {};
+    const strip = !!(cfg.join_normalize && cfg.join_normalize.strip_non_digits);
+    let zfillSimple = '';
+    let zfillRows: Array<{ key: string; length: string; custom?: boolean }> = [];
+    if (cfg.join_normalize && typeof cfg.join_normalize.zfill !== 'undefined') {
+      if (typeof cfg.join_normalize.zfill === 'number') {
+        zfillSimple = String(cfg.join_normalize.zfill);
+      } else if (cfg.join_normalize.zfill && typeof cfg.join_normalize.zfill === 'object') {
+        try {
+          const obj = cfg.join_normalize.zfill as Record<string, any>;
+          zfillRows = Object.keys(obj).map(k => ({ key: k, length: String(obj[k] ?? ''), custom: true }));
+        } catch {}
+      }
+    }
+
+    // Output meta rows
+    const omRows: Array<{ dest: string; srcType: 'ctx' | 'col'; srcKey: string }> = [];
+    if (cfg && typeof cfg === 'object' && cfg.output_meta && typeof cfg.output_meta === 'object') {
+      Object.entries(cfg.output_meta).forEach(([dest, src]: any) => {
+        if (typeof dest === 'string' && typeof src === 'string' && (src.startsWith('ctx:') || src.startsWith('col:'))) {
+          const [prefix, key] = src.split(':', 2);
+          omRows.push({ dest, srcType: prefix as any, srcKey: key || '' });
+        }
+      });
+    }
+
+    setDefaultForm({
+      company_id: String(record.company_id),
+      doc_type_id: String(record.doc_type_id),
+      item_type: record.item_type,
+      template_id: record.template_id ? String(record.template_id) : '',
+      override_enabled: !!record.config_override,
+      master_csv_path: cfg.master_csv_path || '',
+      external_join_keys: Array.isArray(cfg.external_join_keys) ? cfg.external_join_keys.join(', ') : '',
+      internal_join_key: cfg.internal_join_key || '',
+      column_aliases: cfg.column_aliases ? Object.entries(cfg.column_aliases).map(([k, v]: any) => `${k}:${v}`).join(', ') : '',
+      normalize_strip_non_digits: strip,
+      normalize_zfill: zfillSimple,
+      normalize_zfill_rows: zfillRows,
+      output_meta_rows: omRows,
+      merge_suffix: cfg.merge_suffix || '',
+    });
+
+    // Attachment rules (override)
+    const rules = Array.isArray(cfg.attachment_sources)
+      ? cfg.attachment_sources.map((r: any) => ({
+          path: r?.path || '',
+          filename_contains: r?.filename_contains || '',
+          join_key: r?.join_key || '',
+          label: r?.label || '',
+          metadata: r?.metadata ? JSON.stringify(r.metadata) : '',
+        }))
+      : [];
+    setDefaultAttachmentRules(rules);
+    setEditingDefaultId(record.default_id);
+    setError('');
+    setDefCsvPreview(null);
+  };
+
+  // Helpers: get selected template config for Defaults editing
+  const getSelectedTemplateConfig = (): any | null => {
+    const tid = (defaultForm.template_id || '').trim();
+    if (!tid) return null;
+    const t = templates.find(t => String(t.template_id) === tid);
+    return t?.config || null;
+  };
+
+  const copyPerKeyFromTemplate = (key: string) => {
+    const cfg = getSelectedTemplateConfig();
+    if (!cfg) return;
+    let length = '';
+    if (cfg.join_normalize && typeof cfg.join_normalize.zfill !== 'undefined') {
+      if (typeof cfg.join_normalize.zfill === 'number') {
+        length = String(cfg.join_normalize.zfill);
+      } else if (cfg.join_normalize.zfill && typeof cfg.join_normalize.zfill === 'object') {
+        const v = cfg.join_normalize.zfill[key];
+        if (typeof v === 'number') length = String(v);
+      }
+    }
+    setDefaultForm(prev => ({
+      ...prev,
+      normalize_zfill_rows: (prev.normalize_zfill_rows || []).map(r => r.key === key ? { ...r, length } : r),
+    }));
+  };
+
+  const resetPerKeyOverride = (key: string) => {
+    setDefaultForm(prev => ({
+      ...prev,
+      normalize_zfill_rows: (prev.normalize_zfill_rows || []).map(r => r.key === key ? { ...r, length: '' } : r),
+    }));
+  };
+
+  const copyAllOutputMetaFromTemplate = () => {
+    const cfg = getSelectedTemplateConfig();
+    if (!cfg || !cfg.output_meta) return;
+    const rows: Array<{ dest: string; srcType: 'ctx' | 'col'; srcKey: string }> = [];
+    Object.entries(cfg.output_meta).forEach(([dest, src]: any) => {
+      if (typeof dest === 'string' && typeof src === 'string' && (src.startsWith('ctx:') || src.startsWith('col:'))) {
+        const [prefix, key] = src.split(':', 2);
+        rows.push({ dest, srcType: prefix as any, srcKey: key || '' });
+      }
+    });
+    setDefaultForm(prev => ({ ...prev, output_meta_rows: rows }));
+  };
+
+  const copyJoinNormalizeFromTemplate = () => {
+    const cfg = getSelectedTemplateConfig();
+    if (!cfg || !cfg.join_normalize) return;
+    const jn = cfg.join_normalize;
+    const strip = !!jn.strip_non_digits;
+    let zfillSimple = '';
+    let zfillRows: Array<{ key: string; length: string; custom?: boolean }> = [];
+    if (typeof jn.zfill !== 'undefined') {
+      if (typeof jn.zfill === 'number') {
+        zfillSimple = String(jn.zfill);
+      } else if (jn.zfill && typeof jn.zfill === 'object') {
+        try {
+          const obj = jn.zfill as Record<string, any>;
+          zfillRows = Object.keys(obj).map(k => ({ key: k, length: String(obj[k] ?? ''), custom: true }));
+        } catch {}
+      }
+    }
+    setDefaultForm(prev => ({
+      ...prev,
+      normalize_strip_non_digits: strip,
+      normalize_zfill: zfillSimple,
+      normalize_zfill_rows: zfillRows,
+    }));
+  };
+
+  const copyMergeSuffixFromTemplate = () => {
+    const cfg = getSelectedTemplateConfig();
+    if (!cfg) return;
+    const ms = (cfg.merge_suffix || '').trim();
+    if (!ms) return;
+    setDefaultForm(prev => ({ ...prev, merge_suffix: ms }));
   };
 
   const submitDefault = async (event: React.FormEvent) => {
@@ -1487,6 +1629,13 @@ export default function MappingAdminPage() {
               {/* Join normalization override */}
               <div className="text-sm">
                 <div className="font-medium text-gray-700 mb-1">Join Value Normalization (override)</div>
+                {defaultForm.template_id && (
+                  <div className="mb-2 text-xs text-gray-600">
+                    <button type="button" className="px-2 py-1 bg-slate-200 rounded"
+                      onClick={copyJoinNormalizeFromTemplate}
+                    >Copy from template</button>
+                  </div>
+                )}
                 <label className="inline-flex items-center gap-2 mr-4">
                   <input
                     type="checkbox"
@@ -1510,6 +1659,26 @@ export default function MappingAdminPage() {
                 <div className="mt-2">
                   <label className="block text-xs text-gray-600 mb-1">Per-key ZFill</label>
                   <div className="space-y-2">
+                    {/* Diff helper when template is selected */}
+                    {defaultForm.template_id && (
+                      <div className="text-xs text-gray-600 mb-1">
+                        {(() => {
+                          const cfg = getSelectedTemplateConfig();
+                          if (!cfg) return null;
+                          let globalT = '';
+                          let perKeyT: Record<string, number> = {} as any;
+                          if (cfg.join_normalize && typeof cfg.join_normalize.zfill !== 'undefined') {
+                            if (typeof cfg.join_normalize.zfill === 'number') globalT = String(cfg.join_normalize.zfill);
+                            if (cfg.join_normalize.zfill && typeof cfg.join_normalize.zfill === 'object') perKeyT = cfg.join_normalize.zfill as any;
+                          }
+                          return (
+                            <div className="mb-1">
+                              <span className="mr-2">Template ZFill (global): {globalT || '—'}</span>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
                     {(defaultForm.normalize_zfill_rows || []).map((row, idx) => (
                       <div key={idx} className="flex items-center gap-2">
                         <input
@@ -1536,6 +1705,16 @@ export default function MappingAdminPage() {
                           className="w-24 border border-gray-300 rounded px-2 py-1"
                           placeholder="length"
                         />
+                        {defaultForm.template_id && (
+                          <>
+                            <button type="button" className="text-xs px-2 py-1 bg-slate-200 rounded"
+                              onClick={() => copyPerKeyFromTemplate(row.key)}
+                            >Copy from template</button>
+                            <button type="button" className="text-xs px-2 py-1 bg-slate-200 rounded"
+                              onClick={() => resetPerKeyOverride(row.key)}
+                            >Reset</button>
+                          </>
+                        )}
                         {row.custom && (
                           <button type="button" className="text-xs px-2 py-1 bg-red-600 text-white rounded"
                             onClick={() => {
@@ -1555,6 +1734,13 @@ export default function MappingAdminPage() {
               {/* Output meta override */}
               <div className="text-sm">
                 <div className="font-medium text-gray-700 mb-1">Output Columns (override)</div>
+                {defaultForm.template_id && (
+                  <div className="mb-2 text-xs text-gray-600">
+                    <button type="button" className="px-2 py-1 bg-slate-200 rounded"
+                      onClick={copyAllOutputMetaFromTemplate}
+                    >Copy from template</button>
+                  </div>
+                )}
                 {(defaultForm.output_meta_rows || []).map((row, idx) => (
                   <div key={idx} className="flex items-end gap-2 mb-2">
                     <div>
@@ -1613,6 +1799,13 @@ export default function MappingAdminPage() {
               {/* Merge suffix override */}
               <div className="text-sm">
                 <div className="font-medium text-gray-700 mb-1">Merge Suffix (override)</div>
+                {defaultForm.template_id && (
+                  <div className="mb-2 text-xs text-gray-600">
+                    <button type="button" className="px-2 py-1 bg-slate-200 rounded"
+                      onClick={copyMergeSuffixFromTemplate}
+                    >Copy from template</button>
+                  </div>
+                )}
                 <input
                   type="text"
                   value={defaultForm.merge_suffix}
@@ -1717,18 +1910,19 @@ export default function MappingAdminPage() {
                   type="button"
                   onClick={() => {
                     setDefaultForm(defaultDefaultFormState);
+                    setEditingDefaultId(null);
                     setError('');
                   }}
                   className="px-4 py-2 text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
                 >
-                  Reset
+                  {editingDefaultId ? 'Cancel' : 'Reset'}
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmittingDefault}
                   className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-blue-300"
                 >
-                  {isSubmittingDefault ? 'Saving...' : 'Upsert Default'}
+                  {isSubmittingDefault ? 'Saving...' : editingDefaultId ? 'Update Default' : 'Upsert Default'}
                 </button>
               </div>
             </form>
@@ -1805,7 +1999,13 @@ export default function MappingAdminPage() {
                             </pre>
                           </td>
                           <td className="px-4 py-2 border-b text-xs text-gray-500">{formatDate(record.updated_at)}</td>
-                          <td className="px-4 py-2 border-b">
+                          <td className="px-4 py-2 border-b space-x-3">
+                            <button
+                              onClick={() => startEditDefault(record)}
+                              className="text-blue-600 hover:text-blue-800 text-xs"
+                            >
+                              Edit
+                            </button>
                             <button
                               onClick={() => deleteDefault(record.default_id)}
                               className="text-red-600 hover:text-red-800 text-xs"
