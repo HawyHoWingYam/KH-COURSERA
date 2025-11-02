@@ -562,7 +562,20 @@ class OrderProcessor:
             raise RuntimeError(f"Unable to load OCR result JSON for item {item.item_id}")
 
         try:
-            return json.loads(content.decode("utf-8"))
+            loaded = json.loads(content.decode("utf-8"))
+            # Normalise to a list of dicts so downstream code can iterate rows safely
+            if isinstance(loaded, dict):
+                records = [loaded]
+            elif isinstance(loaded, list):
+                records = loaded
+            else:
+                raise ValueError("Unexpected OCR JSON structure; must be object or array")
+
+            # Defensive: keep only dict rows
+            dict_rows: List[Dict[str, Any]] = [r for r in records if isinstance(r, dict)]
+            if not dict_rows:
+                raise ValueError("No valid row objects in OCR JSON")
+            return dict_rows
         except Exception as exc:
             raise RuntimeError(f"Invalid OCR result JSON for item {item.item_id}: {exc}") from exc
 
