@@ -902,7 +902,7 @@ class OrderProcessor:
             left_on=left_tmp_cols,
             right_on=right_tmp_cols,
             how="left",
-            suffixes=("", "_master"),
+            suffixes=("", (item.mapping_config.get("merge_suffix") if isinstance(getattr(item, 'mapping_config', None), dict) and item.mapping_config.get("merge_suffix") else "_master")),
         )
 
         # Drop temp join columns

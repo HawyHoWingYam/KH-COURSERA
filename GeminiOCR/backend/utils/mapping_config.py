@@ -75,6 +75,18 @@ class BaseMappingConfig(BaseModel):
         default=None,
         description="Output column mapping: {dest: 'ctx:order_id' | 'col:__item_id', ...}",
     )
+    merge_suffix: Optional[str] = Field(
+        default=None,
+        description="Suffix for conflicting column names from master CSV (default '_master')",
+    )
+    join_normalize: Optional[dict] = Field(
+        default=None,
+        description="Join value normalization options: {strip_non_digits: bool, zfill: int | {key: int}}",
+    )
+    output_meta: Optional[dict] = Field(
+        default=None,
+        description="Output column mapping: {dest: 'ctx:order_id' | 'col:__item_id', ...}",
+    )
 
     @validator("master_csv_path")
     def _validate_master_path(cls, value: str) -> str:  # pylint: disable=no-self-argument
@@ -174,6 +186,11 @@ def normalise_mapping_config(
                 raise ValueError("output_meta values must start with 'ctx:' or 'col:'")
     elif om is not None:
         raise ValueError("output_meta must be an object mapping dest->'ctx:'|'col:' source")
+
+    # Validate merge_suffix
+    ms = data.get("merge_suffix")
+    if ms is not None and (not isinstance(ms, str) or len(ms) > 32):
+        raise ValueError("merge_suffix must be a short string (<=32 chars)")
 
     return data
 
