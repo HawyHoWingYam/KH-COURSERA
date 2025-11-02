@@ -193,6 +193,9 @@ export default function OrderDetailsPage() {
   const [isSavingMappingConfig, setIsSavingMappingConfig] = useState(false);
   const [csvPreview, setCsvPreview] = useState<{ headers: string[]; row_count: number } | null>(null);
   const [isPreviewingCsv, setIsPreviewingCsv] = useState(false);
+  // Primary JSON deep-flattened headers preview
+  const [primaryPreview, setPrimaryPreview] = useState<string[] | null>(null);
+  const [isPreviewingPrimary, setIsPreviewingPrimary] = useState(false);
 
   useEffect(() => {
     loadOrder();
@@ -719,6 +722,28 @@ export default function OrderDetailsPage() {
       setMappingFormError(err instanceof Error ? err.message : 'Failed to preview master CSV');
     } finally {
       setIsPreviewingCsv(false);
+    }
+  };
+
+  const previewPrimaryHeaders = async () => {
+    if (!mappingModalItem) return;
+    setIsPreviewingPrimary(true);
+    setMappingFormError('');
+    try {
+      const resp = await fetch(`/api/orders/${orderId}/items/${mappingModalItem.item_id}/primary/csv/headers`);
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || 'Failed to load primary headers');
+      }
+      const data = await resp.json();
+      const headers: string[] = Array.isArray(data.headers) ? data.headers : [];
+      setPrimaryPreview(headers);
+    } catch (err) {
+      console.error('Preview primary headers error:', err);
+      setPrimaryPreview(null);
+      setMappingFormError(err instanceof Error ? err.message : 'Failed to load primary headers');
+    } finally {
+      setIsPreviewingPrimary(false);
     }
   };
 
@@ -2086,6 +2111,67 @@ export default function OrderDetailsPage() {
                         <span className="text-[11px] text-gray-500">+{csvPreview.headers.length - 24} more</span>
                       )}
                     </div>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="block text-sm font-medium text-gray-700">Primary JSON Columns</span>
+                  <button
+                    type="button"
+                    onClick={previewPrimaryHeaders}
+                    disabled={isPreviewingPrimary}
+                    className="px-3 py-1 text-xs font-medium text-white bg-gray-700 hover:bg-gray-800 rounded disabled:bg-gray-300"
+                    title="Preview columns from the primary JSON (deep-flattened)"
+                  >
+                    {isPreviewingPrimary ? 'Loading…' : 'Preview Primary Columns'}
+                  </button>
+                </div>
+                {primaryPreview && primaryPreview.length > 0 && (
+                  <div className="bg-gray-50 border border-gray-200 rounded p-2">
+                    <div className="text-xs text-gray-600 mb-1">Click to toggle in External Join Keys:</div>
+                    <div className="flex flex-wrap gap-1">
+                      {primaryPreview.slice(0, 24).map((h, i) => {
+                        const selected = parseExternalJoinKeys().includes(h);
+                        return (
+                          <button
+                            type="button"
+                            key={i}
+                            onClick={() => toggleExternalJoinKey(h)}
+                            className={`text-[11px] border rounded px-2 py-0.5 ${selected ? 'bg-blue-600 text-white border-blue-700' : 'bg-white text-gray-800 border-gray-300'}`}
+                            title={selected ? 'Remove from join keys' : 'Add to join keys'}
+                          >
+                            {h}
+                          </button>
+                        );
+                      })}
+                      {primaryPreview.length > 24 && (
+                        <span className="text-[11px] text-gray-500">+{primaryPreview.length - 24} more</span>
+                      )}
+                    </div>
+                    {mappingForm.item_type === 'multi_source' && (
+                      <div className="mt-2">
+                        <div className="text-xs text-gray-600 mb-1">Set Internal Join Key:</div>
+                        <div className="flex flex-wrap gap-1">
+                          {primaryPreview.slice(0, 24).map((h, i) => (
+                            <button
+                              type="button"
+                              key={`internal-${i}`}
+                              onClick={() => handleMappingFormChange('internal_join_key', h)}
+                              className={`text-[11px] border rounded px-2 py-0.5 ${mappingForm.internal_join_key === h ? 'bg-indigo-600 text-white border-indigo-700' : 'bg-white text-gray-800 border-gray-300'}`}
+                              title="Set as internal join key"
+                              disabled={mappingForm.inherit_defaults}
+                            >
+                              {h}
+                            </button>
+                          ))}
+                          {primaryPreview.length > 24 && (
+                            <span className="text-[11px] text-gray-500">+{primaryPreview.length - 24} more</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

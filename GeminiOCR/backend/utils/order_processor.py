@@ -651,11 +651,25 @@ class OrderProcessor:
           'filename_contains', attachments are partitioned by join key and merged sequentially.
         - Always left-join to keep primary rows even if no attachments match.
         """
-        primary_rows = [self._strip_metadata(row) for row in records if row.get("__is_primary")]
+        primary_rows = [self._strip_metadata(row) for row in records if isinstance(row, dict) and row.get("__is_primary")]
         if not primary_rows:
             raise RuntimeError("Multi-source mapping requires at least one primary record")
 
-        primary_df = pd.DataFrame(primary_rows)
+        # Deep-flatten primary to expose nested fields for join keys
+        try:
+            from utils.excel_converter import deep_flatten_json_universal
+            flattened: List[Dict[str, Any]] = []
+            for row in primary_rows:
+                flat_rows = deep_flatten_json_universal(row)
+                for fr in flat_rows:
+                    if isinstance(fr, dict):
+                        cleaned = {k: v for k, v in fr.items() if not k.startswith("__")}
+                        flattened.append(cleaned)
+            if not flattened:
+                flattened = primary_rows
+            primary_df = pd.DataFrame(flattened)
+        except Exception:
+            primary_df = pd.DataFrame(primary_rows)
 
         # Build matcher rules from mapping_config
         cfg = item.mapping_config or {}
