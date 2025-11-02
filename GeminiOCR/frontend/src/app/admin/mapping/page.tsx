@@ -393,22 +393,19 @@ export default function MappingAdminPage() {
     if (
       templateForm.normalize_strip_non_digits ||
       (templateForm.normalize_zfill || '').trim().length > 0 ||
-      (templateForm.normalize_zfill_adv || '').trim().length > 0
+      (templateForm.normalize_zfill_rows || []).some(r => (r.length || '').trim().length > 0)
     ) {
       const jn: any = {};
       if (templateForm.normalize_strip_non_digits) jn.strip_non_digits = true;
       const zf = (templateForm.normalize_zfill || '').trim();
-      const zfAdv = (templateForm.normalize_zfill_adv || '').trim();
-      if (zfAdv) {
-        try {
-          const obj = JSON.parse(zfAdv);
-          // basic validation: keys string, values non-negative int
-          const ok = obj && typeof obj === 'object' && !Array.isArray(obj) && Object.entries(obj).every(([k, v]) => typeof k === 'string' && Number.isInteger(v) && v >= 0);
-          if (ok) jn.zfill = obj;
-        } catch (e) {
-          setError('Invalid per-key zfill JSON. Expecting {"key": number>=0}');
-          return;
+      const rows = (templateForm.normalize_zfill_rows || []).filter(r => (r.length || '').trim().length > 0);
+      if (rows.length > 0) {
+        const obj: Record<string, number> = {};
+        for (const r of rows) {
+          const v = parseInt((r.length || '').trim(), 10);
+          if (!Number.isNaN(v) && v >= 0 && r.key) obj[r.key] = v;
         }
+        if (Object.keys(obj).length > 0) jn.zfill = obj;
       } else if (zf) {
         const val = parseInt(zf, 10);
         if (!Number.isNaN(val) && val >= 0) jn.zfill = val;
@@ -631,22 +628,19 @@ export default function MappingAdminPage() {
       if (
         defaultForm.normalize_strip_non_digits ||
         (defaultForm.normalize_zfill || '').trim().length > 0 ||
-        (defaultForm.normalize_zfill_adv || '').trim().length > 0
+        (defaultForm.normalize_zfill_rows || []).some(r => (r.length || '').trim().length > 0)
       ) {
         const jn: any = {};
         if (defaultForm.normalize_strip_non_digits) jn.strip_non_digits = true;
         const zf = (defaultForm.normalize_zfill || '').trim();
-        const zfAdv = (defaultForm.normalize_zfill_adv || '').trim();
-        if (zfAdv) {
-          try {
-            const obj = JSON.parse(zfAdv);
-            const ok = obj && typeof obj === 'object' && !Array.isArray(obj) && Object.entries(obj).every(([k, v]) => typeof k === 'string' && Number.isInteger(v) && v >= 0);
-            if (ok) jn.zfill = obj;
-          } catch (e) {
-            setError('Invalid per-key zfill JSON in overrides. Expecting {"key": number>=0}');
-            setIsSubmittingDefault(false);
-            return;
+        const rows = (defaultForm.normalize_zfill_rows || []).filter(r => (r.length || '').trim().length > 0);
+        if (rows.length > 0) {
+          const obj: Record<string, number> = {};
+          for (const r of rows) {
+            const v = parseInt((r.length || '').trim(), 10);
+            if (!Number.isNaN(v) && v >= 0 && r.key) obj[r.key] = v;
           }
+          if (Object.keys(obj).length > 0) jn.zfill = obj;
         } else if (zf) {
           const val = parseInt(zf, 10);
           if (!Number.isNaN(val) && val >= 0) jn.zfill = val;
@@ -960,17 +954,51 @@ export default function MappingAdminPage() {
                       placeholder="e.g. 8"
                     />
                   </label>
+                  {/* Per-key ZFill rows */}
                   <div className="mt-2">
-                    <label className="block text-xs text-gray-600 mb-1">Per-key ZFill (advanced JSON)</label>
-                    <textarea
-                      value={templateForm.normalize_zfill_adv}
-                      onChange={(e) => handleTemplateInput('normalize_zfill_adv', e.target.value)}
-                      className="w-full border border-gray-300 rounded px-3 py-2 text-xs"
-                      placeholder='Example: {"service_number": 8, "account_id": 10}'
-                      rows={2}
-                    />
+                    <label className="block text-xs text-gray-600 mb-1">Per-key ZFill</label>
+                    <div className="space-y-2">
+                      {(templateForm.normalize_zfill_rows || []).map((row, idx) => (
+                        <div key={idx} className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={row.key}
+                            disabled={!row.custom}
+                            onChange={(e) => {
+                              const next = (templateForm.normalize_zfill_rows || []).slice();
+                              next[idx] = { ...row, key: e.target.value };
+                              setTemplateForm(prev => ({ ...prev, normalize_zfill_rows: next }));
+                            }}
+                            className={`w-64 border border-gray-300 rounded px-2 py-1 ${row.custom ? '' : 'bg-gray-100'}`}
+                            placeholder="join key"
+                          />
+                          <input
+                            type="number"
+                            min={0}
+                            value={row.length}
+                            onChange={(e) => {
+                              const next = (templateForm.normalize_zfill_rows || []).slice();
+                              next[idx] = { ...row, length: e.target.value };
+                              setTemplateForm(prev => ({ ...prev, normalize_zfill_rows: next }));
+                            }}
+                            className="w-24 border border-gray-300 rounded px-2 py-1"
+                            placeholder="length"
+                          />
+                          {row.custom && (
+                            <button type="button" className="text-xs px-2 py-1 bg-red-600 text-white rounded"
+                              onClick={() => {
+                                const next = (templateForm.normalize_zfill_rows || []).slice();
+                                next.splice(idx, 1);
+                                setTemplateForm(prev => ({ ...prev, normalize_zfill_rows: next }));
+                              }}>Remove</button>
+                          )}
+                        </div>
+                      ))}
+                      <button type="button" className="text-xs px-2 py-1 bg-gray-700 text-white rounded"
+                        onClick={() => setTemplateForm(prev => ({ ...prev, normalize_zfill_rows: [...(prev.normalize_zfill_rows || []), { key: '', length: '', custom: true }] }))}>+ Add Key</button>
+                    </div>
                   </div>
-                  <div className="text-xs text-gray-500 mt-1">Applies to all external join keys. Use Defaults override to customize per company/doc as needed.</div>
+                  <div className="text-xs text-gray-500 mt-1">Global ZFill applies to all keys. Per‑key settings override the global value.</div>
                 </div>
 
                 {/* Output meta mapping */}
@@ -1478,15 +1506,49 @@ export default function MappingAdminPage() {
                     placeholder="e.g. 8"
                   />
                 </label>
+                {/* Per-key ZFill rows (override) */}
                 <div className="mt-2">
-                  <label className="block text-xs text-gray-600 mb-1">Per-key ZFill (advanced JSON)</label>
-                  <textarea
-                    value={defaultForm.normalize_zfill_adv}
-                    onChange={(e) => handleDefaultInput('normalize_zfill_adv', e.target.value)}
-                    className="w-full border border-gray-300 rounded px-3 py-2 text-xs"
-                    placeholder='Example: {"service_number": 8, "account_id": 10}'
-                    rows={2}
-                  />
+                  <label className="block text-xs text-gray-600 mb-1">Per-key ZFill</label>
+                  <div className="space-y-2">
+                    {(defaultForm.normalize_zfill_rows || []).map((row, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={row.key}
+                          disabled={!row.custom}
+                          onChange={(e) => {
+                            const next = (defaultForm.normalize_zfill_rows || []).slice();
+                            next[idx] = { ...row, key: e.target.value };
+                            setDefaultForm(prev => ({ ...prev, normalize_zfill_rows: next }));
+                          }}
+                          className={`w-64 border border-gray-300 rounded px-2 py-1 ${row.custom ? '' : 'bg-gray-100'}`}
+                          placeholder="join key"
+                        />
+                        <input
+                          type="number"
+                          min={0}
+                          value={row.length}
+                          onChange={(e) => {
+                            const next = (defaultForm.normalize_zfill_rows || []).slice();
+                            next[idx] = { ...row, length: e.target.value };
+                            setDefaultForm(prev => ({ ...prev, normalize_zfill_rows: next }));
+                          }}
+                          className="w-24 border border-gray-300 rounded px-2 py-1"
+                          placeholder="length"
+                        />
+                        {row.custom && (
+                          <button type="button" className="text-xs px-2 py-1 bg-red-600 text-white rounded"
+                            onClick={() => {
+                              const next = (defaultForm.normalize_zfill_rows || []).slice();
+                              next.splice(idx, 1);
+                              setDefaultForm(prev => ({ ...prev, normalize_zfill_rows: next }));
+                            }}>Remove</button>
+                        )}
+                      </div>
+                    ))}
+                    <button type="button" className="text-xs px-2 py-1 bg-gray-700 text-white rounded"
+                      onClick={() => setDefaultForm(prev => ({ ...prev, normalize_zfill_rows: [...(prev.normalize_zfill_rows || []), { key: '', length: '', custom: true }] }))}>+ Add Key</button>
+                  </div>
                 </div>
               </div>
 

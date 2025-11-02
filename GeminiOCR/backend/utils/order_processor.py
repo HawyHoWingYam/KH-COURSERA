@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from utils.onedrive_client import OneDriveClient  # pragma: no cover - typing only
 from utils.mapping_config import MappingItemType
 from utils.mapping_config_resolver import MappingConfigResolver
+from utils.ws_notify import broadcast as ws_broadcast
 from config_loader import config_loader
 
 logger = logging.getLogger(__name__)
@@ -901,13 +902,28 @@ class OrderProcessor:
         # Choose suffix for right-side conflicting columns
         right_suffix = merge_suffix if isinstance(merge_suffix, str) and merge_suffix else "_master"
 
+        # Perform merge and expose merge indicator so we can derive a boolean Matched column.
+        # Reuse pandas' built-in indicator to avoid reinventing logic.
         merged_df = item_df.merge(
             master_df,
             left_on=left_tmp_cols,
             right_on=right_tmp_cols,
             how="left",
             suffixes=("", right_suffix),
+            indicator=True,
         )
+
+        # If caller/data hasn't already provided a Matched flag, derive it from merge result.
+        # Matched=True when the row joined successfully on all join keys (i.e. _merge == 'both').
+        if 'Matched' not in merged_df.columns:
+            try:
+                merged_df['Matched'] = merged_df['_merge'].map(lambda v: True if str(v) == 'both' else False)
+            except Exception:
+                # Best-effort: default to False if indicator unavailable for any reason.
+                merged_df['Matched'] = False
+
+        # Drop temp merge indicator column
+        merged_df = merged_df.drop(columns=['_merge'], errors="ignore")
 
         # Drop temp join columns
         merged_df = merged_df.drop(columns=left_tmp_cols + right_tmp_cols, errors="ignore")
@@ -986,19 +1002,26 @@ class OrderProcessor:
                 order.failed_items = failed_count
 
                 if failed_count == len(items):
-                    # All items failed
+                    # All items failed at OCR stage
                     order.status = OrderStatus.FAILED
-                    order.error_message = "All items failed to process"
+                    order.error_message = "All items failed to process at OCR stage"
                 elif completed_count > 0:
-                    # At least some items succeeded - proceed to consolidation
+                    # OCR ok for at least some items: proceed to mapping-only pipeline
                     order.status = OrderStatus.MAPPING
-                    logger.info(f"Order {order_id} moving to consolidation phase")
+                    order.error_message = None
+                    db.commit()
+                    logger.info(f"Order {order_id} moving to mapping stage (OCR completed for {completed_count} items)")
 
-                    # Trigger consolidation
-                    asyncio.create_task(self._consolidate_order_results(order_id))
+                    # Run mapping-only synchronously to produce mapped_csv and special_csv
+                    await self.process_order_mapping_only(order_id)
 
                 db.commit()
-                logger.info(f"Order {order_id} processing completed: {completed_count} succeeded, {failed_count} failed")
+                # Notify clients about status change
+                try:
+                    await ws_broadcast(order_id, {"type": "order_update", "order_id": order_id, "status": order.status.value})
+                except Exception:
+                    pass
+                logger.info(f"Order {order_id} OCR stage completed: {completed_count} succeeded, {failed_count} failed")
 
             except Exception as e:
                 logger.error(f"Error processing order {order_id}: {str(e)}")
@@ -1870,6 +1893,20 @@ class OrderProcessor:
 
             order.updated_at = datetime.utcnow()
             db.commit()
+            # Broadcast final update to clients
+            try:
+                can_remap = True
+                remap_count = sum(1 for it in [{"ocr": i.ocr_result_json_path} for i in db.query(OcrOrderItem).filter(OcrOrderItem.order_id == order_id).all()] if it["ocr"])  # lightweight count
+                await ws_broadcast(order_id, {
+                    "type": "order_update",
+                    "order_id": order_id,
+                    "status": order.status.value,
+                    "final_report_paths": order.final_report_paths,
+                    "remap_item_count": remap_count,
+                    "can_remap": remap_count > 0,
+                })
+            except Exception:
+                pass
     async def _load_expanded_ocr_results(self, order_id: int) -> List[Dict[str, Any]]:
         """Load OCR results in expanded format (individual rows per phone service)"""
         with Session(engine) as db:

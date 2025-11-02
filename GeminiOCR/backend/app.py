@@ -149,6 +149,24 @@ logging.basicConfig(
 # WebSocket connections store
 active_connections = {}
 
+from utils.ws_notify import register as ws_register, unregister as ws_unregister
+
+@app.websocket("/ws/orders/{order_id}")
+async def ws_orders(websocket: WebSocket, order_id: int):
+    await websocket.accept()
+    try:
+        await ws_register(order_id, websocket)
+        while True:
+            # Keep connection alive; ignore incoming messages
+            await websocket.receive_text()
+    except Exception:
+        pass
+    finally:
+        try:
+            await ws_unregister(order_id, websocket)
+        except Exception:
+            pass
+
 # Background Scheduler for OneDrive Sync
 # Initialize only if APScheduler is available
 scheduler = BackgroundScheduler() if APSCHEDULER_AVAILABLE else None
@@ -2942,6 +2960,10 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
                 "updated_at": item.updated_at.isoformat()
             })
 
+        # Compute remap availability: at least one item with OCR JSON exists
+        remap_item_count = sum(1 for it in items_data if bool(it.get("ocr_result_json_path")))
+        can_remap = remap_item_count > 0
+
         return {
             "order_id": order.order_id,
             "order_name": order.order_name,
@@ -2956,6 +2978,8 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
             "final_report_paths": order.final_report_paths,
             "error_message": order.error_message,
             "items": items_data,
+            "can_remap": can_remap,
+            "remap_item_count": remap_item_count,
             "item_mapping_summary": [
                 {
                     "item_id": item.item_id,
@@ -3080,7 +3104,12 @@ def create_order_item(order_id: int, request: CreateOrderItemRequest, db: Sessio
         except ValueError:
             raise HTTPException(status_code=400, detail="Unsupported item_type")
 
+        # Try to pre-resolve mapping defaults for convenience, but do not hard-fail
+        # item creation if defaults are incomplete (e.g., missing master_csv_path).
+        # This defers strict validation to the mapping stage and allows users to
+        # add items first, then configure mapping.
         resolver = MappingConfigResolver(db)
+        resolved_config = None
         try:
             resolved_config = resolver.resolve_for_item(
                 company_id=request.company_id,
@@ -3089,7 +3118,15 @@ def create_order_item(order_id: int, request: CreateOrderItemRequest, db: Sessio
                 current_config=request.mapping_config,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            # Be tolerant at item creation time; log and proceed with empty config
+            logger.warning(
+                "Create item: mapping defaults invalid for company=%s doc_type=%s item_type=%s; deferring validation. Error=%s",
+                request.company_id,
+                request.doc_type_id,
+                item_type_enum.value,
+                str(exc),
+            )
+            resolved_config = None
 
         # Create order item
         # Ensure mapping_config is a JSON object to satisfy DB CHECK constraints
@@ -3621,10 +3658,10 @@ def process_order_mapping_only(order_id: int, background_tasks: BackgroundTasks,
                 detail="Can only process mapping for orders in OCR_COMPLETED, MAPPING, COMPLETED, or FAILED status",
             )
 
-        # Validate that all items have OCR results
+        # Validate that items have OCR results available (json exists)
         items_without_ocr = db.query(OcrOrderItem).filter(
             OcrOrderItem.order_id == order_id,
-            OcrOrderItem.status != OrderItemStatus.COMPLETED
+            OcrOrderItem.ocr_result_json_path.is_(None)
         ).count()
 
         if items_without_ocr > 0:
