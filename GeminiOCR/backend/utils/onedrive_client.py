@@ -126,10 +126,43 @@ class OneDriveClient:
             if not file_item or not file_item.is_file:
                 logger.warning(f"⚠️ File not found or path is not a file: {file_path}")
                 return None
-
-            content = file_item.get_content()
-            logger.info(f"✅ Downloaded OneDrive file: {file_path}")
-            return content
+            # O365 File.get_content may not be available depending on library version.
+            # Prefer the download() API to a temporary directory and read bytes back.
+            try:
+                # Try modern API first (if available in environment)
+                content = file_item.get_content()  # type: ignore[attr-defined]
+                logger.info(f"✅ Downloaded OneDrive file via get_content(): {file_path}")
+                return content
+            except Exception:
+                try:
+                    import os
+                    import tempfile
+                    # Download to a temporary directory (O365 saves as <dir>/<filename>)
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        ok = file_item.download(to_path=tmpdir)
+                        if not ok:
+                            logger.warning(f"⚠️ Download API returned False for: {file_path}")
+                            return None
+                        out_path = os.path.join(tmpdir, getattr(file_item, 'name', 'downloaded_file'))
+                        try:
+                            with open(out_path, 'rb') as f:
+                                data = f.read()
+                            logger.info(f"✅ Downloaded OneDrive file via download(): {file_path}")
+                            return data
+                        except FileNotFoundError:
+                            # Some versions may store under provided path without filename
+                            # Attempt to locate the only file in directory
+                            entries = [p for p in os.listdir(tmpdir) if os.path.isfile(os.path.join(tmpdir, p))]
+                            if entries:
+                                with open(os.path.join(tmpdir, entries[0]), 'rb') as f:
+                                    data = f.read()
+                                logger.info(f"✅ Downloaded OneDrive file via download() (fallback locate): {file_path}")
+                                return data
+                            logger.error(f"❌ Downloaded file not found in temp dir for: {file_path}")
+                            return None
+                except Exception as exc2:
+                    logger.error(f"❌ Error downloading OneDrive file {file_path} via download(): {exc2}")
+                    return None
         except Exception as exc:  # pragma: no cover - defensive
             logger.error(f"❌ Error downloading OneDrive file {file_path}: {exc}")
             return None

@@ -175,10 +175,10 @@ export default function SmartDeleteDialog({
                           <span className="font-medium text-red-600">{dependencies.dependencies.processing_jobs}</span>
                         </div>
                       )}
-                      {dependencies.dependencies.batch_jobs > 0 && (
+                      {(dependencies.dependencies as any).batch_jobs > 0 && (
                         <div className="flex justify-between">
                           <span className="text-gray-700">• Batch Jobs:</span>
-                          <span className="font-medium text-red-600">{dependencies.dependencies.batch_jobs}</span>
+                          <span className="font-medium text-red-600">{(dependencies.dependencies as any).batch_jobs}</span>
                         </div>
                       )}
                       {dependencies.dependencies.company_configs > 0 && (
@@ -187,10 +187,10 @@ export default function SmartDeleteDialog({
                           <span className="font-medium text-red-600">{dependencies.dependencies.company_configs}</span>
                         </div>
                       )}
-                      {dependencies.dependencies.s3_files > 0 && (
+                      {(dependencies.dependencies as any).s3_files > 0 && (
                         <div className="flex justify-between">
                           <span className="text-gray-700">• S3 Files:</span>
-                          <span className="font-medium text-red-600">{dependencies.dependencies.s3_files}</span>
+                          <span className="font-medium text-red-600">{(dependencies.dependencies as any).s3_files}</span>
                         </div>
                       )}
                       {dependencies.dependencies.department_access && dependencies.dependencies.department_access > 0 && (

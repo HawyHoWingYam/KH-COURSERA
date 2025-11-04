@@ -134,8 +134,13 @@ export default function MappingAdminPage() {
   // Defaults pagination
   const [defPage, setDefPage] = useState<number>(1);
   const [defPageSize, setDefPageSize] = useState<number>(10);
+  const [defFilterCompanyId, setDefFilterCompanyId] = useState<string>('');
+  const [defFilterDocTypeId, setDefFilterDocTypeId] = useState<string>('');
+  const [defFilterItemType, setDefFilterItemType] = useState<string>('');
   const [companies, setCompanies] = useState<Company[]>([]);
   const [docTypes, setDocTypes] = useState<DocumentType[]>([]);
+  const [defTotalCount, setDefTotalCount] = useState<number>(0);
+  const [defTotalPages, setDefTotalPages] = useState<number>(1);
 
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string>('');
@@ -188,16 +193,15 @@ export default function MappingAdminPage() {
     setIsLoading(true);
     setError('');
     try {
-      const [tpl, def, comps, docs] = await Promise.all([
+      const [tpl, comps, docs] = await Promise.all([
         fetchJson<MappingTemplate[]>('/mapping/templates'),
-        fetchJson<MappingDefault[]>('/mapping/defaults'),
         fetchJson<Company[]>('/companies'),
         fetchJson<DocumentType[]>('/document-types'),
       ]);
       setTemplates(tpl);
-      setDefaults(def);
       setCompanies(comps);
       setDocTypes(docs);
+      await loadDefaultsPaged();
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : 'Failed to load mapping data');
@@ -211,9 +215,35 @@ export default function MappingAdminPage() {
   }, []);
 
   // Reset page when defaults change
+  // Load first page of defaults
   useEffect(() => {
-    setDefPage(1);
-  }, [defaults.length]);
+    // do not change page automatically on defaults change; handled by controls
+  }, []);
+
+  const loadDefaultsPaged = async () => {
+    try {
+      const offset = (defPage - 1) * defPageSize;
+      const params = new URLSearchParams({ limit: String(defPageSize), offset: String(offset) });
+      if (defFilterCompanyId) params.append('company_id', defFilterCompanyId);
+      if (defFilterDocTypeId) params.append('doc_type_id', defFilterDocTypeId);
+      if (defFilterItemType) params.append('item_type', defFilterItemType);
+      const url = `/mapping/defaults/paged?${params.toString()}`;
+      const resp = await fetchJson<{ data: MappingDefault[]; pagination: any }>(url);
+      setDefaults(resp.data || []);
+      const p = resp.pagination || {};
+      setDefTotalCount(p.total_count || 0);
+      setDefTotalPages(p.total_pages || 1);
+    } catch (err) {
+      console.error(err);
+      setDefaults([]);
+      setDefTotalCount(0);
+      setDefTotalPages(1);
+    }
+  };
+
+  useEffect(() => {
+    loadDefaultsPaged();
+  }, [defPage, defPageSize]);
 
   const parseColumnAliases = (value: string) => {
     if (!value.trim()) {
@@ -1475,6 +1505,51 @@ export default function MappingAdminPage() {
           {/* Defaults */}
           <section className="bg-white shadow rounded-lg p-6">
             <h2 className="text-xl font-semibold mb-4">Company & Document Defaults</h2>
+            {/* Filters */}
+            <div className="grid md:grid-cols-4 gap-3 mb-4 text-sm">
+              <div>
+                <label className="block text-gray-700 mb-1">Company</label>
+                <select
+                  value={defFilterCompanyId}
+                  onChange={(e) => { setDefFilterCompanyId(e.target.value); setDefPage(1); loadDefaultsPaged(); }}
+                  className="w-full border border-gray-300 rounded px-2 py-1"
+                >
+                  <option value="">All</option>
+                  {companies.map(c => (
+                    <option key={c.company_id} value={String(c.company_id)}>{c.company_name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-gray-700 mb-1">Document Type</label>
+                <select
+                  value={defFilterDocTypeId}
+                  onChange={(e) => { setDefFilterDocTypeId(e.target.value); setDefPage(1); loadDefaultsPaged(); }}
+                  className="w-full border border-gray-300 rounded px-2 py-1"
+                >
+                  <option value="">All</option>
+                  {docTypes.map(d => (
+                    <option key={d.doc_type_id} value={String(d.doc_type_id)}>{d.type_name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-gray-700 mb-1">Item Type</label>
+                <select
+                  value={defFilterItemType}
+                  onChange={(e) => { setDefFilterItemType(e.target.value); setDefPage(1); loadDefaultsPaged(); }}
+                  className="w-full border border-gray-300 rounded px-2 py-1"
+                >
+                  <option value="">All</option>
+                  {ITEM_TYPE_OPTIONS.map(o => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-end gap-2">
+                <button type="button" className="px-3 py-1 border rounded" onClick={() => { setDefFilterCompanyId(''); setDefFilterDocTypeId(''); setDefFilterItemType(''); setDefPage(1); loadDefaultsPaged(); }}>Clear</button>
+              </div>
+            </div>
             <p className="text-sm text-gray-600 mb-6">
               Defaults select which template applies by default for a company/document combination. Optional overrides tweak configuration without duplicating templates.
             </p>
@@ -1567,6 +1642,62 @@ export default function MappingAdminPage() {
 
               {defaultForm.override_enabled && (
                 <>
+                  {/* Diff summary vs template */}
+                  {defaultForm.template_id && (
+                    <div className="bg-slate-50 border border-slate-200 rounded p-3 text-xs text-slate-700 mb-3">
+                      {(() => {
+                        const cfg = getSelectedTemplateConfig();
+                        if (!cfg) return null;
+                        // compute diffs: strip, global zfill, per-key zfill changed count, merge_suffix diff, output_meta changed count
+                        const stripT = !!(cfg.join_normalize && cfg.join_normalize.strip_non_digits);
+                        const stripO = !!defaultForm.normalize_strip_non_digits;
+                        let zfillT: any = undefined; // number or map
+                        if (cfg.join_normalize && typeof cfg.join_normalize.zfill !== 'undefined') zfillT = cfg.join_normalize.zfill;
+                        const zfillO = (defaultForm.normalize_zfill || '').trim();
+                        const rowsO = (defaultForm.normalize_zfill_rows || []).filter(r => (r.length || '').trim().length > 0);
+                        // count per-key diffs
+                        let perKeyChanged = 0;
+                        rowsO.forEach(r => {
+                          const cur = (r.length || '').trim();
+                          let tmpl: string | undefined = undefined;
+                          if (typeof zfillT === 'number') tmpl = String(zfillT);
+                          else if (zfillT && typeof zfillT === 'object') {
+                            const v = zfillT[r.key];
+                            if (typeof v === 'number') tmpl = String(v);
+                          }
+                          if (typeof tmpl !== 'undefined' && cur.length > 0 && tmpl !== cur) perKeyChanged += 1;
+                          if (typeof tmpl === 'undefined' && cur.length > 0) perKeyChanged += 1;
+                        });
+                        // global zfill diff
+                        let globalChanged = false;
+                        if (zfillO) {
+                          if (typeof zfillT === 'number') globalChanged = String(zfillT) !== zfillO;
+                          else globalChanged = true; // template has map or nothing, override has global number
+                        }
+                        // merge suffix diff
+                        const msT = (cfg.merge_suffix || '').trim();
+                        const msO = (defaultForm.merge_suffix || '').trim();
+                        const msChanged = !!msO && msO !== msT;
+                        // output_meta changed count
+                        let omChanged = 0;
+                        const tmplOm = (cfg.output_meta && typeof cfg.output_meta === 'object') ? cfg.output_meta : {};
+                        (defaultForm.output_meta_rows || []).forEach(r => {
+                          const cur = `${r.srcType}:${r.srcKey}`;
+                          const tmpl = tmplOm[r.dest];
+                          if (typeof tmpl === 'string') { if (tmpl !== cur) omChanged += 1; } else if (cur) { omChanged += 1; }
+                        });
+                        return (
+                          <ul className="list-disc list-inside">
+                            <li>strip_non_digits: {stripO ? 'on' : 'off'} {stripO !== stripT ? '(override)' : ''}</li>
+                            <li>global zfill: {zfillO || '—'} {globalChanged ? '(override)' : ''}</li>
+                            <li>per-key zfill overrides: {perKeyChanged}</li>
+                            <li>merge_suffix: {msO || '—'} {msChanged ? '(override)' : ''} {msT && !msChanged ? '(same as template)' : ''}</li>
+                            <li>output_meta overrides: {omChanged}</li>
+                          </ul>
+                        );
+                      })()}
+                    </div>
+                  )}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Master CSV Override</label>
                 <input
@@ -1679,7 +1810,20 @@ export default function MappingAdminPage() {
                         })()}
                       </div>
                     )}
-                    {(defaultForm.normalize_zfill_rows || []).map((row, idx) => (
+                {(defaultForm.normalize_zfill_rows || []).map((row, idx) => {
+                      const cfg = getSelectedTemplateConfig();
+                      let tmplLen: string | undefined = undefined;
+                      if (cfg && cfg.join_normalize && typeof cfg.join_normalize.zfill !== 'undefined') {
+                        if (typeof cfg.join_normalize.zfill === 'number') tmplLen = String(cfg.join_normalize.zfill);
+                        else if (cfg.join_normalize.zfill && typeof cfg.join_normalize.zfill === 'object') {
+                          const v = cfg.join_normalize.zfill[row.key];
+                          if (typeof v === 'number') tmplLen = String(v);
+                        }
+                      }
+                      const cur = (row.length || '').trim();
+                      const equal = tmplLen !== undefined && tmplLen === cur && cur.length > 0;
+                      const changed = tmplLen !== undefined && cur.length > 0 && tmplLen !== cur;
+                      return (
                       <div key={idx} className="flex items-center gap-2">
                         <input
                           type="text"
@@ -1702,9 +1846,12 @@ export default function MappingAdminPage() {
                             next[idx] = { ...row, length: e.target.value };
                             setDefaultForm(prev => ({ ...prev, normalize_zfill_rows: next }));
                           }}
-                          className="w-24 border border-gray-300 rounded px-2 py-1"
+                          className={`w-24 border rounded px-2 py-1 ${changed ? 'border-orange-400 bg-orange-50' : equal ? 'border-green-400 bg-green-50' : 'border-gray-300'}`}
                           placeholder="length"
                         />
+                        {typeof tmplLen !== 'undefined' && (
+                          <span className={`text-xs ${equal ? 'text-green-600' : changed ? 'text-orange-600' : 'text-gray-500'}`}>tmpl: {tmplLen || '—'}</span>
+                        )}
                         {defaultForm.template_id && (
                           <>
                             <button type="button" className="text-xs px-2 py-1 bg-slate-200 rounded"
@@ -1724,7 +1871,7 @@ export default function MappingAdminPage() {
                             }}>Remove</button>
                         )}
                       </div>
-                    ))}
+                    )})}
                     <button type="button" className="text-xs px-2 py-1 bg-gray-700 text-white rounded"
                       onClick={() => setDefaultForm(prev => ({ ...prev, normalize_zfill_rows: [...(prev.normalize_zfill_rows || []), { key: '', length: '', custom: true }] }))}>+ Add Key</button>
                   </div>
@@ -1741,7 +1888,15 @@ export default function MappingAdminPage() {
                     >Copy from template</button>
                   </div>
                 )}
-                {(defaultForm.output_meta_rows || []).map((row, idx) => (
+                {(defaultForm.output_meta_rows || []).map((row, idx) => {
+                  const cfg = getSelectedTemplateConfig();
+                  let tmplSrc: string | undefined = undefined;
+                  if (cfg && cfg.output_meta && typeof cfg.output_meta === 'object') {
+                    tmplSrc = cfg.output_meta[row.dest];
+                  }
+                  const curSrc = `${row.srcType}:${row.srcKey}`;
+                  const eq = typeof tmplSrc === 'string' && tmplSrc === curSrc;
+                  return (
                   <div key={idx} className="flex items-end gap-2 mb-2">
                     <div>
                       <label className="block text-xs text-gray-600 mb-1">Dest Column</label>
@@ -1753,7 +1908,7 @@ export default function MappingAdminPage() {
                           next[idx] = { ...row, dest: e.target.value };
                           setDefaultForm(prev => ({ ...prev, output_meta_rows: next }));
                         }}
-                        className="w-40 border border-gray-300 rounded px-2 py-1"
+                        className={`w-40 border rounded px-2 py-1 ${eq ? 'border-green-400 bg-green-50' : 'border-gray-300'}`}
                         placeholder="e.g. order_id"
                       />
                     </div>
@@ -1785,6 +1940,9 @@ export default function MappingAdminPage() {
                         className="w-40 border border-gray-300 rounded px-2 py-1"
                         placeholder="e.g. order_id or __item_id"
                       />
+                      {typeof tmplSrc === 'string' && (
+                        <div className={`text-[10px] mt-1 ${eq ? 'text-green-600' : 'text-orange-600'}`}>tmpl: {tmplSrc}</div>
+                      )}
                     </div>
                     <button type="button" onClick={() => {
                       const next = defaultForm.output_meta_rows.slice();
@@ -1792,7 +1950,7 @@ export default function MappingAdminPage() {
                       setDefaultForm(prev => ({ ...prev, output_meta_rows: next }));
                     }} className="px-3 py-1 text-xs bg-red-600 text-white rounded">Remove</button>
                   </div>
-                ))}
+                )})}
                 <button type="button" onClick={() => setDefaultForm(prev => ({ ...prev, output_meta_rows: [...prev.output_meta_rows, { dest: '', srcType: 'ctx', srcKey: '' }] }))} className="px-3 py-1 text-xs bg-gray-700 text-white rounded">+ Add Output Column</button>
               </div>
 
@@ -1934,7 +2092,7 @@ export default function MappingAdminPage() {
                 {/* Pagination controls */}
                 <div className="flex items-center justify-between mb-2 text-sm">
                   <div>
-                    <span className="text-gray-600">Total:</span> {defaults.length}
+                    <span className="text-gray-600">Total:</span> {defTotalCount}
                   </div>
                   <div className="flex items-center gap-2">
                     <label className="text-gray-600">Rows:</label>
@@ -1956,13 +2114,13 @@ export default function MappingAdminPage() {
                       Prev
                     </button>
                     <span className="text-gray-600">
-                      Page {defPage} / {Math.max(1, Math.ceil(defaults.length / defPageSize))}
+                      Page {defPage} / {Math.max(1, defTotalPages)}
                     </span>
                     <button
                       type="button"
-                      onClick={() => setDefPage((p) => Math.min(Math.ceil(defaults.length / defPageSize) || 1, p + 1))}
+                      onClick={() => setDefPage((p) => Math.min(defTotalPages || 1, p + 1))}
                       className="px-2 py-1 border rounded disabled:opacity-50"
-                      disabled={defPage >= (Math.ceil(defaults.length / defPageSize) || 1)}
+                      disabled={defPage >= (defTotalPages || 1)}
                     >
                       Next
                     </button>
@@ -1981,7 +2139,7 @@ export default function MappingAdminPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {defaults.slice((defPage - 1) * defPageSize, (defPage) * defPageSize).map((record) => {
+                    {defaults.map((record) => {
                       const companyName = companyLookup.get(record.company_id)?.company_name || `Company #${record.company_id}`;
                       const docTypeName = docTypeLookup.get(record.doc_type_id)?.type_name || `DocType #${record.doc_type_id}`;
                       const templateName = record.template_id

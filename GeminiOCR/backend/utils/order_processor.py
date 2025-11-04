@@ -601,25 +601,69 @@ class OrderProcessor:
         if not item.ocr_result_json_path:
             raise RuntimeError("OCR result JSON path missing for item")
 
+        # Load primary (or aggregated) JSON first
         content = self._download_content_from_uri(item.ocr_result_json_path)
         if not content:
             raise RuntimeError(f"Unable to load OCR result JSON for item {item.item_id}")
 
         try:
             loaded = json.loads(content.decode("utf-8"))
-            # Normalise to a list of dicts so downstream code can iterate rows safely
+            # Normalize to list
             if isinstance(loaded, dict):
-                records = [loaded]
+                records: List[Dict[str, Any]] = [loaded]
             elif isinstance(loaded, list):
-                records = loaded
+                records = [r for r in loaded if isinstance(r, dict)]
             else:
                 raise ValueError("Unexpected OCR JSON structure; must be object or array")
 
-            # Defensive: keep only dict rows
-            dict_rows: List[Dict[str, Any]] = [r for r in records if isinstance(r, dict)]
-            if not dict_rows:
+            # Attempt to append attachment file-level results if manifest exists
+            try:
+                manifest_path = f"upload/results/orders/{item.item_id // 1000}/items/{item.item_id}/item_{item.item_id}_file_results.json"
+                manifest_bytes = self.s3_manager.download_file_by_stored_path(manifest_path)
+                if manifest_bytes:
+                    manifest_json = json.loads(manifest_bytes.decode("utf-8"))
+                    # Manifest v1: list of {file_id, result_json_path}
+                    entries: List[Tuple[str, str]] = []
+                    if isinstance(manifest_json, list):
+                        for it in manifest_json:
+                            if isinstance(it, dict) and it.get("result_json_path"):
+                                entries.append((str(it.get("file_id")), it.get("result_json_path")))
+                    # Manifest v0: dict {file_id: result_json_path}
+                    elif isinstance(manifest_json, dict):
+                        for k, v in manifest_json.items():
+                            if isinstance(v, str):
+                                entries.append((str(k), v))
+                    if entries:
+                        if os.getenv("MAPPING_DEBUG", "false").lower() in ("1", "true", "yes"):
+                            logger.info(
+                                "[MAPPING_DEBUG] Found attachment manifest for item %s with %d files",
+                                item.item_id,
+                                len(entries),
+                            )
+                        for fid, fpath in entries:
+                            try:
+                                b = self.s3_manager.download_file_by_stored_path(fpath)
+                                if not b:
+                                    continue
+                                attach = json.loads(b.decode("utf-8"))
+                                if isinstance(attach, dict):
+                                    attach.setdefault("__is_primary", False)
+                                    records.append(attach)
+                                    if os.getenv("MAPPING_DEBUG", "false").lower() in ("1", "true", "yes"):
+                                        logger.info(
+                                            "[MAPPING_DEBUG] Loaded attachment file_id=%s sample keys=%s",
+                                            fid,
+                                            list(attach.keys())[:10],
+                                        )
+                            except Exception:
+                                continue
+            except Exception:
+                # Best-effort; ignore manifest errors
+                pass
+
+            if not records:
                 raise ValueError("No valid row objects in OCR JSON")
-            return dict_rows
+            return records
         except Exception as exc:
             raise RuntimeError(f"Invalid OCR result JSON for item {item.item_id}: {exc}") from exc
 
@@ -680,6 +724,47 @@ class OrderProcessor:
         # Do not hardcode metadata columns; caller may choose to augment via mapping
         return df
 
+    @staticmethod
+    def _flatten_mapping(obj: Any, parent: str = "") -> Dict[str, Any]:
+        import json as _json
+        flat: Dict[str, Any] = {}
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                key = f"{parent}_{k}" if parent else str(k)
+                flat.update(OrderProcessor._flatten_mapping(v, key))
+        elif isinstance(obj, list):
+            # For lists of scalars -> join as string; lists of objects -> JSON string
+            if all(not isinstance(x, (dict, list)) for x in obj):
+                flat[parent] = ";".join([str(x) for x in obj])
+            else:
+                flat[parent] = _json.dumps(obj, ensure_ascii=False)
+        else:
+            flat[parent] = obj
+        return flat
+
+    def _flatten_object_columns(self, df: 'pd.DataFrame') -> 'pd.DataFrame':
+        # Recursively flatten any dict-typed columns to leaf columns with underscore paths
+        try:
+            import pandas as _pd
+            cols = list(df.columns)
+            for col in cols:
+                try:
+                    if df[col].apply(lambda v: isinstance(v, dict)).any():
+                        # Build flattened rows for this column
+                        flat_rows = [self._flatten_mapping(v, col) if isinstance(v, dict) else {} for v in df[col]]
+                        # Union keys
+                        keys = set()
+                        for fr in flat_rows:
+                            keys.update(fr.keys())
+                        for k in keys:
+                            df[k.replace('.', '_')] = [fr.get(k) for fr in flat_rows]
+                        df = df.drop(columns=[col])
+                except Exception:
+                    continue
+        except Exception:
+            return df
+        return df
+
     def _build_multi_source_dataframe(
         self,
         item: OcrOrderItem,
@@ -698,19 +783,48 @@ class OrderProcessor:
         if not primary_rows:
             raise RuntimeError("Multi-source mapping requires at least one primary record")
 
-        # Deep-flatten primary to expose nested fields for join keys
+        mapping_debug = os.getenv("MAPPING_DEBUG", "false").lower() in ("1", "true", "yes")
+        if mapping_debug:
+            try:
+                sample_inv = [r.get("invoice_number") for r in primary_rows[:5] if isinstance(r, dict)]
+                logger.info(
+                    "[MAPPING_DEBUG] PRIMARY rows=%d sample invoice_number=%s",
+                    len(primary_rows),
+                    sample_inv,
+                )
+            except Exception:
+                pass
+
+        # Expand primary rows so that each line item becomes a row with its invoice_number.
+        # This ensures internal join on invoice_number will match attachments.
+        expanded_rows: List[Dict[str, Any]] = []
         try:
-            from utils.excel_converter import deep_flatten_json_universal
-            flattened: List[Dict[str, Any]] = []
-            for row in primary_rows:
-                flat_rows = deep_flatten_json_universal(row)
-                for fr in flat_rows:
-                    if isinstance(fr, dict):
-                        cleaned = {k: v for k, v in fr.items() if not k.startswith("__")}
-                        flattened.append(cleaned)
-            if not flattened:
-                flattened = primary_rows
-            primary_df = pd.DataFrame(flattened)
+            for pr in primary_rows:
+                line_items = pr.get('line_items') if isinstance(pr, dict) else None
+                if isinstance(line_items, list) and line_items and isinstance(line_items[0], dict):
+                    meta = {k: v for k, v in pr.items() if k != 'line_items' and not k.startswith('__')}
+                    for li in line_items:
+                        if isinstance(li, dict):
+                            row = {**meta, **li}
+                            expanded_rows.append(row)
+            if expanded_rows:
+                primary_df = pd.DataFrame(expanded_rows)
+            else:
+                # Fallback: deep‑flatten to expose nested fields as columns
+                try:
+                    from utils.excel_converter import deep_flatten_json_universal
+                    flattened: List[Dict[str, Any]] = []
+                    for row in primary_rows:
+                        flat_rows = deep_flatten_json_universal(row)
+                        for fr in flat_rows:
+                            if isinstance(fr, dict):
+                                cleaned = {k: v for k, v in fr.items() if not k.startswith("__")}
+                                flattened.append(cleaned)
+                    if not flattened:
+                        flattened = primary_rows
+                    primary_df = pd.DataFrame(flattened)
+                except Exception:
+                    primary_df = pd.DataFrame(primary_rows)
         except Exception:
             primary_df = pd.DataFrame(primary_rows)
 
@@ -731,6 +845,15 @@ class OrderProcessor:
 
         # Partition attachment records by applicable join key
         attachment_rows = [row for row in records if not row.get("__is_primary")]
+        if mapping_debug:
+            try:
+                logger.info(
+                    "[MAPPING_DEBUG] ATTACHMENTS count=%d sample filenames=%s",
+                    len(attachment_rows),
+                    [r.get("__filename") for r in attachment_rows[:5]],
+                )
+            except Exception:
+                pass
         grouped: Dict[str, List[Dict[str, Any]]] = {}
 
         mapping_debug = os.getenv("MAPPING_DEBUG", "false").lower() in ("1", "true", "yes")
@@ -772,26 +895,22 @@ class OrderProcessor:
 
             grouped.setdefault(join_key, []).append(record)
 
-        # Sequentially merge each group of attachments using its own join key
+        # Sequentially merge each group of attachments using its own join key (no prefixed columns).
         merged_df = primary_df
         for join_key, recs in grouped.items():
+            # Build an attachments DataFrame aggregated by join_key with canonical (non-prefixed) columns.
             aggregated: Dict[Any, Dict[str, Any]] = {}
-            prefix_counters: Dict[str, int] = {}
-            for index, record in enumerate(recs):
-                # Deep‑flatten each attachment record so nested fields are available for joining
+            for record in recs:
+                # Deep‑flatten attachment record
                 try:
                     from utils.excel_converter import deep_flatten_json_universal
-                    flat_rows = deep_flatten_json_universal(self._strip_metadata(record))
-                    # Ensure at least one row exists
-                    if not flat_rows:
-                        flat_rows = [self._strip_metadata(record)]
+                    flat_rows = deep_flatten_json_universal(self._strip_metadata(record)) or [self._strip_metadata(record)]
                 except Exception:
                     flat_rows = [self._strip_metadata(record)]
 
-                for sub_idx, clean_record in enumerate(flat_rows):
+                for clean_record in flat_rows:
                     if not isinstance(clean_record, dict):
                         continue
-
                     # Obtain join value; fallback to keys whose last segment matches join_key
                     join_value = clean_record.get(join_key)
                     if join_value is None:
@@ -801,30 +920,83 @@ class OrderProcessor:
                     if join_value is None:
                         continue
 
-                    prefix_base = self._sanitise_prefix(record.get("__filename"), f"attachment_{index + 1}")
-                    prefix_count = prefix_counters.get(prefix_base, 0)
-                    prefix_counters[prefix_base] = prefix_count + 1
-                    prefix = prefix_base if prefix_count == 0 else f"{prefix_base}_{prefix_count + 1}"
-
                     entry = aggregated.setdefault(join_value, {})
                     for key, value in clean_record.items():
-                        # Skip the exact join_key column and the alt dotted key variant
-                        if key == join_key or (isinstance(key, str) and key.split(".")[-1] == join_key):
+                        # Skip the exact join_key column and internal metadata
+                        if key == join_key or (isinstance(key, str) and key.startswith("__")):
                             continue
-                        column_name = f"{prefix}__{key}"
-                        if column_name not in entry:
-                            entry[column_name] = value
+                        # First non-null wins for each column
+                        if entry.get(key) in (None, "") and value not in (None, ""):
+                            entry[key] = value
 
-            if aggregated:
-                rows = []
-                for join_value, data in aggregated.items():
-                    row = {join_key: join_value}
-                    row.update(data)
-                    rows.append(row)
-                attachments_df = pd.DataFrame(rows)
-                merged_df = merged_df.merge(attachments_df, on=join_key, how="left")
+            if not aggregated:
+                continue
 
-        # Do not hardcode metadata columns; caller may choose to augment via mapping
+            rows = []
+            for join_value, data in aggregated.items():
+                row = {join_key: join_value}
+                row.update(data)
+                rows.append(row)
+            attachments_df = pd.DataFrame(rows)
+
+            # Normalise join column to string for both frames to avoid dtype mismatch
+            try:
+                merged_df[join_key] = merged_df[join_key].astype(str)
+                attachments_df[join_key] = attachments_df[join_key].astype(str)
+            except Exception:
+                pass
+
+            # Merge using suffixes then coalesce overlapping columns to a single canonical name
+            tmp = merged_df.merge(attachments_df, on=join_key, how="left", suffixes=("_p", "_a"))
+            overlap = [c for c in attachments_df.columns if c != join_key and c in merged_df.columns]
+            for col in overlap:
+                left = f"{col}_p"
+                right = f"{col}_a"
+                if left in tmp.columns and right in tmp.columns:
+                    # Treat NaN/empty/"null"/"none" (case-insensitive) as missing on the left
+                    tmp[col] = tmp[left]
+                    try:
+                        missing_mask = tmp[left].isna()
+                    except Exception:
+                        missing_mask = tmp[left].isna()
+                    # Also mark string placeholders as missing
+                    try:
+                        str_mask = tmp[left].astype(str).str.strip().str.lower().isin(["", "null", "none"])
+                        missing_mask = missing_mask | str_mask
+                    except Exception:
+                        pass
+                    tmp.loc[missing_mask, col] = tmp.loc[missing_mask, right]
+            # Columns only from attachments (no overlap)
+            only_attach = [c for c in attachments_df.columns if c != join_key and c not in merged_df.columns]
+            for col in only_attach:
+                if f"{col}_a" in tmp.columns:
+                    tmp[col] = tmp[f"{col}_a"]
+            # Drop suffixed columns
+            drop_cols = [c for c in tmp.columns if c.endswith("_p") or c.endswith("_a")]
+            merged_df = tmp.drop(columns=drop_cols, errors="ignore")
+
+            if mapping_debug:
+                try:
+                    has = "shipper_contact_name" in merged_df.columns
+                    nn = int(merged_df["shipper_contact_name"].notna().sum()) if has else 0
+                    logger.info(
+                        "[MAPPING_DEBUG] After canonical merge by %s: has shipper_contact_name=%s non-null=%d / %d",
+                        join_key,
+                        has,
+                        nn,
+                        len(merged_df),
+                    )
+                except Exception:
+                    pass
+
+        # Flatten any remaining dict columns generically, then drop helper columns if any
+        try:
+            merged_df = self._flatten_object_columns(merged_df)
+        except Exception:
+            pass
+        for col in ("summary", "line_items"):
+            if col in merged_df.columns:
+                merged_df = merged_df.drop(columns=[col])
         return merged_df
 
     def _join_with_master_csv(
@@ -847,7 +1019,79 @@ class OrderProcessor:
             left_on.append(key)
             right_on.append(column_aliases.get(key, key))
 
+        # Verbose diagnostics (enable with MAPPING_DEBUG=true)
+        mapping_debug = os.getenv("MAPPING_DEBUG", "false").lower() in ("1", "true", "yes")
+        if mapping_debug:
+            try:
+                logger.info(
+                    "[MAPPING_DEBUG] JOIN PREP: external_join_keys=%s left_on=%s right_on=%s",
+                    external_join_keys,
+                    left_on,
+                    right_on,
+                )
+                logger.info(
+                    "[MAPPING_DEBUG] ITEM_DF columns (%d): %s",
+                    len(item_df.columns),
+                    list(item_df.columns),
+                )
+                logger.info(
+                    "[MAPPING_DEBUG] MASTER_DF columns (%d): %s",
+                    len(master_df.columns),
+                    list(master_df.columns),
+                )
+            except Exception:
+                pass
+
+        # Best-effort: if the requested left join key is missing, try to coalesce
+        # from attachment-prefixed columns like '<prefix>__{key}' produced by
+        # multi-source aggregation. This enables joins on fields that only exist
+        # in attachments (e.g., shipper_contact_name) without requiring callers
+        # to hardcode per-file prefixes.
         missing_left = [key for key in left_on if key not in item_df.columns]
+        if missing_left:
+            try:
+                import re
+                for key in list(missing_left):
+                    # Find columns that end with '__{key}'
+                    pattern = re.compile(rf"__{re.escape(key)}$")
+                    candidate_cols = [c for c in item_df.columns if isinstance(c, str) and pattern.search(c)]
+                    if mapping_debug:
+                        logger.info(
+                            "[MAPPING_DEBUG] Missing left key '%s' → candidate attachment columns: %s",
+                            key,
+                            candidate_cols[:10],
+                        )
+                    if candidate_cols:
+                        # Coalesce first non-null across candidates
+                        try:
+                            coalesced = item_df[candidate_cols].bfill(axis=1).iloc[:, 0]
+                        except Exception:
+                            # Fallback: iterative combine_first
+                            coalesced = None
+                            for c in candidate_cols:
+                                coalesced = item_df[c] if coalesced is None else coalesced.combine_first(item_df[c])
+                        item_df[key] = coalesced
+                        if mapping_debug:
+                            try:
+                                non_null = int(item_df[key].notna().sum())
+                                logger.info(
+                                    "[MAPPING_DEBUG] Coalesced left key '%s' → non-null rows: %d / %d",
+                                    key,
+                                    non_null,
+                                    len(item_df),
+                                )
+                                logger.info(
+                                    "[MAPPING_DEBUG] Sample %s: %s",
+                                    key,
+                                    item_df[key].dropna().head(5).tolist(),
+                                )
+                            except Exception:
+                                pass
+                # Recompute missing after coalescing
+                missing_left = [k for k in left_on if k not in item_df.columns]
+            except Exception:
+                # Ignore and fall back to strict validation
+                pass
         if missing_left:
             raise RuntimeError(f"Item data missing required join columns: {missing_left}")
 
@@ -881,12 +1125,106 @@ class OrderProcessor:
             try:
                 s = series.astype(str).replace({"nan": "", "None": ""}).str.strip()
                 if join_normalize:
-                    return s.apply(lambda v: _normalize_text(v, join_normalize, key_name))
+                    # Basic text transforms first
+                    s = s.apply(lambda v: _normalize_text(v, join_normalize, key_name))
+                    # Optional: strip invisible/zero-width whitespace and NBSP/full-width space
+                    # Controlled via join_normalize.strip_invisible = true
+                    if isinstance(join_normalize, dict) and join_normalize.get('strip_invisible'):
+                        try:
+                            import re
+                            # Replace a set of invisible/spacing characters with a regular space,
+                            # then subsequent whitespace normalization can collapse them.
+                            # Note: avoid hardcoded business values; this is generic unicode cleanup.
+                            INVIS_WS = (
+                                "\u00A0\u1680\u180E\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+                                "\u2007\u2008\u2009\u200A\u200B\u200C\u200D\u202F\u205F\u3000\uFEFF"
+                            )
+                            pattern = f"[{INVIS_WS}]"
+                            s = s.apply(lambda v: re.sub(pattern, " ", v) if isinstance(v, str) else v)
+                        except Exception:
+                            pass
+                    # Unicode normalization (NFKC)
+                    if isinstance(join_normalize, dict) and join_normalize.get('nfkc'):
+                        try:
+                            import unicodedata
+                            s = s.apply(lambda v: unicodedata.normalize('NFKC', v) if isinstance(v, str) else v)
+                        except Exception:
+                            pass
+                    # Collapse whitespaces
+                    if isinstance(join_normalize, dict) and join_normalize.get('normalize_ws'):
+                        try:
+                            s = s.str.replace(r"\s+", " ", regex=True).str.strip()
+                        except Exception:
+                            pass
+                    # Lowercase last (after unicode/ws normalization)
+                    if isinstance(join_normalize, dict) and join_normalize.get('lower'):
+                        s = s.str.lower()
+
+                    # Optional: apply value alias mapping after transforms. This allows admin-configured
+                    # alias dictionaries to canonicalise join values without hardcoding here.
+                    # Accept either a global alias map or a per-key map structure.
+                    #   join_normalize.value_alias_map = {"alias": "canonical", ...}
+                    #   join_normalize.value_alias_map = {key_name: {"alias": "canonical"}}
+                    try:
+                        alias_spec = None
+                        if isinstance(join_normalize, dict):
+                            alias_spec = join_normalize.get('value_alias_map') or join_normalize.get('aliases')
+                        if isinstance(alias_spec, dict):
+                            cur_map = None
+                            # Per-key map has precedence when available
+                            if key_name and isinstance(alias_spec.get(key_name), dict):
+                                cur_map = alias_spec.get(key_name)
+                            else:
+                                # Global map applied to any key
+                                cur_map = alias_spec
+                            if isinstance(cur_map, dict) and cur_map:
+                                # Ensure keys are strings; apply mapping on exact post-normalized value
+                                s = s.apply(lambda v: cur_map.get(v, v) if isinstance(v, str) else v)
+                    except Exception:
+                        pass
                 return s
             except Exception:
                 s = series.astype("string").fillna("").str.strip()
                 if join_normalize:
-                    return s.apply(lambda v: _normalize_text(v, join_normalize, key_name))
+                    s = s.apply(lambda v: _normalize_text(v, join_normalize, key_name))
+                    if isinstance(join_normalize, dict) and join_normalize.get('strip_invisible'):
+                        try:
+                            import re
+                            INVIS_WS = (
+                                "\u00A0\u1680\u180E\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+                                "\u2007\u2008\u2009\u200A\u200B\u200C\u200D\u202F\u205F\u3000\uFEFF"
+                            )
+                            pattern = f"[{INVIS_WS}]"
+                            s = s.apply(lambda v: re.sub(pattern, " ", v) if isinstance(v, str) else v)
+                        except Exception:
+                            pass
+                    if isinstance(join_normalize, dict) and join_normalize.get('nfkc'):
+                        try:
+                            import unicodedata
+                            s = s.apply(lambda v: unicodedata.normalize('NFKC', v) if isinstance(v, str) else v)
+                        except Exception:
+                            pass
+                    if isinstance(join_normalize, dict) and join_normalize.get('normalize_ws'):
+                        try:
+                            s = s.str.replace(r"\s+", " ", regex=True).str.strip()
+                        except Exception:
+                            pass
+                    if isinstance(join_normalize, dict) and join_normalize.get('lower'):
+                        s = s.str.lower()
+                    try:
+                        alias_spec = None
+                        if isinstance(join_normalize, dict):
+                            alias_spec = join_normalize.get('value_alias_map') or join_normalize.get('aliases')
+                        if isinstance(alias_spec, dict):
+                            cur_map = None
+                            if key_name and isinstance(alias_spec.get(key_name), dict):
+                                cur_map = alias_spec.get(key_name)
+                            else:
+                                cur_map = alias_spec
+                            if isinstance(cur_map, dict) and cur_map:
+                                s = s.apply(lambda v: cur_map.get(v, v) if isinstance(v, str) else v)
+                    except Exception:
+                        pass
                 return s
 
         left_tmp_cols: List[str] = []
@@ -898,6 +1236,21 @@ class OrderProcessor:
             master_df[rtmp] = _as_str_series(master_df[rcol], key_name)
             left_tmp_cols.append(ltmp)
             right_tmp_cols.append(rtmp)
+
+        # Debug: show normalized samples per key
+        if mapping_debug:
+            try:
+                for i, key_name in enumerate(external_join_keys):
+                    left_sample = item_df[left_tmp_cols[i]].dropna().head(5).tolist()
+                    right_sample = master_df[right_tmp_cols[i]].dropna().head(5).tolist()
+                    logger.info(
+                        "[MAPPING_DEBUG] NORMALIZED samples for key '%s': left=%s | right=%s",
+                        key_name,
+                        left_sample,
+                        right_sample,
+                    )
+            except Exception:
+                pass
 
         # Choose suffix for right-side conflicting columns
         right_suffix = merge_suffix if isinstance(merge_suffix, str) and merge_suffix else "_master"
@@ -1839,6 +2192,17 @@ class OrderProcessor:
 
             if aggregated_frames:
                 combined_df = pd.concat(aggregated_frames, ignore_index=True)
+                # Drop duplicate rows (entire-row duplicates) and nested helper columns
+                try:
+                    before = len(combined_df)
+                    if 'summary' in combined_df.columns:
+                        combined_df = combined_df.drop(columns=['summary'])
+                    if 'line_items' in combined_df.columns:
+                        combined_df = combined_df.drop(columns=['line_items'])
+                    combined_df = combined_df.drop_duplicates()
+                    self.logger.info(f"Deduplicated combined_df: {before} -> {len(combined_df)} rows")
+                except Exception as _:
+                    pass
                 s3_base = f"results/orders/{order_id // 1000}/consolidated"
                 csv_key = f"{s3_base}/order_{order_id}_mapped.csv"
                 csv_bytes = combined_df.to_csv(index=False).encode("utf-8")

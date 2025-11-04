@@ -1,6 +1,14 @@
 'use client';
 
-import { PaginationInfo } from '@/lib/api';
+interface PaginationInfo {
+  current_page: number;
+  total_pages: number;
+  has_previous: boolean;
+  has_next: boolean;
+  offset: number;
+  limit: number;
+  total_count: number;
+}
 
 interface PaginationProps {
   pagination: PaginationInfo;

@@ -25,6 +25,9 @@ ONEDRIVE_CLIENT_SECRET = os.getenv('ONEDRIVE_CLIENT_SECRET')
 ONEDRIVE_TENANT_ID = os.getenv('ONEDRIVE_TENANT_ID')
 ONEDRIVE_TARGET_USER_UPN = os.getenv('ONEDRIVE_TARGET_USER_UPN')  # NEW: Target user for app-only access
 ONEDRIVE_SHARED_FOLDER_PATH = os.getenv('ONEDRIVE_SHARED_FOLDER_PATH', 'Documents/AWB')
+# Optional: a '|' separated candidate list of alternative paths to try when the primary does not exist
+# e.g. "HYA-OCR/AWB|Documents/HYA-OCR/AWB|AWB"
+ONEDRIVE_SHARED_FOLDER_CANDIDATES = os.getenv('ONEDRIVE_SHARED_FOLDER_CANDIDATES', '')
 ONEDRIVE_PROCESSED_FOLDER = os.getenv('ONEDRIVE_PROCESSED_FOLDER', '已处理')
 # Note: S3StorageManager auto-adds 'upload/' prefix, so we avoid double prefix here
 AWB_S3_PREFIX = os.getenv('AWB_S3_PREFIX', 'onedrive/airway-bills')
@@ -86,11 +89,45 @@ def reconcile_by_filename(db, onedrive_client, s3_manager, month: str,
             "min_size": min_size_bytes,
         }
 
-        # Get OneDrive month folder
-        source_folder = onedrive_client.get_folder(ONEDRIVE_SHARED_FOLDER_PATH)
+        # Resolve OneDrive source folder with graceful fallbacks
+        def _resolve_source_folder():
+            # Build candidate list: primary -> explicit candidates -> with/without 'Documents/' prefix
+            tried = []
+            primary = (ONEDRIVE_SHARED_FOLDER_PATH or '').strip('/')
+            candidates = [c.strip('/') for c in [primary] if c]
+            # Append user-provided candidates (highest precedence after primary)
+            if ONEDRIVE_SHARED_FOLDER_CANDIDATES:
+                for token in ONEDRIVE_SHARED_FOLDER_CANDIDATES.split('|'):
+                    token = token.strip()
+                    if token:
+                        candidates.append(token.strip('/'))
+            # Add automatic variants for each candidate
+            variants = []
+            for c in candidates:
+                variants.append(c)
+                if not c.lower().startswith('documents/'):
+                    variants.append(f'Documents/{c}')
+                else:
+                    # Also try without 'Documents/'
+                    variants.append(c[len('Documents/'):])
+            # Deduplicate while preserving order
+            seen = set(); ordered = []
+            for v in variants:
+                if v and v not in seen:
+                    ordered.append(v); seen.add(v)
+            # Try each variant until one resolves
+            for path in ordered:
+                folder = onedrive_client.get_folder(path)
+                tried.append(path)
+                if folder:
+                    logger.info(f"📂 Using OneDrive source folder: {path}")
+                    return folder, tried
+            return None, tried
+
+        source_folder, tried_paths = _resolve_source_folder()
         if not source_folder:
-            logger.error(f"❌ Source folder not found: {ONEDRIVE_SHARED_FOLDER_PATH}")
-            stats["errors"].append(f"Source folder not found: {ONEDRIVE_SHARED_FOLDER_PATH}")
+            logger.error(f"❌ Source folder not found. Tried: {tried_paths}")
+            stats["errors"].append(f"Source folder not found. Tried: {tried_paths}")
             return stats
 
         month_folder = onedrive_client.get_or_create_folder(source_folder, month_str)
@@ -103,16 +140,14 @@ def reconcile_by_filename(db, onedrive_client, s3_manager, month: str,
         stats["scanned_onedrive_month"] = len(one_month_pdfs)
         logger.info(f"📁 Found {len(one_month_pdfs)} PDFs in OneDrive month folder {month_str}")
 
-        # Optionally scan processed folder
+        # Optionally scan monthly 'history' subfolder (new behavior)
         one_processed_pdfs = []
         if scan_processed:
-            root_folder = onedrive_client.drive.get_root_folder()
-            processed_folder = onedrive_client.get_or_create_folder(root_folder, ONEDRIVE_PROCESSED_FOLDER)
-            if processed_folder:
-                # List all PDFs from processed folder, filter by month
-                one_processed_pdfs = onedrive_client.list_all_pdfs(processed_folder, created_month_filter=month)
+            history_sub = onedrive_client.get_or_create_folder(month_folder, 'history') if month_folder else None
+            if history_sub:
+                one_processed_pdfs = onedrive_client.list_all_pdfs(history_sub, created_month_filter=month)
                 stats["scanned_onedrive_processed"] = len(one_processed_pdfs)
-                logger.info(f"📁 Found {len(one_processed_pdfs)} PDFs in OneDrive processed folder for month {month}")
+                logger.info(f"📁 Found {len(one_processed_pdfs)} PDFs in OneDrive monthly history folder for {month}")
 
         # Combine candidates
         all_one_candidates = one_month_pdfs + one_processed_pdfs
@@ -273,9 +308,37 @@ def run_onedrive_sync(month: str = None, force: bool = False, reconcile: bool = 
             raise Exception("Failed to connect to OneDrive")
 
         # Get source and processed folders
-        source_folder = onedrive_client.get_folder(ONEDRIVE_SHARED_FOLDER_PATH)
+        def _resolve_source_folder2():
+            tried = []
+            primary = (ONEDRIVE_SHARED_FOLDER_PATH or '').strip('/')
+            candidates = [c.strip('/') for c in [primary] if c]
+            if ONEDRIVE_SHARED_FOLDER_CANDIDATES:
+                for token in ONEDRIVE_SHARED_FOLDER_CANDIDATES.split('|'):
+                    token = token.strip()
+                    if token:
+                        candidates.append(token.strip('/'))
+            variants = []
+            for c in candidates:
+                variants.append(c)
+                if not c.lower().startswith('documents/'):
+                    variants.append(f'Documents/{c}')
+                else:
+                    variants.append(c[len('Documents/'):])
+            seen = set(); ordered = []
+            for v in variants:
+                if v and v not in seen:
+                    ordered.append(v); seen.add(v)
+            for path in ordered:
+                folder = onedrive_client.get_folder(path)
+                tried.append(path)
+                if folder:
+                    logger.info(f"📂 Using OneDrive source folder: {path}")
+                    return folder, tried
+            return None, tried
+
+        source_folder, tried_paths = _resolve_source_folder2()
         if not source_folder:
-            raise Exception(f"Source folder not found: {ONEDRIVE_SHARED_FOLDER_PATH}")
+            raise Exception(f"Source folder not found. Tried: {tried_paths}")
 
         # Determine month folder
         # If month parameter provided, use it; otherwise use current month
@@ -300,12 +363,9 @@ def run_onedrive_sync(month: str = None, force: bool = False, reconcile: bool = 
             logger.warning(f"⚠️  Could not create/find month folder {month_str}, falling back to source folder")
             sync_folder = source_folder
 
-        # Get processed folder, create if doesn't exist (at root level)
-        root_folder = onedrive_client.drive.get_root_folder()
-        processed_folder = onedrive_client.get_or_create_folder(
-            root_folder,
-            ONEDRIVE_PROCESSED_FOLDER
-        )
+        # Determine a per-month history folder under the chosen sync folder
+        # Requirement: after syncing monthly subdirectory files, move them into '<YYYYMM>/history' instead of deleting.
+        history_folder = onedrive_client.get_or_create_folder(sync_folder, 'history')
 
         # Get last sync time from database (for deduplication and incremental sync)
         last_sync = db.query(OneDriveSync).order_by(
@@ -522,13 +582,13 @@ def run_onedrive_sync(month: str = None, force: bool = False, reconcile: bool = 
                     db.commit()
                     logger.info(f"💾 Recorded in DB: {file_item.name}")
 
-                    # Move file to processed folder
-                    if processed_folder:
-                        move_success = onedrive_client.move_file(file_item, processed_folder)
+                    # Move file into the monthly 'history' folder instead of deleting
+                    if history_folder:
+                        move_success = onedrive_client.move_file(file_item, history_folder)
                         if move_success:
-                            logger.info(f"✅ Moved to processed folder: {file_item.name}")
+                            logger.info(f"✅ Moved to monthly history: {file_item.name}")
                         else:
-                            logger.warning(f"⚠️ Failed to move to processed folder: {file_item.name}")
+                            logger.warning(f"⚠️ Failed to move to monthly history: {file_item.name}")
 
                 files_processed += 1
 

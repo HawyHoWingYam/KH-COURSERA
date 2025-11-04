@@ -450,7 +450,7 @@ export default function Upload() {
             </div>
 
             <div className="border rounded-md overflow-hidden max-h-[500px]">
-              {isPDF(file.name) ? (
+              {isPDF(files[0].name) ? (
                 <div>
                   <object
                     data={`${previewUrl}#zoom=${zoomLevel * 100}`}

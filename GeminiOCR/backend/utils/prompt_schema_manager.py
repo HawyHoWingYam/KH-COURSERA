@@ -781,7 +781,14 @@ def clean_schema_for_gemini(schema):
         return schema
     
     # Fields that cause Gemini API errors
-    problematic_fields = ["$schema", "$id", "$ref", "definitions", "patternProperties"]
+    problematic_fields = [
+        "$schema",
+        "$id",
+        "$ref",
+        "definitions",
+        "patternProperties",
+        "additionalProperties",  # Gemini response schema does not accept this flag
+    ]
     
     cleaned_schema = {}
     for key, value in schema.items():

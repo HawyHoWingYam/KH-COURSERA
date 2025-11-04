@@ -149,7 +149,38 @@ def api_error_handler(func):
                         await asyncio.sleep(wait_time)
                         continue
                 else:
-                    # 不可重試的錯誤直接拋出
+                    # 特判：API key 無效時，標記降級並嘗試切換一次 key
+                    invalid_key_signals = [
+                        "api key not valid",
+                        "api_key_invalid",
+                        "invalid api key",
+                    ]
+                    if any(sig in error_msg for sig in invalid_key_signals) and CONFIG_AVAILABLE:
+                        try:
+                            api_key_manager = get_api_key_manager()
+                            bad_key = api_key_manager.get_current_key()
+                            bad_index = api_key_manager.current_index
+                            logger.warning(
+                                f"🔑 Detected INVALID API key at index {bad_index} ({bad_key[:20]}...). Deprioritizing and rotating."
+                            )
+                            # 強降級，使其後續極少被選中
+                            api_key_manager.mark_key_invalid(bad_key)
+
+                            # 嘗試切換到下一把 key 後重試當前 attempt（不增加 attempt 次數）
+                            new_api_key = api_key_manager.get_next_key()
+                            configure_gemini_with_retry(new_api_key)
+                            if "api_key" in kwargs:
+                                kwargs["api_key"] = new_api_key
+                            elif len(args) >= 4:
+                                args = list(args)
+                                args[3] = new_api_key
+                                args = tuple(args)
+                            logger.info("✅ Switched to next API key after invalid key; retrying current attempt...")
+                            continue
+                        except Exception as key_exc:
+                            logger.error(f"Failed to rotate after invalid key: {key_exc}")
+
+                    # 其他不可重試錯誤直接拋出
                     logger.error(f"Non-retryable API error: {e}")
                     raise e
 
@@ -284,7 +315,14 @@ def clean_schema_for_gemini(schema):
         return schema
     
     # Fields that cause Gemini API errors
-    problematic_fields = ["$schema", "$id", "$ref", "definitions", "patternProperties"]
+    problematic_fields = [
+        "$schema",
+        "$id",
+        "$ref",
+        "definitions",
+        "patternProperties",
+        "additionalProperties",
+    ]
     
     cleaned_schema = {}
     for key, value in schema.items():

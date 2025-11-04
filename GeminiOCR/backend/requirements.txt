@@ -9,7 +9,9 @@ sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
 
 # Google Gemini AI
-google-generativeai==0.3.2
+# Upgrade to support Gemini 2.x/2.5 models and structured output (response_schema)
+# Keep within <0.9 to avoid breaking changes from the new unified SDK
+google-generativeai>=0.7,<0.9
 
 # Image processing
 Pillow==10.3.0

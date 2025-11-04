@@ -434,6 +434,21 @@ class APIKeyManager:
         except ValueError:
             logger.warning(f"API key not found in list: {key[:10]}...")
 
+    def mark_key_invalid(self, key: str):
+        """將無效的 API key 快速降級，避免再次選用。
+
+        將其 usage 設為當前最⼤值+1000，實現強烈的降權效果。
+        """
+        try:
+            key_index = self.api_keys.index(key)
+            max_usage = max(self.usage_count.values()) if self.usage_count else 0
+            self.usage_count[key_index] = max_usage + 1000
+            logger.warning(
+                f"API key {key_index} marked INVALID; deprioritized with usage={self.usage_count[key_index]}"
+            )
+        except ValueError:
+            logger.warning(f"API key not found in list: {key[:10]}...")
+
     def get_usage_stats(self) -> Dict[int, int]:
         """獲取使用統計"""
         return self.usage_count.copy()

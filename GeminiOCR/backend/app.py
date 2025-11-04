@@ -3541,6 +3541,49 @@ def list_mapping_defaults(
     return [_serialize_mapping_default(default) for default in defaults]
 
 
+@app.get("/mapping/defaults/paged", response_model=dict)
+def list_mapping_defaults_paged(
+    company_id: Optional[int] = None,
+    doc_type_id: Optional[int] = None,
+    item_type: Optional[MappingItemType] = None,
+    limit: int = Query(10, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    query = db.query(CompanyDocMappingDefault)
+    if company_id is not None:
+        query = query.filter(CompanyDocMappingDefault.company_id == company_id)
+    if doc_type_id is not None:
+        query = query.filter(CompanyDocMappingDefault.doc_type_id == doc_type_id)
+    if item_type is not None:
+        try:
+            item_type_enum = OrderItemType(item_type.value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        query = query.filter(CompanyDocMappingDefault.item_type == item_type_enum)
+
+    total_count = query.count()
+    rows = (
+        query.order_by(CompanyDocMappingDefault.company_id.asc(), CompanyDocMappingDefault.doc_type_id.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    data = [_serialize_mapping_default(r) for r in rows]
+    total_pages = (total_count + limit - 1) // limit
+    return {
+        "data": data,
+        "pagination": {
+            "total_count": total_count,
+            "page_size": limit,
+            "current_page": (offset // limit) + 1,
+            "total_pages": total_pages,
+            "has_next": offset + limit < total_count,
+            "has_prev": offset > 0,
+        },
+    }
+
+
 @app.delete("/mapping/defaults/{default_id}", response_model=dict)
 def delete_mapping_default(default_id: int, db: Session = Depends(get_db)):
     record = db.query(CompanyDocMappingDefault).filter(CompanyDocMappingDefault.default_id == default_id).first()
@@ -4472,9 +4515,7 @@ def download_order_item_json(order_id: int, item_id: int, db: Session = Depends(
         if not item:
             raise HTTPException(status_code=404, detail="Order item not found")
 
-        # Check if item is completed and has JSON result
-        if item.status != OrderItemStatus.COMPLETED:
-            raise HTTPException(status_code=400, detail="Order item is not completed yet")
+        # Allow download even if mapping not completed; only require OCR outputs
 
         if not item.ocr_result_json_path:
             raise HTTPException(status_code=404, detail="JSON result file not found for this item")
@@ -4532,9 +4573,7 @@ def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(g
         if not item:
             raise HTTPException(status_code=404, detail="Order item not found")
 
-        # Check if item is completed and has JSON result
-        if item.status != OrderItemStatus.COMPLETED:
-            raise HTTPException(status_code=400, detail="Order item is not completed yet")
+        # Allow CSV generated from OCR JSON regardless of mapping status
 
         if not item.ocr_result_json_path:
             raise HTTPException(status_code=404, detail="JSON result file not found for this item")

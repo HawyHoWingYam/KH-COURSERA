@@ -177,6 +177,9 @@ export default function OrderDetailsPage() {
   const [isUnlockingOrder, setIsUnlockingOrder] = useState(false);
   const [isRestartingOcr, setIsRestartingOcr] = useState(false);
   const [isRestartingMapping, setIsRestartingMapping] = useState(false);
+  // Auto-refresh watcher when background processing is running
+  const [isWatchingProcessing, setIsWatchingProcessing] = useState(false);
+  const processingPollRef = { current: null as any };
 
   // Mapping configuration modal state
   const [mappingModalItem, setMappingModalItem] = useState<OrderItem | null>(null);
@@ -218,6 +221,79 @@ export default function OrderDetailsPage() {
       setError('Failed to load order');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const startProcessingWatcher = () => {
+    try {
+      if (processingPollRef.current) {
+        clearInterval(processingPollRef.current);
+        processingPollRef.current = null;
+      }
+      setIsWatchingProcessing(true);
+      processingPollRef.current = setInterval(async () => {
+        try {
+          const resp = await fetch(`/api/orders/${orderId}`);
+          if (!resp.ok) return;
+          const latest = await resp.json();
+          setOrder(latest);
+          const s = latest.status as string;
+          if (s !== 'PROCESSING' && s !== 'MAPPING') {
+            clearInterval(processingPollRef.current);
+            processingPollRef.current = null;
+            setIsWatchingProcessing(false);
+          }
+        } catch {}
+      }, 2500);
+    } catch {
+      setIsWatchingProcessing(false);
+    }
+  };
+
+  // Prefer WebSocket over polling when API supports it
+  const startProcessingWebSocket = () => {
+    try {
+      const httpBase = (process.env.NEXT_PUBLIC_API_URL || (process as any).env?.API_BASE_URL || 'http://localhost:8000');
+      const apiUrl = new URL(httpBase);
+      const wsProtocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${wsProtocol}//${apiUrl.host}/ws/orders/${orderId}`;
+      const ws = new WebSocket(wsUrl);
+      ws.onopen = () => {
+        // console.log('WS connected for order', orderId);
+      };
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg && msg.type === 'order_update' && msg.order_id === orderId) {
+            // Shallow merge into current order state if available
+            setOrder((prev) => {
+              const next = prev ? { ...prev } as any : {};
+              if (msg.status) next.status = msg.status;
+              if (msg.final_report_paths) next.final_report_paths = msg.final_report_paths;
+              if (typeof msg.remap_item_count !== 'undefined') (next as any).remap_item_count = msg.remap_item_count;
+              if (typeof msg.can_remap !== 'undefined') (next as any).can_remap = msg.can_remap;
+              return next as any;
+            });
+            if (msg.status && msg.status !== 'PROCESSING' && msg.status !== 'MAPPING') {
+              ws.close();
+            }
+          }
+        } catch {}
+      };
+      ws.onerror = () => {
+        // fallback to polling on error
+        startProcessingWatcher();
+      };
+      ws.onclose = () => {
+        // If closed while still running, fallback to polling
+        setTimeout(() => {
+          if (order && (order.status === 'PROCESSING' || order.status === 'MAPPING')) {
+            startProcessingWatcher();
+          }
+        }, 1000);
+      };
+    } catch {
+      startProcessingWatcher();
     }
   };
 
@@ -895,6 +971,7 @@ export default function OrderDetailsPage() {
       }
 
       loadOrder();
+      startProcessingWebSocket();
     } catch (error) {
       console.error('Error submitting order:', error);
       setError(error instanceof Error ? error.message : 'Failed to submit order');
@@ -913,6 +990,7 @@ export default function OrderDetailsPage() {
       }
 
       loadOrder();
+      startProcessingWebSocket();
     } catch (error) {
       console.error('Error starting OCR-only processing:', error);
       setError(error instanceof Error ? error.message : 'Failed to start OCR-only processing');
@@ -937,6 +1015,7 @@ export default function OrderDetailsPage() {
       setTimeout(() => setError(''), 3000);
 
       loadOrder();
+      startProcessingWebSocket();
     } catch (error) {
       console.error('Error starting mapping processing:', error);
       setError(error instanceof Error ? error.message : 'Failed to start mapping processing');
@@ -1102,6 +1181,7 @@ export default function OrderDetailsPage() {
       setError('✅ OCR processing restarted successfully');
       setTimeout(() => setError(''), 3000);
       loadOrder();
+      startProcessingWebSocket();
     } catch (error) {
       console.error('Error restarting OCR:', error);
       setError(error instanceof Error ? error.message : 'Failed to restart OCR processing');
@@ -1130,6 +1210,7 @@ export default function OrderDetailsPage() {
       setError('✅ Mapping processing restarted successfully');
       setTimeout(() => setError(''), 3000);
       loadOrder();
+      startProcessingWebSocket();
     } catch (error) {
       console.error('Error restarting mapping:', error);
       setError(error instanceof Error ? error.message : 'Failed to restart mapping processing');
@@ -1204,12 +1285,21 @@ export default function OrderDetailsPage() {
   const canSubmit = order.status === 'DRAFT' && order.total_items > 0 && !isLocked;
   const canStartOcrOnly = order.status === 'DRAFT' && order.total_items > 0 && !isLocked;
   const canStartFullProcess = order.status === 'DRAFT' && order.total_items > 0 && !isLocked;
-  const canStartMapping = hasDoneOcr(order.status) && !isLocked && order.items.length > 0;
+  const canStartMapping = hasDoneOcr(order.status) && !isLocked && order.items.length > 0 && !hasDoneMapping(order.status);
   const canConfigureMapping = (order.status === 'DRAFT' || order.status === 'OCR_COMPLETED' || order.status === 'COMPLETED' || order.status === 'MAPPING') && !isLocked;
   const canLock = !isLocked && (order.status === 'COMPLETED' || order.status === 'OCR_COMPLETED' || order.status === 'FAILED');
   const canUnlock = isLocked;
   const canRestartOcr = !isLocked && hasDoneOcr(order.status);
-  const canRestartMapping = !isLocked && hasDoneMapping(order.status);
+  const remapItemCount = (order as any).remap_item_count ?? 0;
+  const canRemap = (order as any).can_remap !== false; // default true if field absent
+  const canRestartMapping = !isLocked && hasDoneMapping(order.status) && canRemap;
+
+  const remapDisableReason = () => {
+    if (isLocked) return 'Order is locked';
+    if (!hasDoneMapping(order.status)) return 'Mapping not attempted yet; use Start Mapping';
+    if (!canRemap) return '缺少 OCR 结果，请先 Re‑OCR';
+    return 'Restart mapping processing with current configuration';
+  };
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -1263,12 +1353,13 @@ export default function OrderDetailsPage() {
               {isRestartingOcr ? '🔄 Restarting OCR...' : '🔄 Re-OCR'}
             </button>
           )}
-          {canRestartMapping && (
+          {hasDoneMapping(order.status) && (
             <button
               onClick={restartMapping}
               disabled={isRestartingMapping}
-              className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white py-2 px-4 rounded font-medium"
-              title="Restart mapping processing with current configuration"
+              className={`text-white py-2 px-4 rounded font-medium ${canRestartMapping ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-gray-400 cursor-not-allowed'}`}
+              title={remapDisableReason()}
+              {...(!canRestartMapping ? { onClick: undefined } : {})}
             >
               {isRestartingMapping ? '🔄 Restarting Mapping...' : '🔄 Re-Mapping'}
             </button>
@@ -1281,7 +1372,7 @@ export default function OrderDetailsPage() {
               className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded font-medium"
               title="Start OCR processing only. You can configure mapping later."
             >
-              开始OCR处理
+              Start OCR only
             </button>
           )}
           {canStartFullProcess && (
@@ -1320,6 +1411,7 @@ export default function OrderDetailsPage() {
           ) : (
             <span className="ml-2 text-xs text-gray-500">No template uploaded</span>
           )}
+          <span className="ml-4 text-xs text-gray-600">Remappable Items: <span className="font-medium text-gray-900">{remapItemCount}</span></span>
         </div>
       )}
 
@@ -1746,8 +1838,8 @@ export default function OrderDetailsPage() {
                   </div>
                 )}
 
-                {/* Download Results Section - Show for completed items */}
-                {item.status === 'COMPLETED' && (item.ocr_result_json_path || item.ocr_result_csv_path) && (
+                {/* Download Results Section - Show whenever OCR outputs exist (even if mapping fails) */}
+                {(item.ocr_result_json_path || item.ocr_result_csv_path) && (
                   <div className="mt-4 pt-3 border-t border-gray-200">
                     <div className="text-sm font-medium text-gray-700 mb-2">Download Results:</div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -1776,48 +1868,7 @@ export default function OrderDetailsPage() {
                         )}
                       </div>
 
-                      {/* Conditional CSV Merge Section - Only show when attachments exist */}
-                      {item.attachments && item.attachments.length > 0 && (
-                        <div className="flex items-center gap-2 bg-purple-50 px-3 py-2 rounded-md">
-                          <select
-                            value={selectedJoinKey}
-                            onChange={(e) => setSelectedJoinKey(e.target.value)}
-                            onFocus={() => {
-                              if (csvHeaders.length === 0) {
-                                loadCsvHeaders(item.item_id);
-                              }
-                            }}
-                            disabled={isLoadingCsvHeaders}
-                            className="border border-gray-300 rounded px-2 py-1 text-sm bg-white disabled:bg-gray-100"
-                            title="Select primary CSV column as join key"
-                          >
-                            <option value="">
-                              {isLoadingCsvHeaders ? 'Loading...' : 'Select join key...'}
-                            </option>
-                            {!isLoadingCsvHeaders && csvHeaders.length > 0 && (
-                              <>
-                                {getJoinKeyOptions().length > 0 ? (
-                                  getJoinKeyOptions().map((header, index) => (
-                                    <option key={index} value={header}>{header}</option>
-                                  ))
-                                ) : (
-                                  csvHeaders.map((header, index) => (
-                                    <option key={index} value={header}>{header}</option>
-                                  ))
-                                )}
-                              </>
-                            )}
-                          </select>
-                          <button
-                            onClick={() => downloadMergedCsv(item.item_id, selectedJoinKey)}
-                            disabled={!selectedJoinKey || isLoadingCsvHeaders || downloadingFiles[`merge-${item.item_id}`]}
-                            className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 disabled:bg-opacity-50 text-white py-1 px-3 rounded text-sm font-medium whitespace-nowrap"
-                            title="Download merged CSV (primary + attachments)"
-                          >
-                            {downloadingFiles[`merge-${item.item_id}`] ? 'Merging...' : '📊 Download Merged CSV'}
-                          </button>
-                        </div>
-                      )}
+                      {/* Conditional CSV Merge Section removed per request */}
                     </div>
                   </div>
                 )}
