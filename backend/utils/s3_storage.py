@@ -62,7 +62,7 @@ def clean_schema_for_gemini(schema):
 class S3StorageManager:
     """AWS S3文件存储管理器 - 使用单存储桶多文件夹结构"""
 
-    def __init__(self, bucket_name: str, region: str = "ap-southeast-1", enable_legacy_compatibility: bool = True):
+    def __init__(self, bucket_name: str, region: str, enable_legacy_compatibility: bool = True):
         """
         初始化S3存储管理器
 
@@ -1898,21 +1898,29 @@ _s3_manager = None
 
 
 def get_s3_manager() -> Optional[S3StorageManager]:
-    """获取全局S3存储管理器实例"""
+    """获取全局S3存储管理器实例。
+    僅當 STORAGE_BACKEND=s3 時才初始化，否則返回 None。
+    缺少必要變數將拋出異常以避免靜默回退。
+    """
     global _s3_manager
 
     if _s3_manager is None:
         try:
-            # 从环境变量获取S3设置
-            bucket_name = os.getenv("S3_BUCKET_NAME")
-            region = os.getenv("AWS_DEFAULT_REGION", "ap-southeast-1")
+            backend = os.getenv("STORAGE_BACKEND", "").lower()
+            if backend != "s3":
+                return None
 
-            if bucket_name:
-                _s3_manager = S3StorageManager(bucket_name, region)
-                _s3_manager.ensure_bucket_exists()
-                logger.info(f"✅ S3存储管理器初始化成功：bucket={bucket_name}")
-            else:
-                logger.warning("⚠️ 未配置S3存储桶名称，将使用本地文件存储")
+            bucket_name = os.getenv("S3_BUCKET_NAME")
+            region = os.getenv("AWS_DEFAULT_REGION")
+
+            if not bucket_name:
+                raise ValueError("S3_BUCKET_NAME must be set when STORAGE_BACKEND=s3")
+            if not region:
+                raise ValueError("AWS_DEFAULT_REGION must be set when STORAGE_BACKEND=s3")
+
+            _s3_manager = S3StorageManager(bucket_name, region)
+            _s3_manager.ensure_bucket_exists()
+            logger.info(f"✅ S3存储管理器初始化成功：bucket={bucket_name}")
 
         except Exception as e:
             logger.error(f"❌ S3存储管理器初始化失败：{e}")
@@ -1922,5 +1930,5 @@ def get_s3_manager() -> Optional[S3StorageManager]:
 
 
 def is_s3_enabled() -> bool:
-    """检查是否启用了S3存储"""
-    return get_s3_manager() is not None
+    """检查是否启用了S3存储（由 STORAGE_BACKEND 控制）"""
+    return os.getenv("STORAGE_BACKEND", "").lower() == "s3"

@@ -206,21 +206,23 @@ def health_check():
         health_status["services"]["database"] = {"status": "unhealthy", "error": str(e)}
         health_status["status"] = "unhealthy"
 
-    # 檢查上傳目錄
+    # 檢查上傳目錄（僅本地存儲）
     try:
-        uploads_path = "uploads"
-        if os.path.exists(uploads_path) and os.access(uploads_path, os.W_OK):
-            health_status["services"]["storage"] = {
-                "status": "healthy",
-                "message": "Uploads directory accessible",
-            }
-        else:
-            health_status["services"]["storage"] = {
-                "status": "unhealthy",
-                "message": "Uploads directory not accessible",
-            }
-            if health_status["status"] == "healthy":
-                health_status["status"] = "degraded"
+        from utils.s3_storage import is_s3_enabled
+        if not is_s3_enabled():
+            uploads_path = os.getenv("LOCAL_UPLOAD_DIR")
+            if uploads_path and os.path.exists(uploads_path) and os.access(uploads_path, os.W_OK):
+                health_status["services"]["storage"] = {
+                    "status": "healthy",
+                    "message": f"Uploads directory accessible: {uploads_path}",
+                }
+            else:
+                health_status["services"]["storage"] = {
+                    "status": "unhealthy",
+                    "message": "Local storage in use but LOCAL_UPLOAD_DIR is missing or not writable",
+                }
+                if health_status["status"] == "healthy":
+                    health_status["status"] = "degraded"
     except Exception as e:
         health_status["services"]["storage"] = {"status": "unhealthy", "error": str(e)}
         if health_status["status"] == "healthy":
@@ -317,13 +319,17 @@ def health_check():
 async def startup_event():
     """Initialize scheduler on startup"""
     try:
-        # Check if OneDrive sync is enabled
-        onedrive_enabled = os.getenv('ONEDRIVE_SYNC_ENABLED', 'false').lower() == 'true'
+        # Check if OneDrive sync is enabled (no implicit default)
+        onedrive_env = os.getenv('ONEDRIVE_SYNC_ENABLED')
+        if onedrive_env is None:
+            logger.error("❌ Missing ONEDRIVE_SYNC_ENABLED env var. Set to 'true' to enable OneDrive sync.")
+            return
+        onedrive_enabled = onedrive_env.lower() == 'true'
 
         if onedrive_enabled:
             # Check if APScheduler is available
             if not APSCHEDULER_AVAILABLE:
-                logger.error("❌ APScheduler not installed! OneDrive sync requires: pip install -r GeminiOCR/backend/requirements.txt")
+                logger.error("❌ APScheduler not installed! OneDrive sync requires: pip install -r backend/requirements.txt (use your app's virtualenv pip)")
                 return
 
             # Schedule OneDrive sync daily at 2 AM
@@ -338,7 +344,7 @@ async def startup_event():
             logger.info("✅ APScheduler started - OneDrive sync scheduled for 2:00 AM daily")
         else:
             if not APSCHEDULER_AVAILABLE:
-                logger.warning("⚠️ APScheduler not installed. OneDrive sync is disabled. Install with: pip install -r GeminiOCR/backend/requirements.txt")
+                logger.warning("⚠️ APScheduler not installed. OneDrive sync is disabled. Install with: pip install -r backend/requirements.txt (use your app's virtualenv pip)")
             else:
                 logger.info("ℹ️ OneDrive sync disabled (ONEDRIVE_SYNC_ENABLED not set to 'true')")
 
@@ -1125,6 +1131,7 @@ def download_config_file(config_id: int, file_type: str, db: Session = Depends(g
         raise HTTPException(status_code=500, detail="Configuration missing company or document type")
     
     logger.info(f"📥 S3-only download request - Config ID: {config_id}, Type: {file_type}, Company: {company.company_code}, DocType: {doc_type.type_code}")
+    compat_enabled = os.getenv('S3_READ_COMPAT_ENABLED', 'true').lower() == 'true'
     
     try:
         # Always try S3 download first
@@ -1233,43 +1240,45 @@ def download_config_file(config_id: int, file_type: str, db: Session = Depends(g
             f"{company.company_id}_{doc_type.doc_type_id}",    # 1_11 (minimal)
         ]
         
-        # === STRATEGY 3: Current name-based paths ===
+        # === STRATEGY 3: Current name-based paths (compat only) ===
         name_based_paths = []
-        
-        # Company variants
-        company_variants = [
-            company.company_code if company.company_code else "unknown",
-            company.company_code.lower() if company.company_code else "unknown",
-            company.company_code.upper() if company.company_code else "unknown",
-            company.company_name.lower().replace(" ", "_") if company.company_name else "unknown",
-            "hana",  # Common fallback
-        ]
-        
-        # Document type variants  
-        doc_type_variants = [
-            doc_type.type_code if doc_type.type_code else "unknown",
-            doc_type.type_name if doc_type.type_name else "unknown", 
-            # Handle common transformations
-            doc_type.type_code.replace("[Admin]", "[Finance]") if doc_type.type_code and "[Admin]" in doc_type.type_code else None,
-            doc_type.type_code.replace("[Finance]", "[Admin]") if doc_type.type_code and "[Finance]" in doc_type.type_code else None,
-            doc_type.type_code.replace("[Production]", "[Admin]") if doc_type.type_code and "[Production]" in doc_type.type_code else None,
-            # Remove prefixes and clean up
-            doc_type.type_code.replace("[Admin]_", "").replace("[Finance]_", "").replace("[Production]_", "") if doc_type.type_code else None,
-            # Common patterns
-            "[Finance]_hkbn_billing",  # Known working pattern
-            "hkbn_billing", "admin_hkbn_billing", "finance_hkbn_billing",
-        ]
-        
-        # Remove None and duplicates
-        doc_type_variants = list(set([v for v in doc_type_variants if v]))
-        
-        # Build all name-based combinations
-        for company_variant in set(company_variants):
-            for doc_type_variant in doc_type_variants:
-                name_based_paths.append(f"{company_variant}/{doc_type_variant}")
+        if compat_enabled:
+            # Company variants
+            company_variants = [
+                company.company_code if company.company_code else "unknown",
+                company.company_code.lower() if company.company_code else "unknown",
+                company.company_code.upper() if company.company_code else "unknown",
+                company.company_name.lower().replace(" ", "_") if company.company_name else "unknown",
+                "hana",  # Common fallback
+            ]
+
+            # Document type variants
+            doc_type_variants = [
+                doc_type.type_code if doc_type.type_code else "unknown",
+                doc_type.type_name if doc_type.type_name else "unknown",
+                # Handle common transformations
+                doc_type.type_code.replace("[Admin]", "[Finance]") if doc_type.type_code and "[Admin]" in doc_type.type_code else None,
+                doc_type.type_code.replace("[Finance]", "[Admin]") if doc_type.type_code and "[Finance]" in doc_type.type_code else None,
+                doc_type.type_code.replace("[Production]", "[Admin]") if doc_type.type_code and "[Production]" in doc_type.type_code else None,
+                # Remove prefixes and clean up
+                doc_type.type_code.replace("[Admin]_", "").replace("[Finance]_", "").replace("[Production]_", "") if doc_type.type_code else None,
+                # Common patterns
+                "[Finance]_hkbn_billing",  # Known working pattern
+                "hkbn_billing", "admin_hkbn_billing", "finance_hkbn_billing",
+            ]
+
+            # Remove None and duplicates
+            doc_type_variants = list(set([v for v in doc_type_variants if v]))
+
+            # Build all name-based combinations
+            for company_variant in set(company_variants):
+                for doc_type_variant in doc_type_variants:
+                    name_based_paths.append(f"{company_variant}/{doc_type_variant}")
         
         # === STRATEGY 4: Enhanced wildcard search in S3 with disambiguation ===
         def try_wildcard_search():
+            if not compat_enabled:
+                return None, None
             logger.info(f"🔍 Attempting enhanced wildcard search for config_id={config_id}")
             # List all files and find matches by filename pattern
             all_prompts = s3_manager.list_prompts() if file_type == "prompt" else []
@@ -1367,7 +1376,7 @@ def download_config_file(config_id: int, file_type: str, db: Session = Depends(g
                     break
         
         # Try alternative filenames if primary filename fails - with unique identifiers
-        if file_content is None:
+        if file_content is None and compat_enabled:
             alternative_filenames = [
                 # Config-specific filenames (most unique)
                 f"config_{config_id}_{file_type}.{'txt' if file_type == 'prompt' else 'json'}",  # config_6_prompt.txt
@@ -1412,7 +1421,7 @@ def download_config_file(config_id: int, file_type: str, db: Session = Depends(g
                             break
         
         # Last resort: wildcard search
-        if file_content is None:
+        if file_content is None and compat_enabled:
             logger.info("🔍 Attempting wildcard search as last resort")
             file_content, successful_path = try_wildcard_search()
             if successful_path:
@@ -1442,24 +1451,33 @@ def download_config_file(config_id: int, file_type: str, db: Session = Depends(g
         # Only try S3 metadata if database didn't provide original filename
         if (original_filename == filename and successful_path):
             try:
-                # Extract the S3 key from successful_path and get file info
-                s3_key = successful_path
-                if s3_key.startswith('companies/'):
-                    # For ID-based paths, use company file manager to get proper folder
-                    folder_type = "prompts" if file_type == "prompt" else "schemas"
-                    file_info = s3_manager.get_file_info(s3_key.replace("companies/", ""), folder_type)
+                # Normalise successful_path into a pure S3 key (no folder prefixing mistakes)
+                key_only = successful_path
+                if key_only.startswith('s3://'):
+                    parts = key_only[5:].split('/', 1)
+                    key_only = parts[1] if len(parts) == 2 else key_only
+
+                # When the key is ID-based (companies/...), query head_object directly
+                if key_only.startswith('companies/'):
+                    head = s3_manager.s3_client.head_object(Bucket=s3_manager.bucket_name, Key=key_only)
+                    metadata = head.get('Metadata', {})
                 else:
-                    # For legacy paths, use the path directly
-                    folder_type = "prompts" if file_type == "prompt" else "schemas"
-                    file_info = s3_manager.get_file_info(s3_key, folder_type)
-                
-                if file_info and "metadata" in file_info:
-                    metadata = file_info["metadata"]
-                    if "original_filename" in metadata:
-                        original_filename = metadata["original_filename"]
-                        logger.info(f"📁 Retrieved original filename from S3 metadata: {original_filename}")
-                    else:
-                        logger.info("⚠️ No original_filename in S3 metadata, using stored filename")
+                    # For legacy foldered keys (prompts/, schemas/, upload/, results/ ...)
+                    # get_file_info expects a key relative to the folder argument.
+                    folder_type = 'prompts' if file_type == 'prompt' else 'schemas'
+                    rel_key = key_only
+                    for prefix in (f'{folder_type}/', 'upload/', 'uploads/', 'results/', 'exports/'):
+                        if rel_key.startswith(prefix):
+                            rel_key = rel_key[len(prefix):]
+                            break
+                    info = s3_manager.get_file_info(rel_key, folder=folder_type)
+                    metadata = info.get('metadata', {}) if info else {}
+
+                if metadata and 'original_filename' in metadata:
+                    original_filename = metadata['original_filename']
+                    logger.info(f"📁 Retrieved original filename from S3 metadata: {original_filename}")
+                else:
+                    logger.info("⚠️ No original_filename in S3 metadata, using stored filename")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to retrieve original filename from S3 metadata: {e}")
         
@@ -1666,15 +1684,18 @@ async def upload_file(file: UploadFile = File(...), path: str = Form(...)):
             return {"file_path": full_s3_path}
         
         else:
-            # For other file types, use local storage (backward compatibility)
+            # For other file types, use local storage (explicit path from env)
             logger.info(f"Uploading non-prompt/schema file to local storage: {path}")
             
             # Create directories if they don't exist
-            directory = os.path.join("uploads", os.path.dirname(path))
+            base_dir = os.getenv("LOCAL_UPLOAD_DIR")
+            if not base_dir:
+                raise HTTPException(status_code=500, detail="LOCAL_UPLOAD_DIR not set for local storage")
+            directory = os.path.join(base_dir, os.path.dirname(path))
             os.makedirs(directory, exist_ok=True)
 
             # Generate full file path
-            file_path = os.path.join("uploads", path)
+            file_path = os.path.join(base_dir, path)
 
             # Save file
             with open(file_path, "wb") as buffer:
@@ -2156,8 +2177,14 @@ async def validate_prompt_schema(company_code: str, doc_type_code: str):
 @app.on_event("startup")
 async def startup_db_client():
     try:
-        # Create necessary directories
-        os.makedirs("uploads", exist_ok=True)
+        # Create necessary directories when using local storage
+        from utils.s3_storage import is_s3_enabled
+        if not is_s3_enabled():
+            base_dir = os.getenv("LOCAL_UPLOAD_DIR")
+            if not base_dir:
+                logger.error("LOCAL_UPLOAD_DIR not set but STORAGE_BACKEND=local")
+            else:
+                os.makedirs(base_dir, exist_ok=True)
 
         # Try connecting to database
         next(get_db())
@@ -4983,8 +5010,11 @@ def merge_csv_by_join_key(
             file_path = f"s3://{s3_manager.bucket_name}/{s3_manager.upload_prefix}{s3_key}"
             logger.info(f"Saved merged CSV to S3: {file_path}")
         else:
-            # Local storage path
-            local_dir = f"uploads/orders/{order_id}/items/{item_id}"
+            # Local storage path (from env)
+            base_dir = os.getenv("LOCAL_UPLOAD_DIR")
+            if not base_dir:
+                raise HTTPException(status_code=500, detail="LOCAL_UPLOAD_DIR not set for local storage")
+            local_dir = os.path.join(base_dir, f"orders/{order_id}/items/{item_id}")
             os.makedirs(local_dir, exist_ok=True)
             local_path = os.path.join(local_dir, f"item_{item_id}_merged_by_{join_key}.csv")
             # Optional: add BOM for Excel friendliness
@@ -6851,10 +6881,10 @@ if __name__ == "__main__":
         logger.error(f"Failed to load application config: {e}")
         port = 8000  # Fallback port
 
-    # Use multiple workers to handle concurrent requests
+    # Start with a single worker to reduce memory usage
     uvicorn.run(
         app,
         host="0.0.0.0",
         port=port,
-        workers=4,  # Use multiple workers to handle concurrent requests
+        workers=1,
     )

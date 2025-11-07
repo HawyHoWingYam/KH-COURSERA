@@ -16,17 +16,18 @@ class FileStorageService:
     """统一的文件存储服务，支持本地存储和S3存储"""
 
     def __init__(self):
-        self.s3_manager = get_s3_manager()
+        # 決策依據環境變數，不做靜默回退
         self.use_s3 = is_s3_enabled()
-        self.local_upload_dir = "uploads"
+        self.s3_manager = get_s3_manager() if self.use_s3 else None
 
-        # 确保本地上传目录存在
+        # 本地存儲根目錄必須由環境變數提供
+        self.local_upload_dir = os.getenv("LOCAL_UPLOAD_DIR")
         if not self.use_s3:
+            if not self.local_upload_dir or not self.local_upload_dir.strip():
+                raise ValueError("LOCAL_UPLOAD_DIR must be set when STORAGE_BACKEND=local")
             os.makedirs(self.local_upload_dir, exist_ok=True)
 
-        logger.info(
-            f"📁 文件存储服务初始化完成，使用{'S3' if self.use_s3 else '本地'}存储"
-        )
+        logger.info(f"📁 文件存储服务初始化完成，使用{'S3' if self.use_s3 else '本地'}存储")
 
     def save_uploaded_file(
         self,
@@ -140,7 +141,8 @@ class FileStorageService:
             unique_id = uuid.uuid4().hex[:8]
             safe_filename = filename.replace(" ", "_")
 
-            order_dir = os.path.join(self.local_path, "orders", str(order_id), "items", str(item_id))
+            # Use configured local upload base directory
+            order_dir = os.path.join(self.local_upload_dir, "orders", str(order_id), "items", str(item_id))
             os.makedirs(order_dir, exist_ok=True)
 
             # Generate file path
@@ -291,7 +293,8 @@ class FileStorageService:
             unique_id = uuid.uuid4().hex[:8]
             safe_filename = filename.replace(" ", "_")
 
-            mapping_dir = os.path.join(self.local_path, "orders", str(order_id), "mapping")
+            # Use configured local upload base directory
+            mapping_dir = os.path.join(self.local_upload_dir, "orders", str(order_id), "mapping")
             os.makedirs(mapping_dir, exist_ok=True)
 
             # Generate file path

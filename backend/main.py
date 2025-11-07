@@ -26,28 +26,19 @@ logger = logging.getLogger(__name__)
 
 
 def get_api_key_and_model() -> tuple[str, str]:
-    """獲取 API key 和模型名稱"""
-    if CONFIG_AVAILABLE:
-        try:
-            api_key = get_api_key_manager().get_least_used_key()
-            app_config = config_loader.get_app_config()
-            model_name = app_config.get("model_name", "gemini-2.5-flash-preview-05-20")
-            return api_key, model_name
-        except Exception as e:
-            logger.error(f"Failed to get API key from config loader: {e}")
-
-    # 備用方法：從環境變量獲取
-    api_key = (
-        os.getenv("GEMINI_API_KEY_1")
-        or os.getenv("GEMINI_API_KEY")
-        or os.getenv("API_KEY")
-    )
-    model_name = os.getenv("MODEL_NAME", "gemini-2.5-flash-preview-05-20")
-
-    if not api_key:
-        raise ValueError("No Gemini API key found in environment variables or config")
-
-    return api_key, model_name
+    """獲取 API key 和模型名稱（嚴格依賴 config_loader/env）。"""
+    if not CONFIG_AVAILABLE:
+        raise RuntimeError("Config loader not available")
+    try:
+        api_key = get_api_key_manager().get_least_used_key()
+        app_config = config_loader.get_app_config()
+        model_name = app_config.get("model_name")
+        if not model_name:
+            raise ValueError("MODEL_NAME not configured")
+        return api_key, model_name
+    except Exception as e:
+        logger.error(f"Failed to get API key/model from config loader: {e}")
+        raise
 
 
 def configure_gemini_with_retry(api_key: str, max_retries: int = 3):
