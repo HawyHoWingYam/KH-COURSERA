@@ -146,6 +146,41 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
+# Optional CloudWatch Logs integration via watchtower
+try:
+    cw_log_group = os.getenv("CLOUDWATCH_LOG_GROUP")
+    if cw_log_group:
+        try:
+            import watchtower  # type: ignore
+            import socket
+            import boto3
+
+            region = os.getenv("AWS_DEFAULT_REGION", "ap-southeast-1")
+            hostname = os.getenv("HOSTNAME") or socket.gethostname()
+            env_name = os.getenv("ENVIRONMENT", "production")
+            stream_name = f"{hostname}-{env_name}"
+
+            session = boto3.Session(region_name=region)
+            cw_handler = watchtower.CloudWatchLogHandler(
+                boto3_session=session,
+                log_group=cw_log_group,
+                stream_name=stream_name,
+                create_log_group=False,
+            )
+            cw_handler.setLevel(logging.INFO)
+            root_logger = logging.getLogger()
+            root_logger.addHandler(cw_handler)
+            root_logger.info(
+                f"✅ CloudWatch logging enabled: group={cw_log_group}, stream={stream_name}, region={region}"
+            )
+        except Exception as _cw_exc:
+            logging.getLogger(__name__).warning(
+                f"⚠️ Failed to initialize CloudWatch logging: {_cw_exc}"
+            )
+except Exception:
+    # Never fail app startup due to logging setup
+    pass
+
 # WebSocket connections store
 active_connections = {}
 

@@ -45,7 +45,10 @@ APScheduler==3.10.4
 # Expression evaluation for mapping logic
 simpleeval==0.9.13
 
-# HTTP client utilities
+# Logging to CloudWatch
+watchtower==3.0.0
+
+# HTTP client utilities (used in scripts/tests)
 requests==2.32.4
 
 # Testing dependencies
