@@ -42,7 +42,10 @@ class OneDriveClient:
         self.drive = None
 
     def connect(self) -> bool:
-        """Authenticate and establish connection"""
+        """Authenticate and establish connection.
+
+        Returns False on any auth failure instead of logging misleading success.
+        """
         try:
             credentials = (self.client_id, self.client_secret)
 
@@ -53,9 +56,13 @@ class OneDriveClient:
                 tenant_id=self.tenant_id
             )
 
-            # Authenticate
+            # Authenticate (client credentials flow)
+            # Some O365 versions may not raise on failure; verify the final auth state explicitly.
             if not self.account.is_authenticated:
-                self.account.authenticate()
+                auth_ok = self.account.authenticate()
+                if not auth_ok or not self.account.is_authenticated:
+                    logger.error("❌ OneDrive authentication failed (check client id/secret and app permissions)")
+                    return False
 
             # Get storage for specific user (app-only) or default (delegated auth)
             if self.target_user_upn:
@@ -67,7 +74,12 @@ class OneDriveClient:
                 self.storage = self.account.storage()
                 logger.info("✅ Connected to OneDrive (default drive)")
 
+            # Obtain default drive; fail fast if unavailable
             self.drive = self.storage.get_default_drive()
+            if not self.drive:
+                logger.error("❌ Failed to obtain OneDrive drive object (authentication/storage not ready)")
+                return False
+
             logger.info("✅ Successfully obtained drive object")
             return True
 
