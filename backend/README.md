@@ -75,8 +75,25 @@ GEMINI_API_KEY=your-gemini-key
 
 # 本地文件存储
 STORAGE_BACKEND=local
-LOCAL_UPLOAD_DIR=/app/uploads
+LOCAL_UPLOAD_DIR=/data/hya-ocr
 
+# 推荐的本地目录结构（相对于 LOCAL_UPLOAD_DIR）：
+#   orders/
+#     {order_id}/
+#       items/{item_id}/                # 主文件、附件、合并 CSV 等
+#       mapping/                        # 映射配置上传（本地模式）
+#   prompt_schema/
+#     {company_code}/{doc_type_code}/
+#       prompt/{filename}.txt          # Prompt 文本
+#       schema/{filename}.json         # Schema JSON
+#   configs/
+#     {company_id}/{doc_type_id}/
+#       prompts/{original_filename}.txt
+#       schemas/{original_filename}.json
+#   templates/
+#     document_types/{doc_type_id}/
+#       template_{version}.json        # 文档类型模板（本地模式）
+#
 # 若使用 S3 改为：
 # STORAGE_BACKEND=s3
 # S3_BUCKET_NAME=hya-ocr-pro

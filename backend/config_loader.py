@@ -108,18 +108,15 @@ class ConfigLoader:
             "storage_backend": storage_backend,
             "cache": {},
             "s3": {},
-            "local_backup": {},
             "validation": {},
             "performance": {},
         }
 
-        # 可選：緩存與備份參數（如提供則使用，否則由上層模組自行處理默認或不啟用）
+        # 可選：緩存參數（如提供則使用，否則由上層模組自行處理默認或不啟用）
         if os.getenv("PROMPT_SCHEMA_CACHE_ENABLED") is not None:
             cfg.setdefault("cache", {})["enabled"] = os.getenv("PROMPT_SCHEMA_CACHE_ENABLED").lower() == "true"
         if os.getenv("PROMPT_SCHEMA_CACHE_SIZE"):
             cfg.setdefault("cache", {})["max_size"] = int(os.getenv("PROMPT_SCHEMA_CACHE_SIZE"))
-        if os.getenv("PROMPT_SCHEMA_LOCAL_BACKUP_PATH"):
-            cfg.setdefault("local_backup", {})["path"] = os.getenv("PROMPT_SCHEMA_LOCAL_BACKUP_PATH")
 
         if storage_backend == "s3":
             # 明確要求 S3 參數
