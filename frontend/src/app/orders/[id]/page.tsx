@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import { DocumentType } from '@/lib/api';
+import { applyOrderUpdateToOrder } from '@/lib/orderUpdateHelpers';
 
 interface Company {
   company_id: number;
@@ -92,6 +93,9 @@ interface Order {
   total_items: number;
   completed_items: number;
   failed_items: number;
+  total_attachments: number;
+  completed_attachments: number;
+  failed_attachments: number;
   mapping_file_path?: string | null;
   mapping_keys?: string[] | null;
   primary_doc_type_id: number | null;
@@ -267,12 +271,8 @@ export default function OrderDetailsPage() {
           if (msg && msg.type === 'order_update' && msg.order_id === orderId) {
             // Shallow merge into current order state if available
             setOrder((prev) => {
-              const next = prev ? { ...prev } as any : {};
-              if (msg.status) next.status = msg.status;
-              if (msg.final_report_paths) next.final_report_paths = msg.final_report_paths;
-              if (typeof msg.remap_item_count !== 'undefined') (next as any).remap_item_count = msg.remap_item_count;
-              if (typeof msg.can_remap !== 'undefined') (next as any).can_remap = msg.can_remap;
-              return next as any;
+              if (!prev) return prev;
+              return applyOrderUpdateToOrder(prev, msg);
             });
             if (msg.status && msg.status !== 'PROCESSING' && msg.status !== 'MAPPING') {
               ws.close();
@@ -1554,22 +1554,54 @@ export default function OrderDetailsPage() {
       <div className="bg-white rounded-lg shadow p-6 mb-8">
         <h2 className="text-lg font-semibold mb-4">Order Summary</h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {/* Item-level stats */}
           <div>
             <div className="text-sm text-gray-500">Total Items</div>
             <div className="text-2xl font-bold">{order.total_items}</div>
           </div>
           <div>
-            <div className="text-sm text-gray-500">Completed</div>
+            <div className="text-sm text-gray-500">Items Completed</div>
             <div className="text-2xl font-bold text-green-600">{order.completed_items}</div>
           </div>
           <div>
-            <div className="text-sm text-gray-500">Failed</div>
+            <div className="text-sm text-gray-500">Items Failed</div>
             <div className="text-2xl font-bold text-red-600">{order.failed_items}</div>
           </div>
           <div>
-            <div className="text-sm text-gray-500">Progress</div>
+            <div className="text-sm text-gray-500">Item Progress</div>
             <div className="text-2xl font-bold">
               {order.total_items > 0 ? Math.round((order.completed_items / order.total_items) * 100) : 0}%
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+          {/* Attachment-level stats */}
+          <div>
+            <div className="text-sm text-gray-500">Total Attachments</div>
+            <div className={`text-2xl font-bold ${order.total_attachments === 0 ? 'text-gray-400' : ''}`}>
+              {order.total_attachments}
+            </div>
+          </div>
+          <div>
+            <div className="text-sm text-gray-500">Attachments Completed</div>
+            <div className={`text-2xl font-bold ${order.total_attachments === 0 ? 'text-gray-300' : 'text-green-600'}`}>
+              {order.completed_attachments}
+            </div>
+          </div>
+          <div>
+            <div className="text-sm text-gray-500">Attachments Failed</div>
+            <div className={`text-2xl font-bold ${order.total_attachments === 0 ? 'text-gray-300' : 'text-red-600'}`}>
+              {order.failed_attachments}
+            </div>
+          </div>
+          <div>
+            <div className="text-sm text-gray-500">Attachment Progress</div>
+            <div className={`text-2xl font-bold ${order.total_attachments === 0 ? 'text-gray-300' : ''}`}>
+              {order.total_attachments > 0
+                ? Math.round((order.completed_attachments / order.total_attachments) * 100)
+                : 0
+              }%
             </div>
           </div>
         </div>

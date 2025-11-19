@@ -47,7 +47,8 @@ if TYPE_CHECKING:
     from utils.onedrive_client import OneDriveClient  # pragma: no cover - typing only
 from utils.mapping_config import MappingItemType
 from utils.mapping_config_resolver import MappingConfigResolver
-from utils.ws_notify import broadcast as ws_broadcast
+from utils.order_stats import build_order_update_payload
+from utils.ws_notify import broadcast as ws_broadcast, broadcast_summary as ws_broadcast_summary
 from config_loader import config_loader
 
 logger = logging.getLogger(__name__)
@@ -1458,9 +1459,12 @@ class OrderProcessor:
                         )
 
                 db.commit()
-                # Notify clients about status change
+
+                # Notify clients about status change, including attachment statistics
                 try:
-                    await ws_broadcast(order_id, {"type": "order_update", "order_id": order_id, "status": order.status.value})
+                    payload = build_order_update_payload(order, db)
+                    await ws_broadcast(order_id, payload)
+                    await ws_broadcast_summary(payload)
                 except Exception:
                     pass
                 logger.info(f"Order {order_id} OCR stage completed: {completed_count} succeeded, {failed_count} failed")
@@ -2369,16 +2373,18 @@ class OrderProcessor:
             db.commit()
             # Broadcast final update to clients
             try:
-                can_remap = True
-                remap_count = sum(1 for it in [{"ocr": i.ocr_result_json_path} for i in db.query(OcrOrderItem).filter(OcrOrderItem.order_id == order_id).all()] if it["ocr"])  # lightweight count
-                await ws_broadcast(order_id, {
-                    "type": "order_update",
-                    "order_id": order_id,
-                    "status": order.status.value,
+                # Lightweight remap availability stats
+                items_with_ocr = db.query(OcrOrderItem).filter(OcrOrderItem.order_id == order_id).all()
+                remap_count = sum(1 for i in items_with_ocr if i.ocr_result_json_path)
+
+                extra = {
                     "final_report_paths": order.final_report_paths,
                     "remap_item_count": remap_count,
                     "can_remap": remap_count > 0,
-                })
+                }
+                payload = build_order_update_payload(order, db, extra)
+                await ws_broadcast(order_id, payload)
+                await ws_broadcast_summary(payload)
             except Exception:
                 pass
     async def _load_expanded_ocr_results(self, order_id: int) -> List[Dict[str, Any]]:
