@@ -2,3 +2,4 @@
 backend/.venv/*
 */__pycache__/*
 */*/__pycache__/*
+ backend/backend.env
