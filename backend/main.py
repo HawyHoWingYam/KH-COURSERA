@@ -381,7 +381,7 @@ def get_response_schema(doc_type, provider_name):
 
 @api_error_handler
 async def extract_text_from_image(
-    image_path, enhanced_prompt, response_schema, api_key=None, model_name=None
+    image_path, enhanced_prompt, response_schema=None, api_key=None, model_name=None
 ):
     """
     Extract text from image using the enhanced pipeline (async version with retry).
@@ -396,13 +396,19 @@ async def extract_text_from_image(
     configure_gemini_with_retry(api_key)
 
     # Configure the model
+    generation_config_kwargs = {
+        "temperature": 0.3,
+        "top_p": 0.95,
+        "top_k": 40,
+        "response_mime_type": "application/json",
+    }
+    # Only include response_schema when provided to avoid API issues with None
+    if response_schema is not None:
+        generation_config_kwargs["response_schema"] = response_schema
+
     model = genai.GenerativeModel(
         model_name=model_name,
-        generation_config={
-            "temperature": 0.3,
-            "top_p": 0.95,
-            "top_k": 40,
-        },
+        generation_config=genai.GenerationConfig(**generation_config_kwargs),
     )
     # Start timing
     start_time = time.time()
@@ -420,10 +426,6 @@ async def extract_text_from_image(
         response = await asyncio.to_thread(
             model.generate_content,
             contents=[enhanced_prompt, processed_image],
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                response_schema=response_schema,
-            ),
         )
         # Calculate processing time
         processing_time = time.time() - start_time
@@ -464,7 +466,7 @@ async def extract_text_from_image(
 
 @api_error_handler
 async def extract_text_from_pdf(
-    pdf_path, enhanced_prompt, response_schema, api_key=None, model_name=None
+    pdf_path, enhanced_prompt, response_schema=None, api_key=None, model_name=None
 ):
     """
     Extract text directly from PDF using Gemini API (async version with retry).
@@ -482,13 +484,19 @@ async def extract_text_from_pdf(
         pdf_data = f.read()
 
     # Configure the model
+    generation_config_kwargs = {
+        "temperature": 0.3,
+        "top_p": 0.95,
+        "top_k": 40,
+        "response_mime_type": "application/json",
+    }
+    # Only include response_schema when provided
+    if response_schema is not None:
+        generation_config_kwargs["response_schema"] = response_schema
+
     model = genai.GenerativeModel(
         model_name=model_name,
-        generation_config={
-            "temperature": 0.3,
-            "top_p": 0.95,
-            "top_k": 40,
-        },
+        generation_config=genai.GenerationConfig(**generation_config_kwargs),
     )
 
     # Start timing
@@ -508,10 +516,6 @@ async def extract_text_from_pdf(
                 enhanced_prompt,
                 {"mime_type": "application/pdf", "data": pdf_data},
             ],
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                response_schema=response_schema,
-            ),
         )
 
         # Calculate processing time

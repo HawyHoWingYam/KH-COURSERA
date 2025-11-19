@@ -33,6 +33,8 @@ from db.models import (
     CompanyDocumentConfig,
     File,
     ApiUsage,
+    CompanyDocMappingDefault,
+    MappingTemplate,
 )
 from main import extract_text_from_image, extract_text_from_pdf
 from utils.s3_storage import get_s3_manager
@@ -455,6 +457,79 @@ class MatchingEngine:
                 mapping_value=mapping_value,
                 match_reason=f"Unknown strategy: {strategy}"
             )
+
+
+def _has_applicable_mapping_template(
+    db: Session,
+    company_id: int,
+    doc_type_id: int,
+    item_type: OrderItemType,
+) -> bool:
+    """
+    Check whether there is any MappingTemplate that could apply to this item.
+
+    Follows the same matching rules as MappingConfigResolver._resolve_template:
+    - item_type must match
+    - company_id/doc_type_id can be exact match or NULL (global)
+    """
+    templates = (
+        db.query(MappingTemplate)
+        .filter(MappingTemplate.item_type == item_type)
+        .filter(
+            (MappingTemplate.company_id.is_(None)) | (MappingTemplate.company_id == company_id),
+            (MappingTemplate.doc_type_id.is_(None)) | (MappingTemplate.doc_type_id == doc_type_id),
+        )
+        .limit(1)
+        .all()
+    )
+    return bool(templates)
+
+
+def _order_requires_mapping(db: Session, order: OcrOrder) -> bool:
+    """
+    Determine whether an order should run mapping stage.
+
+    Rules:
+    - If any item already has mapping_config -> require mapping
+    - Else if order has legacy mapping_file_path/mapping_keys -> require mapping
+    - Else if there is any CompanyDocMappingDefault for items -> require mapping
+    - Else if there is any applicable MappingTemplate for items -> require mapping
+    - Otherwise, treat as OCR-only (mapping skipped)
+    """
+    items = db.query(OcrOrderItem).filter(OcrOrderItem.order_id == order.order_id).all()
+    if not items:
+        return False
+
+    # Item-level explicit configs
+    for item in items:
+        if item.mapping_config:
+            return True
+
+    # Legacy order-level mapping settings
+    if order.mapping_file_path or (order.mapping_keys and len(order.mapping_keys) > 0):
+        return True
+
+    # Defaults or templates for any item
+    for item in items:
+        # Explicit default record
+        default_exists = (
+            db.query(CompanyDocMappingDefault)
+            .filter(
+                CompanyDocMappingDefault.company_id == item.company_id,
+                CompanyDocMappingDefault.doc_type_id == item.doc_type_id,
+                CompanyDocMappingDefault.item_type == item.item_type,
+            )
+            .first()
+            is not None
+        )
+        if default_exists:
+            return True
+
+        # Applicable template (company/doc_type specific or global)
+        if _has_applicable_mapping_template(db, item.company_id, item.doc_type_id, item.item_type):
+            return True
+
+    return False
 
 
 class OrderProcessor:
@@ -1359,14 +1434,28 @@ class OrderProcessor:
                     order.status = OrderStatus.FAILED
                     order.error_message = "All items failed to process at OCR stage"
                 elif completed_count > 0:
-                    # OCR ok for at least some items: proceed to mapping-only pipeline
-                    order.status = OrderStatus.MAPPING
-                    order.error_message = None
-                    db.commit()
-                    logger.info(f"Order {order_id} moving to mapping stage (OCR completed for {completed_count} items)")
+                    # OCR ok for at least some items
+                    mapping_required = _order_requires_mapping(db, order)
 
-                    # Run mapping-only synchronously to produce mapped_csv and special_csv
-                    await self.process_order_mapping_only(order_id)
+                    if mapping_required:
+                        # Proceed to mapping-only pipeline
+                        order.status = OrderStatus.MAPPING
+                        order.error_message = None
+                        db.commit()
+                        logger.info(
+                            f"Order {order_id} moving to mapping stage (OCR completed for {completed_count} items; mapping templates/defaults detected)"
+                        )
+
+                        # Run mapping-only synchronously to produce mapped_csv and special_csv
+                        await self.process_order_mapping_only(order_id)
+                    else:
+                        # No mapping templates/defaults/configs -> treat as OCR-only order
+                        order.status = OrderStatus.OCR_COMPLETED
+                        order.error_message = None
+                        db.commit()
+                        logger.info(
+                            f"Order {order_id} OCR completed without mapping (no mapping templates/defaults/configs detected)"
+                        )
 
                 db.commit()
                 # Notify clients about status change
@@ -1818,24 +1907,36 @@ class OrderProcessor:
                 if file_results_map:
                     await self._generate_file_results_manifest(item_id, file_results_map)
 
-            # Save JSON results (save primary file result separately if available)
+            # Save JSON results:
+            # - Primary-only JSON for backward compatibility and mapping (if primary exists)
+            # - Aggregated JSON (all files) for combined result downloads
             json_path = None
+
             if primary_result:
-                # Save primary file result
-                json_content = json.dumps(primary_result, indent=2, ensure_ascii=False)
-                json_s3_key = f"{s3_base}/item_{item_id}_primary.json"
-                json_upload_success = self.s3_manager.upload_file(json_content.encode('utf-8'), json_s3_key)
+                # Save primary file result (used by existing mapping and header preview logic)
+                primary_json_content = json.dumps(primary_result, indent=2, ensure_ascii=False)
+                primary_json_key = f"{s3_base}/item_{item_id}_primary.json"
+                primary_upload_success = self.s3_manager.upload_file(primary_json_content.encode('utf-8'), primary_json_key)
 
-                if json_upload_success:
-                    json_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{json_s3_key}"
+                if primary_upload_success:
+                    json_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{primary_json_key}"
+
+                # Additionally, save aggregated results (primary + attachments) for combined JSON view
+                try:
+                    aggregated_json_content = json.dumps(results, indent=2, ensure_ascii=False)
+                    aggregated_json_key = f"{s3_base}/item_{item_id}_results.json"
+                    self.s3_manager.upload_file(aggregated_json_content.encode('utf-8'), aggregated_json_key)
+                except Exception as e:
+                    logger.warning(f"Failed to save aggregated JSON results for item {item_id}: {e}")
             else:
-                # No primary file, save aggregated results for backward compatibility
-                json_content = json.dumps(attachment_results if attachment_results else results, indent=2, ensure_ascii=False)
-                json_s3_key = f"{s3_base}/item_{item_id}_results.json"
-                json_upload_success = self.s3_manager.upload_file(json_content.encode('utf-8'), json_s3_key)
+                # No primary file, keep existing behavior: save aggregated results only
+                aggregated_data = attachment_results if attachment_results else results
+                aggregated_json_content = json.dumps(aggregated_data, indent=2, ensure_ascii=False)
+                aggregated_json_key = f"{s3_base}/item_{item_id}_results.json"
+                aggregated_upload_success = self.s3_manager.upload_file(aggregated_json_content.encode('utf-8'), aggregated_json_key)
 
-                if json_upload_success:
-                    json_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{json_s3_key}"
+                if aggregated_upload_success:
+                    json_path = f"s3://{self.s3_manager.bucket_name}/{self.s3_manager.upload_prefix}{aggregated_json_key}"
 
             # Generate CSV results using new mapping function
             csv_path = await self._generate_item_csv_quick(item_id, primary_result, attachment_results)
@@ -2049,6 +2150,15 @@ class OrderProcessor:
             if order.status not in {OrderStatus.OCR_COMPLETED, OrderStatus.MAPPING}:
                 logger.warning(
                     f"Order {order_id} must be in OCR_COMPLETED or MAPPING status (current: {order.status})"
+                )
+                return
+
+            # If there is no mapping configuration/default/template for this order,
+            # silently skip mapping-only processing instead of marking it as failed.
+            if not _order_requires_mapping(db, order):
+                logger.info(
+                    f"Order {order_id} has no applicable mapping templates/defaults/configs; "
+                    "skipping mapping-only processing"
                 )
                 return
 

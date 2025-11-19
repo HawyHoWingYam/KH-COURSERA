@@ -62,7 +62,10 @@ PORT=8000
 ENVIRONMENT=development
 MODEL_NAME=gemini-1.5-pro
 
+# 例：本地開發數據庫
 DATABASE_URL=postgresql://user:pass@127.0.0.1:5432/hya
+# 例：RDS（production）格式
+# DATABASE_URL=postgresql+psycopg2://dbmasteruser:<password>@ls-c61bcd2164a8d5b9fb0ea1d96e90291bada031ae.c7yiqy8go8c7.ap-southeast-1.rds.amazonaws.com:5432/document_processing_platform?sslmode=require
 
 # 至少配置一把
 GEMINI_API_KEY=your-gemini-key
@@ -76,7 +79,7 @@ LOCAL_UPLOAD_DIR=/app/uploads
 
 # 若使用 S3 改为：
 # STORAGE_BACKEND=s3
-# S3_BUCKET_NAME=hya-ocr
+# S3_BUCKET_NAME=hya-ocr-pro
 # AWS_DEFAULT_REGION=ap-southeast-1
 # AWS_ACCESS_KEY_ID=...
 # AWS_SECRET_ACCESS_KEY=...

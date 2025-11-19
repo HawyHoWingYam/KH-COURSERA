@@ -392,7 +392,7 @@ export default function OrderDetailsPage() {
     }
   };
 
-  // Upload primary file for an item
+  // Upload primary file for an item (single file; used for the first/primary document)
   const uploadPrimaryFile = async (itemId: number, file: File) => {
     setUploadingFiles(prev => ({ ...prev, [itemId]: true }));
 
@@ -416,6 +416,98 @@ export default function OrderDetailsPage() {
       setError('Failed to upload primary file');
     } finally {
       setUploadingFiles(prev => ({ ...prev, [itemId]: false }));
+    }
+  };
+
+  // Upload multiple files for an item:
+  // - First file becomes the primary file (if none exists yet)
+  // - Remaining files are uploaded as attachments
+  const uploadPrimaryAndAttachments = async (item: OrderItem, files: FileList) => {
+    if (!files || files.length === 0) return;
+
+    const [first, ...rest] = Array.from(files);
+    setUploadingFiles(prev => ({ ...prev, [item.item_id]: true }));
+
+    try {
+      // If there's no primary file yet, use the first file as primary; otherwise treat all as attachments
+      if (!item.primary_file) {
+        await uploadPrimaryFile(item.item_id, first);
+      } else {
+        // If primary already exists, push the first file into attachments as well
+        rest.unshift(first);
+      }
+
+      if (rest.length > 0) {
+        const formData = new FormData();
+        for (const f of rest) {
+          formData.append('files', f);
+        }
+
+        const response = await fetch(`/api/orders/${orderId}/items/${item.item_id}/files`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail || 'Failed to upload attachment files');
+        }
+      }
+
+      // Reload order to show updated files
+      loadOrder();
+    } catch (error) {
+      console.error('Error uploading primary/attachment files:', error);
+      setError(error instanceof Error ? error.message : 'Failed to upload files');
+    } finally {
+      setUploadingFiles(prev => ({ ...prev, [item.item_id]: false }));
+    }
+  };
+
+  // Replace existing primary + attachment files with a new multi-file set
+  const replacePrimaryAndAttachments = async (item: OrderItem, files: FileList) => {
+    if (!files || files.length === 0) return;
+
+    setUploadingFiles(prev => ({ ...prev, [item.item_id]: true }));
+
+    try {
+      // 1) Delete existing primary file if present
+      if (item.primary_file) {
+        const resp = await fetch(`/api/orders/${orderId}/items/${item.item_id}/primary-file`, {
+          method: 'DELETE',
+        });
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          throw new Error(data.detail || 'Failed to delete primary file before replace');
+        }
+      }
+
+      // 2) Delete all existing attachments for this item
+      if (item.attachments && item.attachments.length > 0) {
+        for (const att of item.attachments) {
+          const resp = await fetch(`/api/orders/${orderId}/items/${item.item_id}/files/${att.file_id}`, {
+            method: 'DELETE',
+          });
+          if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.detail || `Failed to delete attachment ${att.filename}`);
+          }
+        }
+      }
+
+      // 3) Upload new multi-file set as if first-time upload
+      const emptyItem: OrderItem = {
+        ...item,
+        primary_file: null,
+        attachments: [],
+        attachment_count: 0,
+      };
+      await uploadPrimaryAndAttachments(emptyItem, files);
+    } catch (error) {
+      console.error('Error replacing primary/attachment files:', error);
+      setError(error instanceof Error ? error.message : 'Failed to replace files');
+    } finally {
+      setUploadingFiles(prev => ({ ...prev, [item.item_id]: false }));
     }
   };
 
@@ -1612,9 +1704,12 @@ export default function OrderDetailsPage() {
                                   const input = document.createElement('input');
                                   input.type = 'file';
                                   input.accept = '.pdf,.jpg,.jpeg,.png';
+                                  input.multiple = true;
                                   input.onchange = (e) => {
-                                    const file = (e.target as HTMLInputElement).files?.[0];
-                                    if (file) uploadPrimaryFile(item.item_id, file);
+                                    const selectedFiles = (e.target as HTMLInputElement).files;
+                                    if (selectedFiles && selectedFiles.length > 0) {
+                                      replacePrimaryAndAttachments(item, selectedFiles);
+                                    }
                                   };
                                   input.click();
                                 }}
@@ -1648,9 +1743,12 @@ export default function OrderDetailsPage() {
                             const input = document.createElement('input');
                             input.type = 'file';
                             input.accept = '.pdf,.jpg,.jpeg,.png';
+                            input.multiple = true;
                             input.onchange = (e) => {
-                              const file = (e.target as HTMLInputElement).files?.[0];
-                              if (file) uploadPrimaryFile(item.item_id, file);
+                              const selectedFiles = (e.target as HTMLInputElement).files;
+                              if (selectedFiles && selectedFiles.length > 0) {
+                                uploadPrimaryAndAttachments(item, selectedFiles);
+                              }
                             };
                             input.click();
                           }}

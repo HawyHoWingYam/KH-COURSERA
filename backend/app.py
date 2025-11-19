@@ -89,6 +89,7 @@ from utils.mapping_config import (
     normalise_mapping_override,
 )
 from utils.mapping_config_resolver import MappingConfigResolver
+from utils.gemini_ocr import process_ocr_batch
 
 # Cost allocation imports
 from cost_allocation.dynamic_mapping_processor import process_dynamic_mapping_file
@@ -347,6 +348,149 @@ def health_check():
         status_code = 200  # 對於降級服務仍返回 200
 
     return JSONResponse(content=health_status, status_code=status_code)
+
+
+# ========== SIMPLE BATCH OCR ENDPOINT ==========
+
+
+class BatchOcrSummary(BaseModel):
+    company_id: int
+    company_code: str
+    doc_type_id: int
+    doc_type_code: str
+    total_files: int
+    processed_files: int
+    failed_files: int
+
+
+class BatchOcrFileResult(BaseModel):
+    index: int
+    filename: str
+    content_type: Optional[str]
+    data: Any
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    processing_time: Optional[float] = None
+    status_updates: Optional[Dict[str, Any]] = None
+
+
+class BatchOcrError(BaseModel):
+    index: int
+    filename: str
+    error: str
+
+
+class BatchOcrCsvInfo(BaseModel):
+    filename: str
+    content: str
+
+
+class BatchOcrResponse(BaseModel):
+    summary: BatchOcrSummary
+    results: List[BatchOcrFileResult]
+    errors: List[BatchOcrError]
+    csv: BatchOcrCsvInfo
+
+
+@app.post("/ocr/batch", response_model=BatchOcrResponse)
+async def ocr_batch(
+    files: List[UploadFile] = File(...),
+    company_id: int = Form(...),
+    doc_type_id: int = Form(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Simple multi-file OCR endpoint for the upload page.
+
+    - Accepts multiple image/PDF files.
+    - Uses PromptSchemaManager to load prompt/schema based on company & document type.
+    - Calls Gemini OCR once per file.
+    - Aggregates results into a single JSON structure.
+    - Generates deep-flattened CSV content for download on the frontend.
+    """
+    try:
+        # Load company and document type to resolve codes
+        company = db.query(Company).filter(Company.company_id == company_id).first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Company not found")
+
+        doc_type = (
+            db.query(DocumentType)
+            .filter(DocumentType.doc_type_id == doc_type_id)
+            .first()
+        )
+        if not doc_type:
+            raise HTTPException(status_code=404, detail="Document type not found")
+
+        company_code = company.company_code
+        doc_type_code = doc_type.type_code
+
+        # Delegate OCR work to the Gemini batch service
+        aggregated = await process_ocr_batch(
+            files=files,
+            company_code=company_code,
+            doc_type_code=doc_type_code,
+        )
+
+        summary_data = aggregated.get("summary", {}) or {}
+        result_items = aggregated.get("results", []) or []
+        error_items = aggregated.get("errors", []) or []
+
+        # Prepare records for CSV conversion
+        csv_records: List[Dict[str, Any]] = []
+        for item in result_items:
+            data = item.get("data")
+            row: Dict[str, Any] = {
+                "company_code": company_code,
+                "doc_type_code": doc_type_code,
+                "source_filename": item.get("filename"),
+                "file_index": item.get("index"),
+            }
+
+            if isinstance(data, dict):
+                # Merge business data into the row
+                row.update(data)
+            else:
+                row["raw_data"] = data
+
+            csv_records.append(row)
+
+        # Convert to CSV (deep flattening) using existing utility
+        csv_content_raw = convert_json_to_csv(csv_records)
+        if not csv_content_raw:
+            csv_content_raw = ""
+
+        escaped_csv = escape_excel_formulas_in_csv(csv_content_raw)
+
+        csv_filename = f"batch_ocr_{company_code}_{doc_type_code}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+
+        response_payload = BatchOcrResponse(
+            summary=BatchOcrSummary(
+                company_id=company.company_id,
+                company_code=company_code,
+                doc_type_id=doc_type.doc_type_id,
+                doc_type_code=doc_type_code,
+                total_files=summary_data.get("total_files", len(files)),
+                processed_files=summary_data.get("processed_files", len(result_items)),
+                failed_files=summary_data.get("failed_files", len(error_items)),
+            ),
+            results=[BatchOcrFileResult(**item) for item in result_items],
+            errors=[BatchOcrError(**err) for err in error_items],
+            csv=BatchOcrCsvInfo(
+                filename=csv_filename,
+                content=escaped_csv,
+            ),
+        )
+
+        return response_payload
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in /ocr/batch: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to process batch OCR: {str(e)}"
+        )
 
 
 # Startup and Shutdown Events for Scheduler
@@ -4563,7 +4707,11 @@ def preview_master_csv(path: str = Query(..., description="OneDrive path to mast
 
 @app.get("/orders/{order_id}/items/{item_id}/download/json")
 def download_order_item_json(order_id: int, item_id: int, db: Session = Depends(get_db)):
-    """Download OCR result JSON file for a specific order item"""
+    """Download OCR result JSON file for a specific order item.
+
+    If an aggregated JSON (including all files for the item) exists, it is preferred.
+    Otherwise, falls back to the legacy primary-only JSON stored in ocr_result_json_path.
+    """
     try:
         # Verify order and item exist
         order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
@@ -4577,20 +4725,29 @@ def download_order_item_json(order_id: int, item_id: int, db: Session = Depends(
         if not item:
             raise HTTPException(status_code=404, detail="Order item not found")
 
-        # Allow download even if mapping not completed; only require OCR outputs
-
-        if not item.ocr_result_json_path:
-            raise HTTPException(status_code=404, detail="JSON result file not found for this item")
-
         # Use existing S3 download infrastructure
         s3_manager = get_s3_manager()
         if not s3_manager:
             raise HTTPException(status_code=500, detail="S3 storage not available")
 
-        # Download file content from S3
-        file_content = s3_manager.download_file_by_stored_path(item.ocr_result_json_path)
+        file_content = None
+
+        # Prefer aggregated JSON (all files) if available for this item
+        try:
+            aggregated_key = f"results/orders/{item_id // 1000}/items/{item_id}/item_{item_id}_results.json"
+            aggregated_stored_path = f"{s3_manager.upload_prefix}{aggregated_key}"
+            file_content = s3_manager.download_file_by_stored_path(aggregated_stored_path)
+        except Exception as e:
+            logger.warning(f"Failed to load aggregated JSON for item {item_id}: {e}")
+
+        # Fallback to legacy primary-only JSON if aggregated not found
         if not file_content:
-            raise HTTPException(status_code=404, detail=f"File not found in S3: {item.ocr_result_json_path}")
+            if not item.ocr_result_json_path:
+                raise HTTPException(status_code=404, detail="JSON result file not found for this item")
+
+            file_content = s3_manager.download_file_by_stored_path(item.ocr_result_json_path)
+            if not file_content:
+                raise HTTPException(status_code=404, detail=f"File not found in S3: {item.ocr_result_json_path}")
 
         # Generate filename for download
         filename = f"order_{order_id}_item_{item_id}_{item.item_name or 'result'}.json"

@@ -88,6 +88,39 @@ class S3StorageManager:
         self._s3_client = None
         self._s3_resource = None
 
+    @staticmethod
+    def _sanitize_metadata(metadata: Optional[dict]) -> Optional[dict]:
+        """
+        Ensure S3 Metadata values are ASCII-only strings.
+
+        S3 object metadata only accepts ASCII characters. This helper will:
+        - Cast all values to str
+        - Strip or replace non-ASCII characters
+        - Log a warning when sanitization happens
+        """
+        if not metadata:
+            return None
+
+        safe_meta: dict = {}
+        for key, value in metadata.items():
+            if value is None:
+                continue
+            s = str(value)
+            try:
+                s.encode("ascii")
+            except UnicodeEncodeError:
+                sanitized = s.encode("ascii", "ignore").decode("ascii")
+                if not sanitized:
+                    sanitized = "non_ascii"
+                logger.warning(
+                    f"S3 metadata value for key '{key}' contains non-ASCII characters "
+                    f"and will be sanitized. Original='{s}', Sanitized='{sanitized}'"
+                )
+                s = sanitized
+            safe_meta[str(key)] = s
+
+        return safe_meta or None
+
     @property
     def s3_client(self):
         """延迟初始化S3客户端"""
@@ -185,14 +218,18 @@ class S3StorageManager:
 
             # 添加元数据
             if metadata:
-                upload_args["Metadata"] = metadata
+                safe_meta = self._sanitize_metadata(metadata)
+                if safe_meta:
+                    upload_args["Metadata"] = safe_meta
 
             # 执行上传
             if hasattr(file_content, "read"):
                 # 文件对象 - upload_fileobj 需要单独的参数格式
                 extra_args = {"ContentType": content_type}
                 if metadata:
-                    extra_args["Metadata"] = metadata
+                    safe_meta = self._sanitize_metadata(metadata)
+                    if safe_meta:
+                        extra_args["Metadata"] = safe_meta
 
                 self.s3_client.upload_fileobj(
                     file_content,
@@ -244,7 +281,9 @@ class S3StorageManager:
             }
 
             if metadata:
-                upload_args["Metadata"] = metadata
+                safe_meta = self._sanitize_metadata(metadata)
+                if safe_meta:
+                    upload_args["Metadata"] = safe_meta
 
             self.s3_client.put_object(**upload_args)
             logger.info(
@@ -699,6 +738,8 @@ class S3StorageManager:
             if metadata:
                 upload_metadata.update(metadata)
 
+            upload_metadata = self._sanitize_metadata(upload_metadata) or {}
+
             # 上传内容
             self.s3_client.put_object(
                 Bucket=self.bucket_name,
@@ -859,6 +900,8 @@ class S3StorageManager:
             schema_content = json.dumps(schema_data, ensure_ascii=False, indent=2)
 
             # 上传内容
+            upload_metadata = self._sanitize_metadata(upload_metadata) or {}
+
             self.s3_client.put_object(
                 Bucket=self.bucket_name,
                 Key=full_key,
@@ -1518,6 +1561,8 @@ class S3StorageManager:
                 encoding = None
                 
             # Upload to S3
+            upload_metadata = self._sanitize_metadata(upload_metadata) or {}
+
             put_args = {
                 "Bucket": self.bucket_name,
                 "Key": s3_path,
