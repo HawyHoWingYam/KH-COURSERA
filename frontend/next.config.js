@@ -17,7 +17,7 @@ const nextConfig = {
   // We special‑case those first, then fall back to '/' for the rest to avoid widespread 404s.
   async rewrites() {
     // Use Docker service name for container envs or explicit public URL when provided
-    const apiHost = process.env.NEXT_PUBLIC_API_URL || 'http://backend:8000';
+    const apiHost = process.env.NEXT_PUBLIC_API_URL || 'http://175.41.133.177:8000';
 
     console.log("=== next.config.js Debug ===");
     console.log("NEXT_PUBLIC_API_URL:", process.env.NEXT_PUBLIC_API_URL);

@@ -3,7 +3,7 @@ import type { NextConfig } from "next";
 // Resolve backend base URL once, avoiding accidental use of the Next.js PORT (3000)
 // Use Docker service name for environment-independent deployment
 // Force rebuild: 2025-10-04 to clear Docker build cache
-const apiBase = (process.env.NEXT_PUBLIC_API_URL || "http://backend:8000").replace(/\/$/, "");
+const apiBase = (process.env.NEXT_PUBLIC_API_URL || "http://175.41.133.177:8000").replace(/\/$/, "");
 
 // Debug logging for build diagnostics
 console.log("=== Next.js Config Debug ===");
