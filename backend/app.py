@@ -4778,7 +4778,11 @@ def download_order_item_json(order_id: int, item_id: int, db: Session = Depends(
 
 @app.get("/orders/{order_id}/items/{item_id}/download/csv")
 def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(get_db)):
-    """Download OCR result CSV file for a specific order item (using deep flattening)"""
+    """Download OCR result CSV file for a specific order item (using deep flattening).
+
+    If an aggregated JSON (including all files for the item) exists, it is preferred.
+    Otherwise, falls back to the legacy primary-only JSON stored in ocr_result_json_path.
+    """
     try:
         # Verify order and item exist
         order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
@@ -4792,20 +4796,29 @@ def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(g
         if not item:
             raise HTTPException(status_code=404, detail="Order item not found")
 
-        # Allow CSV generated from OCR JSON regardless of mapping status
-
-        if not item.ocr_result_json_path:
-            raise HTTPException(status_code=404, detail="JSON result file not found for this item")
-
         # Use existing S3 download infrastructure to get JSON
         s3_manager = get_s3_manager()
         if not s3_manager:
             raise HTTPException(status_code=500, detail="S3 storage not available")
 
-        # Download JSON file content from S3
-        json_content = s3_manager.download_file_by_stored_path(item.ocr_result_json_path)
+        json_content = None
+
+        # Prefer aggregated JSON (all files) if available for this item
+        try:
+            aggregated_key = f"results/orders/{item_id // 1000}/items/{item_id}/item_{item_id}_results.json"
+            aggregated_stored_path = f"{s3_manager.upload_prefix}{aggregated_key}"
+            json_content = s3_manager.download_file_by_stored_path(aggregated_stored_path)
+        except Exception as e:
+            logger.warning(f"Failed to load aggregated JSON for CSV of item {item_id}: {e}")
+
+        # Fallback to legacy primary-only JSON if aggregated not found
         if not json_content:
-            raise HTTPException(status_code=404, detail=f"JSON file not found in S3: {item.ocr_result_json_path}")
+            if not item.ocr_result_json_path:
+                raise HTTPException(status_code=404, detail="JSON result file not found for this item")
+
+            json_content = s3_manager.download_file_by_stored_path(item.ocr_result_json_path)
+            if not json_content:
+                raise HTTPException(status_code=404, detail=f"JSON file not found in S3: {item.ocr_result_json_path}")
 
         # Parse JSON content
         try:
