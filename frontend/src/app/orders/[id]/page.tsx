@@ -1043,13 +1043,13 @@ export default function OrderDetailsPage() {
 
       if (contentDisposition) {
         // Prefer RFC 5987 filename* (supports UTF-8 and URL-encoding)
-        const starMatch = contentDisposition.match(/filename\\*\\s*=\\s*([^;]+)/i);
+        const starMatch = contentDisposition.match(/filename\*\s*=\s*([^;]+)/i);
         if (starMatch) {
-          let value = starMatch[1].trim().replace(/^['\"]|['\"]$/g, '');
+          let value = starMatch[1].trim().replace(/^['"]|['"]$/g, '');
 
           // Strip UTF-8 prefix if present: utf-8''<urlencoded-filename>
-          if (value.toLowerCase().startsWith(\"utf-8''\")) {
-            value = value.substring(\"utf-8''\".length);
+          if (value.toLowerCase().startsWith("utf-8''")) {
+            value = value.substring("utf-8''".length);
           }
 
           try {
@@ -1060,9 +1060,9 @@ export default function OrderDetailsPage() {
           }
         } else {
           // Fallback to legacy filename= parsing
-          const filenameMatch = contentDisposition.match(/filename[^;=\\n]*=((['\"]).*?\\2|[^;\\n]*)/i);
+          const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/i);
           if (filenameMatch) {
-            filename = filenameMatch[1].replace(/['\"]/g, '');
+            filename = filenameMatch[1].replace(/['"]/g, '');
           }
         }
       }
