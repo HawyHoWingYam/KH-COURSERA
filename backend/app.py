@@ -4862,8 +4862,8 @@ def download_order_item_json(order_id: int, item_id: int, db: Session = Depends(
             if not file_content:
                 raise HTTPException(status_code=404, detail=f"File not found in S3: {item.ocr_result_json_path}")
 
-        # Generate filename for download
-        filename = f"order_{order_id}_item_{item_id}_{item.item_name or 'result'}.json"
+        # Generate filename for download (combined primary + attachments)
+        filename = f"order_{order_id}_item_{item_id}_results.json"
 
         # Create temporary file to serve
         import tempfile
@@ -4947,8 +4947,8 @@ def download_order_item_csv(order_id: int, item_id: int, db: Session = Depends(g
         # Apply Excel formula escaping
         escaped_csv_content = escape_excel_formulas_in_csv(csv_content)
 
-        # Generate filename for download
-        filename = f"order_{order_id}_item_{item_id}_primary.csv"
+        # Generate filename for download (combined primary + attachments)
+        filename = f"order_{order_id}_item_{item_id}_results.csv"
 
         # Create temporary file with UTF-8 BOM
         import tempfile

@@ -1042,9 +1042,28 @@ export default function OrderDetailsPage() {
       let filename = `order_${orderId}_item_${itemId}_${itemName || 'result'}.${format}`;
 
       if (contentDisposition) {
-        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-        if (filenameMatch) {
-          filename = filenameMatch[1].replace(/['"]/g, '');
+        // Prefer RFC 5987 filename* (supports UTF-8 and URL-encoding)
+        const starMatch = contentDisposition.match(/filename\\*\\s*=\\s*([^;]+)/i);
+        if (starMatch) {
+          let value = starMatch[1].trim().replace(/^['\"]|['\"]$/g, '');
+
+          // Strip UTF-8 prefix if present: utf-8''<urlencoded-filename>
+          if (value.toLowerCase().startsWith(\"utf-8''\")) {
+            value = value.substring(\"utf-8''\".length);
+          }
+
+          try {
+            filename = decodeURIComponent(value);
+          } catch {
+            // Fallback: use raw value if decode fails
+            filename = value;
+          }
+        } else {
+          // Fallback to legacy filename= parsing
+          const filenameMatch = contentDisposition.match(/filename[^;=\\n]*=((['\"]).*?\\2|[^;\\n]*)/i);
+          if (filenameMatch) {
+            filename = filenameMatch[1].replace(/['\"]/g, '');
+          }
         }
       }
 
