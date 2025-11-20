@@ -60,6 +60,10 @@ from db.models import (
     MappingTemplate,
     CompanyDocMappingDefault,
     OrderItemType,
+    OcrSchedule,
+    OcrScheduledFile,
+    ScheduleMode,
+    ScheduledFileStatus,
 )
 from main import extract_text_from_image, extract_text_from_pdf
 from utils.excel_converter import json_to_excel, json_to_csv
@@ -225,7 +229,7 @@ async def ws_orders_summary(websocket: WebSocket):
         except Exception:
             pass
 
-# Background Scheduler for OneDrive Sync
+# Background Scheduler for OneDrive Sync and OCR schedules
 # Initialize only if APScheduler is available
 scheduler = BackgroundScheduler() if APSCHEDULER_AVAILABLE else None
 
@@ -238,6 +242,74 @@ def run_onedrive_sync():
         sync_func()
     except Exception as e:
         logger.error(f"❌ Scheduled sync failed: {str(e)}")
+
+
+def run_ocr_schedules_job():
+    """Wrapper for OCR schedule runner task."""
+    try:
+        logger.info("🔄 Running scheduled OCR schedules...")
+        from utils.ocr_schedule_runner import run_ocr_schedules
+
+        run_ocr_schedules()
+    except Exception as e:
+        logger.error(f"❌ OCR schedule runner failed: {str(e)}")
+
+
+def _calculate_interval_seconds(period_unit: str, period_value: int, runs_per_period: int) -> int:
+    """Normalise period configuration into a base interval in seconds."""
+    if runs_per_period <= 0:
+        raise ValueError("runs_per_period must be positive")
+
+    unit_map = {
+        "second": 1,
+        "seconds": 1,
+        "minute": 60,
+        "minutes": 60,
+        "hour": 3600,
+        "hours": 3600,
+        "day": 86400,
+        "days": 86400,
+    }
+    if period_unit not in unit_map:
+        raise ValueError(f"Unsupported period_unit: {period_unit}")
+
+    period_seconds = period_value * unit_map[period_unit]
+    if period_seconds <= 0:
+        raise ValueError("period_seconds must be positive")
+
+    # Spread runs evenly across the period
+    interval = max(1, period_seconds // runs_per_period)
+    return interval
+
+
+def _serialize_ocr_schedule(s: OcrSchedule) -> dict:
+    """Serialize OcrSchedule to an API-friendly dict."""
+    return {
+        "schedule_id": s.schedule_id,
+        "name": s.name,
+        "enabled": s.enabled,
+        "company_id": s.company_id,
+        "doc_type_id": s.doc_type_id,
+        "material_root_path": s.material_root_path,
+        "history_root_path": s.history_root_path,
+        "output_root_path": s.output_root_path,
+        "failed_subfolder_name": s.failed_subfolder_name,
+        "schedule_mode": s.schedule_mode.value if s.schedule_mode else None,
+        "start_at": s.start_at.isoformat() if s.start_at else None,
+        "interval_seconds": s.interval_seconds,
+        "period_unit": s.period_unit,
+        "period_value": s.period_value,
+        "runs_per_period": s.runs_per_period,
+        "window_start_time": s.window_start_time,
+        "window_end_time": s.window_end_time,
+        "allowed_weekdays": s.allowed_weekdays,
+        "max_files_per_cycle": s.max_files_per_cycle,
+        "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
+        "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
+        "created_by_user_id": s.created_by_user_id,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+        "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+    }
 
 
 # Health check endpoint
@@ -372,39 +444,269 @@ def health_check():
     return JSONResponse(content=health_status, status_code=status_code)
 
 
+# OCR Schedules API
+
+@app.get("/ocr-schedules", response_model=List[dict])
+def list_ocr_schedules(db: Session = Depends(get_db)):
+    schedules = db.query(OcrSchedule).all()
+    return [_serialize_ocr_schedule(s) for s in schedules]
+
+
+@app.post("/ocr-schedules", response_model=dict)
+def create_ocr_schedule(schedule_data: dict, db: Session = Depends(get_db)):
+    """Create a new OCR schedule.
+
+    Expected payload (minimum):
+    - name: str
+    - start_date: 'YYYY-MM-DD'
+    - start_time: 'HH:MM'
+    - period_unit: 'second' | 'minute' | 'hour' | 'day'
+    - period_value: int
+    - runs_per_period: int
+    - material_root_path, history_root_path, output_root_path: OneDrive paths
+    - optional: schedule_mode, window_*, allowed_weekdays, max_files_per_cycle
+    """
+    try:
+        name = schedule_data["name"]
+        start_date = schedule_data["start_date"]
+        start_time = schedule_data["start_time"]
+        period_unit = schedule_data["period_unit"]
+        period_value = int(schedule_data["period_value"])
+        runs_per_period = int(schedule_data["runs_per_period"])
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=f"Missing required field: {e.args[0]}")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="period_value and runs_per_period must be integers")
+
+    try:
+        start_at = datetime.fromisoformat(f"{start_date}T{start_time}:00")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid start_date/start_time format")
+
+    try:
+        interval_seconds = _calculate_interval_seconds(period_unit, period_value, runs_per_period)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    schedule_mode_str = schedule_data.get("schedule_mode", "INTERVAL")
+    try:
+        schedule_mode = ScheduleMode[schedule_mode_str]
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"Invalid schedule_mode: {schedule_mode_str}")
+
+    schedule = OcrSchedule(
+        name=name,
+        enabled=bool(schedule_data.get("enabled", True)),
+        company_id=schedule_data.get("company_id"),
+        doc_type_id=schedule_data.get("doc_type_id"),
+        material_root_path=schedule_data["material_root_path"],
+        history_root_path=schedule_data["history_root_path"],
+        output_root_path=schedule_data["output_root_path"],
+        failed_subfolder_name=schedule_data.get("failed_subfolder_name", "_Failed"),
+        schedule_mode=schedule_mode,
+        start_at=start_at,
+        interval_seconds=interval_seconds,
+        period_unit=period_unit,
+        period_value=period_value,
+        runs_per_period=runs_per_period,
+        window_start_time=schedule_data.get("window_start_time"),
+        window_end_time=schedule_data.get("window_end_time"),
+        allowed_weekdays=schedule_data.get("allowed_weekdays"),
+        max_files_per_cycle=schedule_data.get("max_files_per_cycle"),
+        created_by_user_id=schedule_data.get("created_by_user_id"),
+    )
+
+    # Initial next_run_at is the start_at; scheduler will respect this.
+    schedule.next_run_at = start_at
+
+    db.add(schedule)
+    db.commit()
+    db.refresh(schedule)
+
+    return _serialize_ocr_schedule(schedule)
+
+
+@app.put("/ocr-schedules/{schedule_id}", response_model=dict)
+def update_ocr_schedule(schedule_id: int, schedule_data: dict, db: Session = Depends(get_db)):
+    schedule = db.query(OcrSchedule).filter(OcrSchedule.schedule_id == schedule_id).first()
+    if not schedule:
+        raise HTTPException(status_code=404, detail="OCR schedule not found")
+
+    # Update simple scalar fields if present
+    for field in [
+        "name",
+        "enabled",
+        "company_id",
+        "doc_type_id",
+        "material_root_path",
+        "history_root_path",
+        "output_root_path",
+        "failed_subfolder_name",
+        "window_start_time",
+        "window_end_time",
+        "allowed_weekdays",
+        "max_files_per_cycle",
+        "created_by_user_id",
+    ]:
+        if field in schedule_data:
+            setattr(schedule, field, schedule_data[field])
+
+    # Optionally update schedule_mode and period configuration
+    if "schedule_mode" in schedule_data:
+        mode_str = schedule_data["schedule_mode"]
+        try:
+            schedule.schedule_mode = ScheduleMode[mode_str]
+        except KeyError:
+            raise HTTPException(status_code=400, detail=f"Invalid schedule_mode: {mode_str}")
+
+    period_unit = schedule_data.get("period_unit", schedule.period_unit)
+    period_value = schedule_data.get("period_value", schedule.period_value)
+    runs_per_period = schedule_data.get("runs_per_period", schedule.runs_per_period)
+
+    if period_unit and period_value and runs_per_period:
+        try:
+            period_value_int = int(period_value)
+            runs_per_period_int = int(runs_per_period)
+            schedule.interval_seconds = _calculate_interval_seconds(
+                period_unit, period_value_int, runs_per_period_int
+            )
+            schedule.period_unit = period_unit
+            schedule.period_value = period_value_int
+            schedule.runs_per_period = runs_per_period_int
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    # Optionally update start_at
+    start_date = schedule_data.get("start_date")
+    start_time = schedule_data.get("start_time")
+    if start_date and start_time:
+        try:
+            schedule.start_at = datetime.fromisoformat(f"{start_date}T{start_time}:00")
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid start_date/start_time format")
+
+    # Reset next_run_at if requested or if start_at changed
+    if schedule_data.get("reset_next_run", False) or (start_date and start_time):
+        schedule.next_run_at = schedule.start_at or datetime.utcnow()
+
+    db.commit()
+    db.refresh(schedule)
+    return _serialize_ocr_schedule(schedule)
+
+
+@app.post("/ocr-schedules/{schedule_id}/run-now", response_model=dict)
+def trigger_ocr_schedule(schedule_id: int, db: Session = Depends(get_db)):
+    schedule = db.query(OcrSchedule).filter(OcrSchedule.schedule_id == schedule_id).first()
+    if not schedule:
+        raise HTTPException(status_code=404, detail="OCR schedule not found")
+
+    now = datetime.utcnow()
+    schedule.next_run_at = now
+    db.commit()
+
+    return {
+        "message": "Schedule marked to run as soon as possible",
+        "schedule": _serialize_ocr_schedule(schedule),
+    }
+
+
+@app.get("/ocr-schedules/{schedule_id}/files", response_model=List[dict])
+def list_ocr_schedule_files(
+    schedule_id: int,
+    status: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    schedule = db.query(OcrSchedule).filter(OcrSchedule.schedule_id == schedule_id).first()
+    if not schedule:
+        raise HTTPException(status_code=404, detail="OCR schedule not found")
+
+    query = db.query(OcrScheduledFile).filter(OcrScheduledFile.schedule_id == schedule_id)
+    if status:
+        try:
+            status_enum = ScheduledFileStatus[status]
+        except KeyError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+        query = query.filter(OcrScheduledFile.status == status_enum)
+
+    files = query.order_by(OcrScheduledFile.created_at.desc()).all()
+
+    results = []
+    for f in files:
+        results.append(
+            {
+                "id": f.id,
+                "schedule_id": f.schedule_id,
+                "month_str": f.month_str,
+                "onedrive_path": f.onedrive_path,
+                "filename": f.filename,
+                "status": f.status.value if f.status else None,
+                "error_message": f.error_message,
+                "attempt_count": f.attempt_count,
+                "ocr_json_path": f.ocr_json_path,
+                "output_excel_path": f.output_excel_path,
+                "excel_row_index": f.excel_row_index,
+                "created_at": f.created_at.isoformat() if f.created_at else None,
+                "updated_at": f.updated_at.isoformat() if f.updated_at else None,
+            }
+        )
+
+    return results
+
+
 # Startup and Shutdown Events for Scheduler
 @app.on_event("startup")
 async def startup_event():
     """Initialize scheduler on startup"""
     try:
-        # Check if OneDrive sync is enabled (no implicit default)
-        onedrive_env = os.getenv('ONEDRIVE_SYNC_ENABLED')
-        if onedrive_env is None:
-            logger.error("❌ Missing ONEDRIVE_SYNC_ENABLED env var. Set to 'true' to enable OneDrive sync.")
+        if not APSCHEDULER_AVAILABLE or scheduler is None:
+            logger.warning(
+                "⚠️ APScheduler not installed. Background jobs (OneDrive sync / OCR schedules) are disabled. "
+                "Install with: pip install -r backend/requirements.txt (use your app's virtualenv pip)"
+            )
             return
-        onedrive_enabled = onedrive_env.lower() == 'true'
+
+        # OneDrive daily sync toggle
+        onedrive_env = os.getenv("ONEDRIVE_SYNC_ENABLED")
+        onedrive_enabled = bool(onedrive_env and onedrive_env.lower() == "true")
 
         if onedrive_enabled:
-            # Check if APScheduler is available
-            if not APSCHEDULER_AVAILABLE:
-                logger.error("❌ APScheduler not installed! OneDrive sync requires: pip install -r backend/requirements.txt (use your app's virtualenv pip)")
-                return
-
-            # Schedule OneDrive sync daily at 2 AM
             scheduler.add_job(
                 run_onedrive_sync,
                 CronTrigger(hour=2, minute=0),
-                id='onedrive_daily_sync',
-                name='OneDrive Daily Sync',
-                replace_existing=True
+                id="onedrive_daily_sync",
+                name="OneDrive Daily Sync",
+                replace_existing=True,
             )
-            scheduler.start()
-            logger.info("✅ APScheduler started - OneDrive sync scheduled for 2:00 AM daily")
+            logger.info("✅ OneDrive sync scheduled for 2:00 AM daily")
         else:
-            if not APSCHEDULER_AVAILABLE:
-                logger.warning("⚠️ APScheduler not installed. OneDrive sync is disabled. Install with: pip install -r backend/requirements.txt (use your app's virtualenv pip)")
-            else:
-                logger.info("ℹ️ OneDrive sync disabled (ONEDRIVE_SYNC_ENABLED not set to 'true')")
+            logger.info(
+                "ℹ️ OneDrive sync disabled (ONEDRIVE_SYNC_ENABLED not set to 'true')"
+            )
+
+        # OCR schedule runner toggle
+        ocr_env = os.getenv("OCR_SCHEDULE_ENABLED")
+        ocr_enabled = bool(ocr_env and ocr_env.lower() == "true")
+
+        if ocr_enabled:
+            scheduler.add_job(
+                run_ocr_schedules_job,
+                # Default: check every 5 minutes for due work
+                CronTrigger(minute="*/5"),
+                id="ocr_schedules_runner",
+                name="OCR Schedules Runner",
+                replace_existing=True,
+            )
+            logger.info(
+                "✅ OCR schedule runner enabled - will poll for due schedules every 5 minutes"
+            )
+        else:
+            logger.info(
+                "ℹ️ OCR schedule runner disabled (OCR_SCHEDULE_ENABLED not set to 'true')"
+            )
+
+        # Start the shared scheduler
+        scheduler.start()
+        logger.info("✅ APScheduler started")
 
     except Exception as e:
         logger.error(f"❌ Failed to start scheduler: {str(e)}")

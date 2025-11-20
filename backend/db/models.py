@@ -366,6 +366,189 @@ class OrderItemStatus(enum.Enum):
     FAILED = "FAILED"
 
 
+class ScheduleMode(enum.Enum):
+    INTERVAL = "INTERVAL"
+    WINDOWED_INTERVAL = "WINDOWED_INTERVAL"
+
+
+class ScheduledFileStatus(enum.Enum):
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    WAITING_FOR_EXCEL = "WAITING_FOR_EXCEL"
+    COMPLETED = "COMPLETED"
+    ERROR = "ERROR"
+
+
+class OcrSchedule(Base):
+    __tablename__ = "ocr_schedules"
+
+    schedule_id = Column(Integer, primary_key=True)
+    name = Column(String(255), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+
+    # Optional linkage to existing company/doc type configurations
+    company_id = Column(Integer, ForeignKey("companies.company_id"), nullable=True)
+    doc_type_id = Column(Integer, ForeignKey("document_types.doc_type_id"), nullable=True)
+
+    # OneDrive roots (per schedule)
+    material_root_path = Column(
+        String(500),
+        nullable=False,
+        comment="OneDrive root path for material files",
+    )
+    history_root_path = Column(
+        String(500),
+        nullable=False,
+        comment="OneDrive root path for history/archive files",
+    )
+    output_root_path = Column(
+        String(500),
+        nullable=False,
+        comment="OneDrive root path for monthly Excel outputs",
+    )
+    failed_subfolder_name = Column(
+        String(255),
+        nullable=False,
+        default="_Failed",
+        comment="Subfolder name for failed files under monthly material folder",
+    )
+
+    # Scheduling pattern
+    schedule_mode = Column(
+        Enum(ScheduleMode),
+        nullable=False,
+        default=ScheduleMode.INTERVAL,
+    )
+    start_at = Column(
+        DateTime,
+        nullable=False,
+        comment="UTC timestamp when this schedule becomes active",
+    )
+    interval_seconds = Column(
+        Integer,
+        nullable=False,
+        comment="Normalized interval between runs in seconds",
+    )
+
+    # Original UI fields (kept for transparency and re-editing in admin UI)
+    period_unit = Column(
+        String(16),
+        nullable=True,
+        comment="UI hint: second/minute/hour/day",
+    )
+    period_value = Column(
+        Integer,
+        nullable=True,
+        comment="UI hint: period length in units",
+    )
+    runs_per_period = Column(
+        Integer,
+        nullable=True,
+        comment="UI hint: how many runs per period",
+    )
+
+    # Optional complex window configuration (local business time)
+    window_start_time = Column(
+        String(8),
+        nullable=True,
+        comment="Daily window start time HH:MM",
+    )
+    window_end_time = Column(
+        String(8),
+        nullable=True,
+        comment="Daily window end time HH:MM",
+    )
+    allowed_weekdays = Column(
+        String(32),
+        nullable=True,
+        comment="Comma-separated weekday numbers (0=Monday .. 6=Sunday)",
+    )
+
+    # Safety limiter: maximum number of files to process per scheduler cycle
+    max_files_per_cycle = Column(
+        Integer,
+        nullable=True,
+        comment="Max files processed per scheduler cycle (defaults applied in code if null)",
+    )
+
+    # Execution bookkeeping
+    last_run_at = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+
+    # Audit
+    created_by_user_id = Column(
+        Integer,
+        ForeignKey("users.user_id"),
+        nullable=True,
+    )
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    company = relationship("Company")
+    document_type = relationship("DocumentType")
+    scheduled_files = relationship(
+        "OcrScheduledFile",
+        back_populates="schedule",
+        cascade="all, delete-orphan",
+    )
+
+
+class OcrScheduledFile(Base):
+    __tablename__ = "ocr_scheduled_files"
+
+    id = Column(Integer, primary_key=True)
+    schedule_id = Column(
+        Integer,
+        ForeignKey("ocr_schedules.schedule_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    month_str = Column(
+        String(6),
+        nullable=False,
+        comment="YearMonth bucket, e.g. 202511",
+    )
+
+    # OneDrive path and identity
+    onedrive_path = Column(
+        String(1000),
+        nullable=False,
+        comment="Full OneDrive path to the file at time of processing",
+    )
+    filename = Column(String(500), nullable=False)
+
+    status = Column(
+        Enum(ScheduledFileStatus),
+        nullable=False,
+        default=ScheduledFileStatus.PENDING,
+    )
+    error_message = Column(Text, nullable=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+
+    # Optional links to OCR/Excel output
+    ocr_json_path = Column(
+        String(500),
+        nullable=True,
+        comment="Path (e.g. S3 key) to OCR JSON output",
+    )
+    output_excel_path = Column(
+        String(500),
+        nullable=True,
+        comment="OneDrive path to monthly Excel file",
+    )
+    excel_row_index = Column(
+        Integer,
+        nullable=True,
+        comment="Excel row index for this file, if tracked",
+    )
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    schedule = relationship("OcrSchedule", back_populates="scheduled_files")
+
+
 class OcrOrder(Base):
     __tablename__ = "ocr_orders"
 
