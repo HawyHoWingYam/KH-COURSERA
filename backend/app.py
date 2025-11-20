@@ -4161,6 +4161,169 @@ def download_attachment_json(
         raise HTTPException(status_code=500, detail=f"Error downloading JSON: {str(e)}")
 
 
+# ========== PRIMARY FILE RESULT DOWNLOAD ENDPOINTS ==========
+
+@app.get("/orders/{order_id}/items/{item_id}/primary/download/json")
+def download_primary_file_json(
+    order_id: int,
+    item_id: int,
+    db: Session = Depends(get_db)
+):
+    """Download JSON result for the primary file of a specific order item.
+
+    This reads the same per-file JSON used by attachment downloads, so that:
+    primary-file JSON + all attachment JSONs == aggregated item results JSON.
+    """
+    try:
+        # Verify order exists
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # Verify item exists and belongs to order
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        if not item.primary_file_id:
+            raise HTTPException(status_code=404, detail="Item has no primary file")
+
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+
+        # Prefer per-file JSON for the primary file, consistent with attachment endpoints
+        stored_path = f"upload/results/orders/{item_id // 1000}/items/{item_id}/files/file_{item.primary_file_id}_result.json"
+        file_content = s3_manager.download_file_by_stored_path(stored_path)
+
+        # Fallback to legacy primary-only JSON if per-file JSON is missing (older jobs)
+        if not file_content:
+            if not item.ocr_result_json_path:
+                raise HTTPException(status_code=404, detail="Primary JSON result not found or not yet processed")
+
+            file_content = s3_manager.download_file_by_stored_path(item.ocr_result_json_path)
+            stored_path = item.ocr_result_json_path
+
+            if not file_content:
+                raise HTTPException(status_code=404, detail="Primary JSON result not found or not yet processed")
+
+        # Create temporary file for download
+        import tempfile
+        import os
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+
+        filename = f"order_{order_id}_item_{item_id}_primary.json"
+        response = FileResponse(
+            path=temp_file_path,
+            filename=filename,
+            media_type="application/json",
+        )
+        response.headers["X-File-Source"] = "S3"
+        response.headers["X-Result-Scope"] = "primary_file_only"
+        response.headers["X-Result-Path"] = stored_path
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download primary file JSON for item {item_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download JSON file: {str(e)}")
+
+
+@app.get("/orders/{order_id}/items/{item_id}/primary/download/csv")
+def download_primary_file_csv(
+    order_id: int,
+    item_id: int,
+    db: Session = Depends(get_db)
+):
+    """Download CSV result for the primary file of a specific order item.
+
+    This converts the primary file's per-file JSON to CSV using the same deep
+    flattening as other CSV exports, so that primary CSV + all attachment CSVs
+    align with the aggregated item CSV.
+    """
+    try:
+        # Verify order exists
+        order = db.query(OcrOrder).filter(OcrOrder.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # Verify item exists and belongs to order
+        item = db.query(OcrOrderItem).filter(
+            OcrOrderItem.item_id == item_id,
+            OcrOrderItem.order_id == order_id
+        ).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Order item not found")
+
+        if not item.primary_file_id:
+            raise HTTPException(status_code=404, detail="Item has no primary file")
+
+        s3_manager = get_s3_manager()
+        if not s3_manager:
+            raise HTTPException(status_code=500, detail="S3 storage not available")
+
+        # Prefer per-file JSON for the primary file, consistent with attachment endpoints
+        stored_path = f"upload/results/orders/{item_id // 1000}/items/{item_id}/files/file_{item.primary_file_id}_result.json"
+        file_content = s3_manager.download_file_by_stored_path(stored_path)
+
+        # Fallback to legacy primary-only JSON if per-file JSON is missing (older jobs)
+        if not file_content:
+            if not item.ocr_result_json_path:
+                raise HTTPException(status_code=404, detail="Primary JSON result not found or not yet processed")
+
+            file_content = s3_manager.download_file_by_stored_path(item.ocr_result_json_path)
+            stored_path = item.ocr_result_json_path
+
+            if not file_content:
+                raise HTTPException(status_code=404, detail="Primary JSON result not found or not yet processed")
+
+        # Parse JSON and convert to CSV
+        try:
+            json_data = json.loads(file_content.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse primary JSON for CSV for item {item_id}: {str(e)}")
+            raise HTTPException(status_code=500, detail="Invalid JSON format in primary result")
+
+        csv_content = convert_json_to_csv(json_data)
+        if not csv_content:
+            raise HTTPException(status_code=500, detail="Failed to convert JSON to CSV")
+
+        # Apply Excel formula escaping and add UTF-8 BOM
+        escaped_csv_content = escape_excel_formulas_in_csv(csv_content)
+        file_content_with_bom = b'\xef\xbb\xbf' + escaped_csv_content.encode('utf-8')
+
+        # Create temporary file for download
+        import tempfile
+        import os
+        filename = f"order_{order_id}_item_{item_id}_primary.csv"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
+            temp_file.write(file_content_with_bom)
+            temp_file_path = temp_file.name
+
+        response = FileResponse(
+            path=temp_file_path,
+            filename=filename,
+            media_type="text/csv; charset=utf-8",
+        )
+        response.headers["X-File-Source"] = "S3"
+        response.headers["X-Result-Scope"] = "primary_file_only"
+        response.headers["X-Result-Path"] = stored_path
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download primary file CSV for item {item_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to download CSV file: {str(e)}")
+
+
 # ========== ATTACHMENT FILES ENDPOINTS ==========
 
 @app.post("/orders/{order_id}/items/{item_id}/files", response_model=dict)

@@ -1796,10 +1796,10 @@ class OrderProcessor:
                                         if "__index" not in business_data and len(candidates) > 1:
                                             business_data["__index"] = idx
 
-                                        # Add file-level metadata for AWB items
-                                        if is_awb:
-                                            business_data["__file_id"] = file_record.file_id
-                                            business_data["__source_path"] = file_record.file_path
+                                        # Add file-level metadata so we can reconstruct per-file
+                                        # results (for attachment downloads) regardless of doc type.
+                                        business_data["__file_id"] = file_record.file_id
+                                        business_data["__source_path"] = file_record.file_path
 
                                         all_results.append(business_data)
 
@@ -1807,21 +1807,19 @@ class OrderProcessor:
                                     error_result = {
                                         "text": text_content,
                                         "__filename": file_record.file_name,
-                                        "__is_primary": is_primary_file
+                                        "__is_primary": is_primary_file,
+                                        "__file_id": file_record.file_id,
+                                        "__source_path": file_record.file_path,
                                     }
-                                    if is_awb:
-                                        error_result["__file_id"] = file_record.file_id
-                                        error_result["__source_path"] = file_record.file_path
                                     all_results.append(error_result)
                             else:
                                 no_content_result = {
                                     "__filename": file_record.file_name,
                                     "__error": "No text content in result",
-                                    "__is_primary": is_primary_file
+                                    "__is_primary": is_primary_file,
+                                    "__file_id": file_record.file_id,
+                                    "__source_path": file_record.file_path,
                                 }
-                                if is_awb:
-                                    no_content_result["__file_id"] = file_record.file_id
-                                    no_content_result["__source_path"] = file_record.file_path
                                 all_results.append(no_content_result)
 
                     except Exception as e:
@@ -1981,21 +1979,44 @@ class OrderProcessor:
                 else:
                     attachment_results.append(result)
 
-            # For AWB items, save file-level results
+            # For AWB items, save file-level results (legacy behaviour used by AWB mapping)
             file_results_map = {}
             if is_awb:
                 for result in results:
                     if "__file_id" in result:
                         file_id = result["__file_id"]
                         file_name = result.get("__filename", "unknown")
-                        # Save file-level result
+                        # Save file-level result (single record per file for AWB)
                         file_result_path = await self._save_file_result(item_id, file_id, file_name, result)
                         if file_result_path:
                             file_results_map[file_id] = file_result_path
 
-                # Generate manifest for file results
+                # Generate manifest for file results (AWB only)
                 if file_results_map:
                     await self._generate_file_results_manifest(item_id, file_results_map)
+            else:
+                # For non-AWB items, aggregate results per file so that each attachment
+                # has its own JSON/CSV containing all invoices from that image.
+                per_file_results: Dict[int, List[Dict[str, Any]]] = {}
+                for result in results:
+                    file_id = result.get("__file_id")
+                    if file_id is None:
+                        continue
+                    per_file_results.setdefault(int(file_id), []).append(result)
+
+                for file_id, file_records in per_file_results.items():
+                    file_name = None
+                    for r in file_records:
+                        name = r.get("__filename")
+                        if name:
+                            file_name = name
+                            break
+                    if not file_name:
+                        file_name = "unknown"
+
+                    # Save the list of records for this file. The helper accepts arbitrary
+                    # JSON-serialisable data, so a list is fine.
+                    await self._save_file_result(item_id, file_id, file_name, file_records)
 
             # Save JSON results:
             # - Primary-only JSON for backward compatibility and mapping (if primary exists)
