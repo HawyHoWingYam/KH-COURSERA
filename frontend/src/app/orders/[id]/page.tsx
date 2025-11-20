@@ -1006,12 +1006,25 @@ export default function OrderDetailsPage() {
     }
   };
 
-  const downloadItemResult = async (itemId: number, format: 'json' | 'csv', itemName: string) => {
-    const downloadKey = `${itemId}-${format}`;
+  const downloadItemResult = async (
+    itemId: number,
+    format: 'json' | 'csv',
+    itemName: string,
+    scope: 'primary' | 'item' = 'item'
+  ) => {
+    // Use different keys for primary vs aggregated item downloads so their states don't conflict
+    const keyPrefix = scope === 'primary' ? 'primary' : 'item';
+    const downloadKey = `${keyPrefix}-${itemId}-${format}`;
     setDownloadingFiles(prev => ({ ...prev, [downloadKey]: true }));
 
     try {
-      const response = await fetch(`/api/orders/${orderId}/items/${itemId}/download/${format}`);
+      // Route to the appropriate backend endpoint based on requested scope
+      const path =
+        scope === 'primary'
+          ? `/api/orders/${orderId}/items/${itemId}/primary/download/${format}`
+          : `/api/orders/${orderId}/items/${itemId}/download/${format}`;
+
+      const response = await fetch(path);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -1700,7 +1713,7 @@ export default function OrderDetailsPage() {
                   {item.primary_file ? (
                     <div className="border-b pb-3">
                       <h4 className="font-medium text-gray-700 mb-2">📄 Primary File</h4>
-                      <div className="flex justify-between items-center bg-blue-50 p-2 rounded">
+                          <div className="flex justify-between items-center bg-blue-50 p-2 rounded">
                         <div className="flex-1">
                           <p className="text-sm font-medium">{item.primary_file.filename}</p>
                           <p className="text-xs text-gray-500">{(item.primary_file.file_size / 1024).toFixed(1)}KB</p>
@@ -1711,20 +1724,20 @@ export default function OrderDetailsPage() {
                               <div className="flex items-center border-l pl-2 gap-1">
                                 <span className="text-xs text-gray-500 font-medium">Primary:</span>
                                 <button
-                                  onClick={() => downloadItemResult(item.item_id, 'json', item.item_name)}
-                                  disabled={downloadingFiles[`${item.item_id}-json`]}
+                                  onClick={() => downloadItemResult(item.item_id, 'json', item.item_name, 'primary')}
+                                  disabled={downloadingFiles[`primary-${item.item_id}-json`]}
                                   className="bg-blue-100 hover:bg-blue-200 disabled:bg-gray-200 text-blue-700 disabled:text-gray-500 px-2 py-1 rounded text-xs font-medium"
                                   title="Download primary JSON"
                                 >
-                                  {downloadingFiles[`${item.item_id}-json`] ? '...' : '📄 JSON'}
+                                  {downloadingFiles[`primary-${item.item_id}-json`] ? '...' : '📄 JSON'}
                                 </button>
                                 <button
-                                  onClick={() => downloadItemResult(item.item_id, 'csv', item.item_name)}
-                                  disabled={downloadingFiles[`${item.item_id}-csv`]}
+                                  onClick={() => downloadItemResult(item.item_id, 'csv', item.item_name, 'primary')}
+                                  disabled={downloadingFiles[`primary-${item.item_id}-csv`]}
                                   className="bg-green-100 hover:bg-green-200 disabled:bg-gray-200 text-green-700 disabled:text-gray-500 px-2 py-1 rounded text-xs font-medium"
                                   title="Download primary CSV"
                                 >
-                                  {downloadingFiles[`${item.item_id}-csv`] ? '...' : '📊 CSV'}
+                                  {downloadingFiles[`primary-${item.item_id}-csv`] ? '...' : '📊 CSV'}
                                 </button>
                               </div>
                             </>
@@ -1968,7 +1981,7 @@ export default function OrderDetailsPage() {
                   </div>
                 )}
 
-                {/* Download Results Section - Show whenever OCR outputs exist (even if mapping fails) */}
+                {/* Download Results Section - item-level combined results (primary + attachments) */}
                 {(item.ocr_result_json_path || item.ocr_result_csv_path) && (
                   <div className="mt-4 pt-3 border-t border-gray-200">
                     <div className="text-sm font-medium text-gray-700 mb-2">Download Results:</div>
@@ -1977,23 +1990,23 @@ export default function OrderDetailsPage() {
                         {/* Keep JSON button for primary only */}
                         {item.ocr_result_json_path && (
                           <button
-                            onClick={() => downloadItemResult(item.item_id, 'json', item.item_name)}
-                            disabled={downloadingFiles[`${item.item_id}-json`]}
+                            onClick={() => downloadItemResult(item.item_id, 'json', item.item_name, 'item')}
+                            disabled={downloadingFiles[`item-${item.item_id}-json`]}
                             className="bg-blue-100 hover:bg-blue-200 disabled:bg-gray-200 text-blue-700 disabled:text-gray-500 py-1 px-3 rounded text-sm font-medium"
-                            title="Download JSON results"
+                            title="Download combined JSON results"
                           >
-                            {downloadingFiles[`${item.item_id}-json`] ? 'Downloading...' : '📄 JSON'}
+                            {downloadingFiles[`item-${item.item_id}-json`] ? 'Downloading...' : '📄 JSON'}
                           </button>
                         )}
                         {/* CSV button for primary */}
                         {item.ocr_result_csv_path && (
                           <button
-                            onClick={() => downloadItemResult(item.item_id, 'csv', item.item_name)}
-                            disabled={downloadingFiles[`${item.item_id}-csv`]}
+                            onClick={() => downloadItemResult(item.item_id, 'csv', item.item_name, 'item')}
+                            disabled={downloadingFiles[`item-${item.item_id}-csv`]}
                             className="bg-green-100 hover:bg-green-200 disabled:bg-gray-200 text-green-700 disabled:text-gray-500 py-1 px-3 rounded text-sm font-medium"
-                            title="Download primary CSV results"
+                            title="Download combined CSV results"
                           >
-                            {downloadingFiles[`${item.item_id}-csv`] ? 'Downloading...' : '📊 CSV'}
+                            {downloadingFiles[`item-${item.item_id}-csv`] ? 'Downloading...' : '📊 CSV'}
                           </button>
                         )}
                       </div>
