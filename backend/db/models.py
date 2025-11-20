@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     UniqueConstraint,
     Float,
+    CheckConstraint,
 )
 from sqlalchemy.orm import relationship
 import enum
@@ -267,7 +268,10 @@ class ApiUsage(Base):
     __tablename__ = "api_usage"
 
     usage_id = Column(Integer, primary_key=True, index=True)
-    job_id = Column(Integer, ForeignKey("processing_jobs.job_id"), nullable=False)
+    # Legacy pipeline linkage (processing_jobs)
+    job_id = Column(Integer, ForeignKey("processing_jobs.job_id"), nullable=True)
+    # New order pipeline linkage (ocr_order_items)
+    item_id = Column(Integer, ForeignKey("ocr_order_items.item_id"), nullable=True)
     input_token_count = Column(Integer, nullable=False)
     output_token_count = Column(Integer, nullable=False)
     api_call_timestamp = Column(DateTime, default=datetime.now, nullable=False)
@@ -275,12 +279,20 @@ class ApiUsage(Base):
 
     # Add new fields for timing
     processing_time_seconds = Column(Float, nullable=True)
-    status = Column(
-        String(50), nullable=True
-    )  # success, error, success_with_fallback, etc.
+    # success, error, success_with_fallback, timeout, rate_limited, etc.
+    status = Column(String(50), nullable=True)
 
-    # Existing relationships
+    __table_args__ = (
+        # Ensure at least one linkage (job or order item) is present
+        CheckConstraint(
+            "job_id IS NOT NULL OR item_id IS NOT NULL",
+            name="ck_api_usage_job_or_item",
+        ),
+    )
+
+    # Relationships
     job = relationship("ProcessingJob", back_populates="api_usages")
+    order_item = relationship("OcrOrderItem", back_populates="api_usages")
 
 
 class UploadType(enum.Enum):
@@ -415,6 +427,7 @@ class OcrOrderItem(Base):
     primary_file = relationship("File", foreign_keys=[primary_file_id])
     files = relationship("OrderItemFile", back_populates="order_item", cascade="all, delete-orphan")
     applied_template = relationship("MappingTemplate")
+    api_usages = relationship("ApiUsage", back_populates="order_item")
 
 
 class OrderItemFile(Base):

@@ -1701,6 +1701,13 @@ class OrderProcessor:
                 temp_files_to_cleanup = []
                 is_awb = doc_type.type_code == "AIRWAY_BILL"  # Check if this is an AWB item
 
+                # Resolve model name once per item for API usage tracking
+                try:
+                    app_config = config_loader.get_app_config()
+                    model_name = app_config.get("model_name", "unknown")
+                except Exception:
+                    model_name = "unknown"
+
                 for file_record, is_primary_file in all_files:
                     try:
                         # Download file from S3 to temporary location
@@ -1716,25 +1723,86 @@ class OrderProcessor:
                             temp_file_path = temp_file.name
                             temp_files_to_cleanup.append(temp_file_path)
 
-                        # Process the file
+                        # Process the file via Gemini
                         if file_ext == '.pdf':
                             result = await extract_text_from_pdf(temp_file_path, prompt, schema)
                         else:
                             result = await extract_text_from_image(temp_file_path, prompt, schema)
 
-                        # Clean result data - only keep business data
+                        # Record API usage metrics for this file (order-item based tracking)
+                        input_tokens = 0
+                        output_tokens = 0
+                        processing_time = None
+                        status = None
+
+                        if isinstance(result, dict):
+                            input_tokens = int(result.get("input_tokens") or 0)
+                            output_tokens = int(result.get("output_tokens") or 0)
+                            processing_time = result.get("processing_time")
+                            status_updates = result.get("status_updates") or {}
+                            status = status_updates.get("status")
+
+                        api_usage = ApiUsage(
+                            item_id=item_id,
+                            input_token_count=input_tokens,
+                            output_token_count=output_tokens,
+                            processing_time_seconds=processing_time,
+                            status=status,
+                            model=model_name,
+                            api_call_timestamp=datetime.utcnow(),
+                        )
+                        db.add(api_usage)
+
+                        # Clean result data - only keep business data for downstream mapping
                         if isinstance(result, dict):
                             text_content = result.get("text", "")
                             if text_content:
                                 try:
-                                    business_data = json.loads(text_content)
-                                    business_data["__filename"] = file_record.file_name
-                                    business_data["__is_primary"] = is_primary_file  # Mark if primary file
-                                    # Add file-level metadata for AWB items
-                                    if is_awb:
-                                        business_data["__file_id"] = file_record.file_id
-                                        business_data["__source_path"] = file_record.file_path
-                                    all_results.append(business_data)
+                                    parsed = json.loads(text_content)
+
+                                    # Normalise Gemini response so that both dict and list
+                                    # payloads are supported. This allows prompts that return
+                                    # an array of invoices instead of a single object.
+                                    if isinstance(parsed, dict):
+                                        candidates = [parsed]
+                                    elif isinstance(parsed, list):
+                                        # Ensure we always work with dictionaries downstream;
+                                        # wrap non-dict items so they do not crash mapping/CSV.
+                                        # NOTE: avoid shadowing the outer `item` (OcrOrderItem)
+                                        # by using a distinct loop variable.
+                                        candidates = []
+                                        for idx, parsed_item in enumerate(parsed):
+                                            if isinstance(parsed_item, dict):
+                                                candidates.append(parsed_item)
+                                            else:
+                                                candidates.append(
+                                                    {
+                                                        "__value": parsed_item,
+                                                        "__index": idx,
+                                                    }
+                                                )
+                                    else:
+                                        candidates = [
+                                            {
+                                                "__value": parsed,
+                                            }
+                                        ]
+
+                                    for idx, business_data in enumerate(candidates):
+                                        business_data["__filename"] = file_record.file_name
+                                        business_data["__is_primary"] = is_primary_file  # Mark if primary file
+                                        # Preserve index when we normalised from a list so that
+                                        # downstream consumers can tell multiple records apart.
+                                        if "__index" not in business_data and len(candidates) > 1:
+                                            business_data["__index"] = idx
+
+                                        # Add file-level metadata for AWB items
+                                        if is_awb:
+                                            business_data["__file_id"] = file_record.file_id
+                                            business_data["__source_path"] = file_record.file_path
+
+                                        all_results.append(business_data)
+
                                 except json.JSONDecodeError:
                                     error_result = {
                                         "text": text_content,
@@ -1758,6 +1826,19 @@ class OrderProcessor:
 
                     except Exception as e:
                         logger.error(f"Error processing file {file_record.file_name}: {str(e)}")
+
+                        # Record a failed API usage entry for this file attempt
+                        api_usage = ApiUsage(
+                            item_id=item_id,
+                            input_token_count=0,
+                            output_token_count=0,
+                            processing_time_seconds=None,
+                            status="error",
+                            model=model_name,
+                            api_call_timestamp=datetime.utcnow(),
+                        )
+                        db.add(api_usage)
+
                         error_result = {
                             "__filename": file_record.file_name,
                             "__error": f"Processing failed: {str(e)}",
@@ -1886,11 +1967,16 @@ class OrderProcessor:
             s3_base = f"results/orders/{item_id // 1000}/items/{item_id}"
             is_awb = doc_type_code == "AIRWAY_BILL"
 
-            # Separate primary file result from attachments
+            # Separate primary file result from attachments.
+            # - The *first* record marked as primary is treated as the canonical
+            #   primary_result for backward compatibility.
+            # - Any additional primary-marked records (e.g. multiple invoices
+            #   parsed from the same primary file) are stored in attachment_results
+            #   so that they still appear in CSV/aggregated JSON.
             primary_result = None
             attachment_results = []
             for result in results:
-                if result.get("__is_primary", False):
+                if result.get("__is_primary", False) and primary_result is None:
                     primary_result = result
                 else:
                     attachment_results.append(result)
@@ -1988,36 +2074,62 @@ class OrderProcessor:
 
                 for item in completed_items:
                     try:
-                        # Download item results from S3
-                        if item.ocr_result_json_path.startswith('s3://'):
-                            s3_key = item.ocr_result_json_path.replace(f"s3://{self.s3_manager.bucket_name}/", "")
-                            if s3_key.startswith(self.s3_manager.upload_prefix):
-                                s3_key = s3_key[len(self.s3_manager.upload_prefix):]
+                        item_results_content = None
 
-                            item_results_content = self.s3_manager.download_file(s3_key)
-                            if item_results_content:
-                                loaded = json.loads(item_results_content.decode('utf-8'))
+                        # Prefer aggregated per-item JSON (primary + attachments, multi-invoice aware)
+                        try:
+                            aggregated_key = (
+                                f"results/orders/{item.item_id // 1000}/items/{item.item_id}/"
+                                f"item_{item.item_id}_results.json"
+                            )
+                            aggregated_stored_path = f"{self.s3_manager.upload_prefix}{aggregated_key}"
+                            item_results_content = self.s3_manager.download_file_by_stored_path(
+                                aggregated_stored_path
+                            )
+                        except Exception as agg_exc:
+                            logger.warning(
+                                f"Failed to load aggregated JSON for consolidation of item {item.item_id}: {agg_exc}"
+                            )
 
-                                # Normalise to a list of dicts
-                                if isinstance(loaded, dict):
-                                    item_results = [loaded]
-                                elif isinstance(loaded, list):
-                                    item_results = loaded
-                                else:
-                                    raise ValueError("Unexpected results JSON structure (must be object or array)")
+                        # Fallback to legacy primary-only JSON if aggregated is not available
+                        if not item_results_content and item.ocr_result_json_path:
+                            try:
+                                item_results_content = self.s3_manager.download_file_by_stored_path(
+                                    item.ocr_result_json_path
+                                )
+                            except Exception as primary_exc:
+                                logger.warning(
+                                    f"Failed to load primary JSON for consolidation of item {item.item_id}: {primary_exc}"
+                                )
 
-                                # Add item metadata to each result (defensive: only dicts)
-                                annotated = []
-                                for result in item_results:
-                                    if not isinstance(result, dict):
-                                        continue
-                                    result['__item_id'] = item.item_id
-                                    result['__item_name'] = item.item_name
-                                    result['__company'] = item.company.company_name if item.company else None
-                                    result['__doc_type'] = item.document_type.type_name if item.document_type else None
-                                    annotated.append(result)
+                        if not item_results_content:
+                            logger.warning(
+                                f"No JSON results found for consolidation of item {item.item_id}"
+                            )
+                            continue
 
-                                all_consolidated_results.extend(annotated)
+                        loaded = json.loads(item_results_content.decode('utf-8'))
+
+                        # Normalise to a list of dicts
+                        if isinstance(loaded, dict):
+                            item_results = [loaded]
+                        elif isinstance(loaded, list):
+                            item_results = loaded
+                        else:
+                            raise ValueError("Unexpected results JSON structure (must be object or array)")
+
+                        # Add item metadata to each result (defensive: only dicts)
+                        annotated = []
+                        for result in item_results:
+                            if not isinstance(result, dict):
+                                continue
+                            result['__item_id'] = item.item_id
+                            result['__item_name'] = item.item_name
+                            result['__company'] = item.company.company_name if item.company else None
+                            result['__doc_type'] = item.document_type.type_name if item.document_type else None
+                            annotated.append(result)
+
+                        all_consolidated_results.extend(annotated)
 
                     except Exception as e:
                         logger.error(f"Error loading results for item {item.item_id}: {str(e)}")
